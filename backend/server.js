@@ -1,9 +1,16 @@
 const express = require("express");
-const cors = require("cors");
+
+const corsModule = require("cors");
+const cors = corsModule.default || corsModule;
+
 const dotenv = require("dotenv");
 const bcrypt = require("bcryptjs");
 
-const chatbotRoutes = require("./chatbot/chatbotRoutes");
+const chatbotRoutesModule = require("./chatbot/chatbotRoutes");
+const chatbotRoutes =
+  chatbotRoutesModule.default ||
+  chatbotRoutesModule.router ||
+  chatbotRoutesModule;
 
 const {
   sequelize,
@@ -26,6 +33,9 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+console.log("typeof cors:", typeof cors);
+console.log("typeof chatbotRoutes:", typeof chatbotRoutes);
 
 // ============================================================
 // MIDDLEWARE
@@ -222,11 +232,20 @@ app.post("/api/login", async (req, res) => {
 // TEST CONNECTION
 // ============================================================
 
-app.get("/api/test", (req, res) => {
-  res.json({
-    message:
-      "Backend is connected to MySQL and running!",
-  });
+app.get("/api/test", async (req, res) => {
+  try {
+    await sequelize.authenticate();
+
+    res.json({
+      success: true,
+      message: "Backend is connected to Supabase PostgreSQL!",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
 });
 
 // ============================================================
@@ -2057,7 +2076,7 @@ app.get("/api/feedback/dashboard", async (req, res) => {
       message: "Unable to load dashboard feedback.",
     });
   }
-});0
+});
 
 app.get("/api/feedback/website", async (req, res) => {
   try {
