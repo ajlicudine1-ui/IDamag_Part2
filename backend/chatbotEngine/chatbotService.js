@@ -1,0 +1,2445 @@
+const {
+  buildSchema,
+} = require("./schemaBuilder");
+
+const {
+  createPlan,
+} = require("./intentParser");
+
+const {
+  executePlan,
+} = require("./calculationEngine");
+
+const {
+  answerSchemaQuestion,
+} = require("./schemaEngine");
+
+const {
+  answerGeneralQuestion,
+  createSchemaAwarePlan,
+} = require("./groqService");
+
+const {
+  normalizeDatasets,
+  normalizeText,
+  similarity,
+} = require("./utils");
+
+const {
+  getRelevantContext,
+  updateConversation,
+  getRecentResults,
+} = require("./conversationManager");
+
+const {
+  normalizeQuestion,
+} = require("./questionNormalizer");
+
+const {
+  validateQueryPlan,
+} = require("./queryValidator");
+
+const {
+  validateResult,
+} = require("./resultValidator");
+
+const {
+  generateNaturalResponse,
+} = require("./responseGenerator");
+
+const {
+  resolvePlanEntities,
+} = require("./entityResolver");
+
+const {
+  compareVerifiedResults,
+} = require("./comparisonEngine");
+
+const {
+  inferValueFilters,
+} = require("./filterEngine");
+
+const {
+  retrieveRelevantData,
+  buildRetrievalContext,
+} = require("./dataRetriever");
+
+
+function normalizeExplicitColumnText(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/&/g, " and ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function compactExplicitColumnText(value) {
+  return normalizeExplicitColumnText(value)
+    .replace(/\s+/g, "")
+    .trim();
+}
+
+/**
+ * Detect a REAL schema column explicitly named by the user.
+ *
+ * This is intentionally deterministic and dataset-agnostic.
+ *
+ * Example:
+ * schema column: "RainfedTotal Area Planted"
+ * question:      "What is the total of Rainfed Total Area Planted?"
+ *
+ * The compact forms match:
+ * "rainfedtotalareaplanted"
+ *
+ * This prevents a planner/fallback parser from replacing an
+ * explicitly requested real field with a similar field.
+ */
+function findExplicitSchemaColumn({
+  schema,
+  question,
+  preferredDataset = null,
+}) {
+  const normalizedQuestion =
+    normalizeExplicitColumnText(question);
+
+  const compactQuestion =
+    compactExplicitColumnText(question);
+
+  if (
+    !normalizedQuestion ||
+    !compactQuestion
+  ) {
+    return null;
+  }
+
+  const candidates = [];
+
+  for (const dataset of schema || []) {
+    if (
+      preferredDataset &&
+      String(dataset?.name || "") !==
+        String(preferredDataset)
+    ) {
+      continue;
+    }
+
+    for (const column of dataset?.columns || []) {
+      const name =
+        column?.name;
+
+      if (!name) {
+        continue;
+      }
+
+      const normalizedColumn =
+        normalizeExplicitColumnText(name);
+
+      const compactColumn =
+        compactExplicitColumnText(name);
+
+      if (
+        !normalizedColumn ||
+        !compactColumn
+      ) {
+        continue;
+      }
+
+      let score = 0;
+
+      if (
+        normalizedQuestion ===
+        normalizedColumn
+      ) {
+        score = 100;
+      } else if (
+        compactQuestion ===
+        compactColumn
+      ) {
+        score = 99;
+      } else if (
+        normalizedQuestion.includes(
+          normalizedColumn
+        )
+      ) {
+        score =
+          95 +
+          normalizedColumn.length / 10000;
+      } else if (
+        compactQuestion.includes(
+          compactColumn
+        )
+      ) {
+        score =
+          94 +
+          compactColumn.length / 10000;
+      }
+
+      if (score > 0) {
+        candidates.push({
+          dataset:
+            dataset.name,
+
+          column:
+            name,
+
+          score,
+
+          length:
+            compactColumn.length,
+        });
+      }
+    }
+  }
+
+  if (
+    !candidates.length &&
+    preferredDataset
+  ) {
+    return findExplicitSchemaColumn({
+      schema,
+      question,
+      preferredDataset: null,
+    });
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score - a.score ||
+      b.length - a.length
+  );
+
+  return candidates[0] || null;
+}
+
+function operationUsesMetricColumn(
+  operation
+) {
+  return new Set([
+    "sum",
+    "average",
+    "median",
+    "minimum",
+    "maximum",
+    "non_empty_count",
+    "distinct_count",
+    "list",
+    "rank_rows",
+    "rank_groups",
+    "group_sum",
+    "group_average",
+    "group_minimum",
+    "group_maximum",
+  ]).has(
+    String(operation || "")
+      .trim()
+      .toLowerCase()
+  );
+}
+
+/**
+ * Last planner-independent safeguard.
+ *
+ * If the user explicitly names a real schema column, preserve
+ * that exact column even when Groq or the local fallback chose
+ * a similar one.
+ */
+function enforceExplicitQuestionColumn({
+  plan,
+  schema,
+  question,
+}) {
+  if (
+    !plan ||
+    plan.route !== "dataset" ||
+    !operationUsesMetricColumn(
+      plan.operation
+    )
+  ) {
+    return plan;
+  }
+
+  const match =
+    findExplicitSchemaColumn({
+      schema,
+      question,
+
+      preferredDataset:
+        plan.dataset || null,
+    });
+
+  if (!match) {
+    return plan;
+  }
+
+  const resolved = {
+    ...plan,
+
+    column:
+      match.column,
+
+    dataset:
+      match.dataset ||
+      plan.dataset,
+  };
+
+  if (
+    String(plan.operation || "")
+      .trim()
+      .toLowerCase() === "list"
+  ) {
+    resolved.selectColumns = [
+      match.column,
+    ];
+  }
+
+  return resolved;
+}
+
+/**
+ * ==========================================================
+ * APPLY CONVERSATION CONTEXT
+ * ==========================================================
+ *
+ * Allows follow-up questions such as:
+ *
+ * "What is the salary of Roberto?"
+ * "What is his position?"
+ *
+ * or:
+ *
+ * "What is Roberto's position?"
+ * "What about Vener?"
+ */
+function getSchemaColumns(
+  schema,
+  preferredDataset = null
+) {
+  const results = [];
+
+  for (const dataset of schema || []) {
+    if (
+      preferredDataset &&
+      String(dataset?.name || "") !==
+        String(preferredDataset)
+    ) {
+      continue;
+    }
+
+    for (const column of dataset?.columns || []) {
+      if (!column?.name) continue;
+
+      results.push({
+        dataset:
+          dataset.name,
+
+        column:
+          column.name,
+      });
+    }
+  }
+
+  return results;
+}
+
+function inferRequestedColumnFromQuestion({
+  schema,
+  question,
+  preferredDataset = null,
+  excludedColumns = [],
+}) {
+  const normalizedQuestion =
+    normalizeText(question);
+
+  if (!normalizedQuestion) {
+    return null;
+  }
+
+  const excluded =
+    new Set(
+      (excludedColumns || [])
+        .filter(Boolean)
+        .map(
+          (column) =>
+            normalizeText(column)
+        )
+    );
+
+  const preferred =
+    getSchemaColumns(
+      schema,
+      preferredDataset
+    );
+
+  const fallback =
+    preferred.length
+      ? preferred
+      : getSchemaColumns(
+          schema,
+          null
+        );
+
+  let best = null;
+
+  for (const candidate of fallback) {
+    const normalizedColumn =
+      normalizeText(
+        candidate.column
+      );
+
+    if (
+      !normalizedColumn ||
+      excluded.has(
+        normalizedColumn
+      )
+    ) {
+      continue;
+    }
+
+    let score =
+      similarity(
+        normalizedQuestion,
+        normalizedColumn
+      );
+
+    /**
+     * Strong exact phrase signal.
+     *
+     * Example:
+     * "how about actual salary"
+     * contains the real column label
+     * "ACTUAL SALARY".
+     */
+    if (
+      normalizedQuestion.includes(
+        normalizedColumn
+      )
+    ) {
+      score =
+        Math.max(
+          score,
+          1
+        );
+    } else {
+      /**
+       * Also compare shorter question phrases against
+       * the column name so wording such as:
+       *
+       * "how about the actual salary"
+       *
+       * still resolves dynamically.
+       */
+      const words =
+        normalizedQuestion
+          .split(/\s+/)
+          .filter(Boolean);
+
+      const columnWords =
+        normalizedColumn
+          .split(/\s+/)
+          .filter(Boolean);
+
+      const maxSize =
+        Math.min(
+          Math.max(
+            columnWords.length,
+            1
+          ),
+          words.length
+        );
+
+      for (
+        let size = 1;
+        size <= maxSize;
+        size += 1
+      ) {
+        for (
+          let i = 0;
+          i <= words.length - size;
+          i += 1
+        ) {
+          const phrase =
+            words
+              .slice(
+                i,
+                i + size
+              )
+              .join(" ");
+
+          score =
+            Math.max(
+              score,
+              similarity(
+                phrase,
+                normalizedColumn
+              )
+            );
+        }
+      }
+    }
+
+    if (
+      !best ||
+      score > best.score
+    ) {
+      best = {
+        dataset:
+          candidate.dataset,
+
+        column:
+          candidate.column,
+
+        score,
+      };
+    }
+  }
+
+  /**
+   * Be conservative.
+   *
+   * Exact/near-exact column wording should pass.
+   * Weak guesses should not silently change context.
+   */
+  if (
+    !best ||
+    best.score < 0.72
+  ) {
+    return null;
+  }
+
+  return best;
+}
+
+/**
+ * ==========================================================
+ * APPLY CONVERSATION CONTEXT
+ * ==========================================================
+ *
+ * Dynamic follow-up resolution.
+ *
+ * No employee name, field name, worksheet name, division,
+ * province, municipality, or other dataset value is hardcoded.
+ *
+ * Supports:
+ *
+ * 1. Same entity + new field
+ *    "authorized salary of [person]"
+ *    "how about actual salary"
+ *
+ * 2. New entity + same field
+ *    "position of [person A]"
+ *    "what about [person B]"
+ *
+ * 3. Pronoun follow-ups
+ *    "what is his position title?"
+ */
+function applyConversationContext(
+  plan,
+  context,
+  {
+    schema = [],
+    question = "",
+  } = {}
+) {
+  if (
+    !plan ||
+    typeof plan !== "object" ||
+    !context ||
+    context.isFollowUp !== true
+  ) {
+    return plan;
+  }
+
+  const resolvedPlan = {
+    ...plan,
+
+    filters:
+      Array.isArray(
+        plan.filters
+      )
+        ? plan.filters.map(
+            (filter) => ({
+              ...filter,
+
+              value:
+                Array.isArray(
+                  filter?.value
+                )
+                  ? [
+                      ...filter.value,
+                    ]
+                  : filter?.value,
+            })
+          )
+        : [],
+
+    selectColumns:
+      Array.isArray(
+        plan.selectColumns
+      )
+        ? [
+            ...plan.selectColumns,
+          ]
+        : [],
+  };
+
+  const lastEntity =
+    context.lastEntity || null;
+
+  const lastDataset =
+    context.lastDataset || null;
+
+  const lastEntityColumn =
+    lastEntity?.column || null;
+
+  /**
+   * Determine whether the CURRENT follow-up explicitly asks
+   * for a new output field.
+   *
+   * First trust Groq if it already supplied one.
+   * Otherwise infer the field dynamically from the live schema
+   * and the current question.
+   */
+  let requestedColumns =
+    resolvedPlan.selectColumns
+      .filter(Boolean);
+
+  if (
+    requestedColumns.length === 0 &&
+    resolvedPlan.route === "schema" &&
+    resolvedPlan.column
+  ) {
+    requestedColumns = [
+      resolvedPlan.column,
+    ];
+  }
+
+  const inferredRequested =
+    inferRequestedColumnFromQuestion({
+      schema,
+
+      question,
+
+      preferredDataset:
+        resolvedPlan.dataset ||
+        lastDataset,
+
+      excludedColumns:
+        [
+          lastEntityColumn,
+        ],
+    });
+
+  if (
+    requestedColumns.length === 0 &&
+    inferredRequested?.column
+  ) {
+    requestedColumns = [
+      inferredRequested.column,
+    ];
+  }
+
+  // ========================================================
+  // 1. RECOVER DATASET LOOKUP FOR FIELD-ONLY FOLLOW-UPS
+  // ========================================================
+  //
+  // A short follow-up such as:
+  //
+  // "how about actual salary"
+  //
+  // can sometimes be classified by Groq as schema/general
+  // because no entity is written in the current sentence.
+  //
+  // If conversation memory has a real previous entity and
+  // the current question dynamically identifies a real schema
+  // field, convert it back to a dataset lookup.
+  //
+  if (
+    lastEntity &&
+    lastDataset &&
+    requestedColumns.length > 0 &&
+    resolvedPlan.route !== "dataset"
+  ) {
+    resolvedPlan.route =
+      "dataset";
+
+    resolvedPlan.dataset =
+      lastDataset;
+
+    resolvedPlan.operation =
+      "lookup";
+
+    resolvedPlan.column =
+      requestedColumns.length === 1
+        ? requestedColumns[0]
+        : null;
+
+    resolvedPlan.groupBy =
+      null;
+
+    resolvedPlan.aggregation =
+      null;
+
+    resolvedPlan.direction =
+      null;
+
+    resolvedPlan.selectColumns = [
+      ...requestedColumns,
+    ];
+
+    resolvedPlan.outputRequested =
+      true;
+
+    resolvedPlan.transform =
+      null;
+
+    resolvedPlan.showAll =
+      false;
+
+    resolvedPlan.limit =
+      Number.isInteger(
+        Number(
+          resolvedPlan.limit
+        )
+      ) &&
+      Number(
+        resolvedPlan.limit
+      ) > 0
+        ? Number(
+            resolvedPlan.limit
+          )
+        : 10;
+
+    resolvedPlan.filters = [];
+  }
+
+  // ========================================================
+  // 2. INHERIT LAST ENTITY
+  // ========================================================
+  //
+  // Same entity, new field:
+  //
+  // "authorized salary of [person]"
+  // "how about actual salary"
+  //
+  if (
+    resolvedPlan.route ===
+      "dataset" &&
+    lastEntity
+  ) {
+    const alreadyHasEntity =
+      resolvedPlan.filters.some(
+        (filter) =>
+          normalizeText(
+            filter?.column
+          ) ===
+          normalizeText(
+            lastEntity.column
+          )
+      );
+
+    if (!alreadyHasEntity) {
+      resolvedPlan.filters.push({
+        column:
+          lastEntity.column,
+
+        operator:
+          lastEntity.operator ||
+          "equals",
+
+        value:
+          Array.isArray(
+            lastEntity.value
+          )
+            ? [
+                ...lastEntity.value,
+              ]
+            : lastEntity.value,
+      });
+    }
+  }
+
+  // ========================================================
+  // 3. PRESERVE THE CURRENTLY REQUESTED FIELD
+  // ========================================================
+  //
+  // If this follow-up explicitly names a new field, it must
+  // take priority over the previous metric.
+  //
+  if (
+    resolvedPlan.route ===
+      "dataset" &&
+    resolvedPlan.operation ===
+      "lookup" &&
+    requestedColumns.length > 0
+  ) {
+    resolvedPlan.selectColumns = [
+      ...requestedColumns,
+    ];
+
+    resolvedPlan.column =
+      requestedColumns.length === 1
+        ? requestedColumns[0]
+        : resolvedPlan.column;
+
+    resolvedPlan.outputRequested =
+      true;
+  }
+
+  // ========================================================
+  // 4. INHERIT PREVIOUS OUTPUT FIELD ONLY WHEN NO NEW FIELD
+  //    WAS REQUESTED
+  // ========================================================
+  //
+  // New entity, same metric:
+  //
+  // "What is [person A]'s position?"
+  // "What about [person B]?"
+  //
+  if (
+    resolvedPlan.route ===
+      "dataset" &&
+    resolvedPlan.operation ===
+      "lookup" &&
+    resolvedPlan.selectColumns
+      .length === 0 &&
+    !inferredRequested &&
+    context.lastMetric
+  ) {
+    if (
+      Array.isArray(
+        context.lastMetric
+      )
+    ) {
+      resolvedPlan.selectColumns = [
+        ...context.lastMetric,
+      ];
+    } else {
+      resolvedPlan.selectColumns = [
+        context.lastMetric,
+      ];
+    }
+
+    resolvedPlan.outputRequested =
+      true;
+  }
+
+  // ========================================================
+  // 5. INHERIT PREVIOUS DATASET WHEN THE CURRENT DATASET IS
+  //    MISSING
+  // ========================================================
+
+  if (
+    resolvedPlan.route ===
+      "dataset" &&
+    !resolvedPlan.dataset &&
+    lastDataset
+  ) {
+    resolvedPlan.dataset =
+      lastDataset;
+  }
+
+  // ========================================================
+  // 6. INHERIT PREVIOUS OPERATION ONLY WHEN NEEDED
+  // ========================================================
+
+  if (
+    resolvedPlan.route ===
+      "dataset" &&
+    (
+      !resolvedPlan.operation ||
+      resolvedPlan.operation ===
+        "lookup"
+    ) &&
+    context.lastIntent &&
+    context.lastIntent !==
+      "general"
+  ) {
+    /**
+     * For analytical follow-ups, inherit the previous operation
+     * even when the current question explicitly names a new metric.
+     *
+     * Example:
+     * total Irrigated -> "How about Rainfed?"
+     * keeps operation = sum and changes only the metric column.
+     */
+    if (
+      context.lastIntent !== "lookup"
+    ) {
+      resolvedPlan.operation =
+        context.lastIntent;
+
+      if (
+        requestedColumns.length > 0
+      ) {
+        resolvedPlan.column =
+          requestedColumns[0];
+
+        resolvedPlan.selectColumns = [];
+        resolvedPlan.outputRequested =
+          false;
+      }
+    } else if (
+      resolvedPlan.selectColumns.length === 0
+    ) {
+      resolvedPlan.operation =
+        context.lastIntent;
+    }
+  }
+
+  return resolvedPlan;
+}
+
+
+/**
+ * ==========================================================
+ * REPAIR MULTI-ENTITY FILTERS
+ * ==========================================================
+ *
+ * This is fully dynamic.
+ *
+ * It does NOT hardcode:
+ * - names
+ * - divisions
+ * - provinces
+ * - municipalities
+ * - worksheet names
+ * - column names
+ *
+ * It scans the current selected worksheet for actual values
+ * mentioned in the user's question.
+ *
+ * Example runtime behavior:
+ *
+ * Planner:
+ *   LAST NAME = PERALES
+ *
+ * Question also contains another real LAST NAME value.
+ *
+ * JavaScript may safely upgrade this to:
+ *
+ *   LAST NAME IN [value1, value2]
+ *
+ * The actual column and values are discovered from the live
+ * worksheet, not written into this code.
+ */
+function getUniqueColumnValues(
+  rows,
+  column
+) {
+  const values = [];
+  const seen = new Set();
+
+  for (const row of rows || []) {
+    const raw =
+      row?.[column];
+
+    if (
+      raw === null ||
+      raw === undefined
+    ) {
+      continue;
+    }
+
+    const display =
+      String(raw).trim();
+
+    const key =
+      normalizeText(display);
+
+    if (
+      !display ||
+      !key ||
+      seen.has(key)
+    ) {
+      continue;
+    }
+
+    seen.add(key);
+    values.push(display);
+  }
+
+  return values;
+}
+
+function tokenSimilarity(
+  left,
+  right
+) {
+  const a =
+    normalizeText(left);
+
+  const b =
+    normalizeText(right);
+
+  if (!a || !b) {
+    return 0;
+  }
+
+  if (a === b) {
+    return 1;
+  }
+
+  if (
+    a.includes(b) ||
+    b.includes(a)
+  ) {
+    return 0.95;
+  }
+
+  const aTokens =
+    a.split(/\s+/)
+      .filter(Boolean);
+
+  const bTokens =
+    b.split(/\s+/)
+      .filter(Boolean);
+
+  const aSet =
+    new Set(aTokens);
+
+  const bSet =
+    new Set(bTokens);
+
+  let overlap = 0;
+
+  for (const token of aSet) {
+    if (bSet.has(token)) {
+      overlap += 1;
+    }
+  }
+
+  const denominator =
+    Math.max(
+      aSet.size,
+      bSet.size,
+      1
+    );
+
+  return overlap / denominator;
+}
+
+function buildQuestionNgrams(
+  question,
+  maxWords = 4
+) {
+  const normalized =
+    normalizeText(question);
+
+  const tokens =
+    normalized
+      .split(/\s+/)
+      .filter(
+        (token) =>
+          token.length >= 2
+      );
+
+  const phrases = [];
+
+  for (
+    let size = 1;
+    size <= Math.min(
+      maxWords,
+      tokens.length
+    );
+    size += 1
+  ) {
+    for (
+      let i = 0;
+      i <=
+      tokens.length - size;
+      i += 1
+    ) {
+      phrases.push(
+        tokens
+          .slice(
+            i,
+            i + size
+          )
+          .join(" ")
+      );
+    }
+  }
+
+  return phrases;
+}
+
+function questionValueMatchScore(
+  question,
+  value
+) {
+  const q =
+    normalizeText(question);
+
+  const v =
+    normalizeText(value);
+
+  if (!q || !v) {
+    return 0;
+  }
+
+  /**
+   * Exact phrase present in the question.
+   */
+  if (q.includes(v)) {
+    return 1;
+  }
+
+  const valueWords =
+    v.split(/\s+/)
+      .filter(Boolean);
+
+  const ngrams =
+    buildQuestionNgrams(
+      question,
+      Math.max(
+        1,
+        valueWords.length
+      )
+    );
+
+  let best = 0;
+
+  for (const phrase of ngrams) {
+    /**
+     * Avoid comparing wildly different lengths.
+     */
+    const shortLength =
+      Math.min(
+        phrase.length,
+        v.length
+      );
+
+    const longLength =
+      Math.max(
+        phrase.length,
+        v.length
+      );
+
+    if (
+      shortLength < 3 ||
+      shortLength /
+        Math.max(
+          longLength,
+          1
+        ) <
+        0.55
+    ) {
+      continue;
+    }
+
+    const score =
+      similarity(
+        phrase,
+        v
+      );
+
+    if (score > best) {
+      best = score;
+    }
+  }
+
+  return best;
+}
+
+function questionContainsValue(
+  question,
+  value
+) {
+  return (
+    questionValueMatchScore(
+      question,
+      value
+    ) >= 0.78
+  );
+}
+
+function collectQuestionMatchesForColumn({
+  rows,
+  column,
+  question,
+  seedValues = [],
+}) {
+  const actualValues =
+    getUniqueColumnValues(
+      rows,
+      column
+    );
+
+  if (!actualValues.length) {
+    return [];
+  }
+
+  const selected = [];
+  const selectedKeys =
+    new Set();
+
+  const addValue =
+    (value) => {
+      const key =
+        normalizeText(value);
+
+      if (
+        !key ||
+        selectedKeys.has(key)
+      ) {
+        return;
+      }
+
+      selectedKeys.add(key);
+      selected.push(value);
+    };
+
+  /**
+   * Preserve / resolve values already identified by the planner.
+   */
+  for (
+    const seedValue of
+    Array.isArray(seedValues)
+      ? seedValues
+      : [seedValues]
+  ) {
+    if (
+      seedValue === null ||
+      seedValue === undefined ||
+      String(seedValue).trim() === ""
+    ) {
+      continue;
+    }
+
+    const exact =
+      actualValues.find(
+        (candidate) =>
+          normalizeText(candidate) ===
+          normalizeText(seedValue)
+      );
+
+    if (exact) {
+      addValue(exact);
+      continue;
+    }
+
+    let best = null;
+
+    for (const candidate of actualValues) {
+      const score =
+        similarity(
+          normalizeText(
+            seedValue
+          ),
+          normalizeText(
+            candidate
+          )
+        );
+
+      if (
+        !best ||
+        score > best.score
+      ) {
+        best = {
+          value:
+            candidate,
+          score,
+        };
+      }
+    }
+
+    if (
+      best &&
+      best.score >= 0.78
+    ) {
+      addValue(
+        best.value
+      );
+    }
+  }
+
+  /**
+   * Search the user's question against EVERY actual value
+   * in the dynamically chosen column.
+   *
+   * This supports small spelling differences, e.g. a user
+   * types a name slightly differently from the sheet.
+   */
+  const fuzzyCandidates =
+    actualValues
+      .map(
+        (candidate) => ({
+          value:
+            candidate,
+
+          score:
+            questionValueMatchScore(
+              question,
+              candidate
+            ),
+        })
+      )
+      .filter(
+        (item) =>
+          item.score >= 0.78
+      )
+      .sort(
+        (a, b) =>
+          b.score - a.score
+      );
+
+  for (
+    const candidate of
+    fuzzyCandidates
+  ) {
+    addValue(
+      candidate.value
+    );
+  }
+
+  return selected;
+}
+
+/**
+ * ==========================================================
+ * REPAIR MULTI-ENTITY FILTERS
+ * ==========================================================
+ *
+ * Fully dynamic:
+ *
+ * - no employee names are hardcoded
+ * - no LAST NAME column is hardcoded
+ * - no division/province/municipality is hardcoded
+ * - no worksheet name is hardcoded
+ *
+ * The planner's existing filter tells us which column is
+ * acting as the entity column. We then scan the ACTUAL values
+ * of that column and recover any additional values explicitly
+ * present in the user's question.
+ */
+function repairMultiEntityFilters({
+  datasets,
+  plan,
+  question,
+}) {
+  if (
+    !plan ||
+    plan.route !== "dataset" ||
+    !plan.dataset
+  ) {
+    return plan;
+  }
+
+  const rows =
+    datasets?.[plan.dataset];
+
+  if (
+    !Array.isArray(rows) ||
+    !rows.length
+  ) {
+    return plan;
+  }
+
+  const currentFilters =
+    Array.isArray(
+      plan.filters
+    )
+      ? plan.filters.map(
+          (filter) => ({
+            ...filter,
+
+            value:
+              Array.isArray(
+                filter?.value
+              )
+                ? [...filter.value]
+                : filter?.value,
+          })
+        )
+      : [];
+
+  /**
+   * Keep the existing exact inference as an additional source.
+   */
+  const inferred =
+    inferValueFilters(
+      rows,
+      question,
+      []
+    );
+
+  let repaired = false;
+
+  const repairedFilters =
+    currentFilters.map(
+      (filter) => {
+        if (
+          !filter ||
+          !filter.column
+        ) {
+          return filter;
+        }
+
+        const operator =
+          String(
+            filter.operator ||
+              "equals"
+          )
+            .trim()
+            .toLowerCase();
+
+        if (
+          operator !== "equals" &&
+          operator !== "in"
+        ) {
+          return filter;
+        }
+
+        const seedValues =
+          Array.isArray(
+            filter.value
+          )
+            ? filter.value
+            : [filter.value];
+
+        const matches =
+          collectQuestionMatchesForColumn({
+            rows,
+
+            column:
+              filter.column,
+
+            question,
+
+            seedValues,
+          });
+
+        /**
+         * Also merge any values found by inferValueFilters()
+         * for this same dynamically selected column.
+         */
+        const inferredSameColumn =
+          (Array.isArray(inferred)
+            ? inferred
+            : []
+          ).filter(
+            (candidate) =>
+              candidate &&
+              normalizeText(
+                candidate.column
+              ) ===
+                normalizeText(
+                  filter.column
+                )
+          );
+
+        for (
+          const candidate of
+          inferredSameColumn
+        ) {
+          const values =
+            Array.isArray(
+              candidate.value
+            )
+              ? candidate.value
+              : [candidate.value];
+
+          for (const value of values) {
+            if (
+              value === null ||
+              value === undefined ||
+              String(value).trim() === ""
+            ) {
+              continue;
+            }
+
+            if (
+              !matches.some(
+                (existing) =>
+                  normalizeText(
+                    existing
+                  ) ===
+                  normalizeText(
+                    value
+                  )
+              )
+            ) {
+              matches.push(value);
+            }
+          }
+        }
+
+        if (
+          matches.length <= 1
+        ) {
+          return filter;
+        }
+
+        repaired = true;
+
+        return {
+          ...filter,
+
+          operator:
+            "in",
+
+          value:
+            matches,
+        };
+      }
+    );
+
+  /**
+   * If the planner produced no filter at all, retain the
+   * previous generic inference behavior only when one
+   * unambiguous multi-value column is discovered.
+   */
+  if (
+    currentFilters.length === 0 &&
+    Array.isArray(inferred)
+  ) {
+    const multiCandidates =
+      inferred.filter(
+        (candidate) =>
+          candidate &&
+          candidate.column &&
+          String(
+            candidate.operator || ""
+          )
+            .trim()
+            .toLowerCase() === "in" &&
+          Array.isArray(
+            candidate.value
+          ) &&
+          candidate.value.length > 1
+      );
+
+    if (
+      multiCandidates.length === 1
+    ) {
+      repaired = true;
+
+      repairedFilters.push({
+        column:
+          multiCandidates[0].column,
+
+        operator:
+          "in",
+
+        value: [
+          ...multiCandidates[0].value,
+        ],
+      });
+    }
+  }
+
+  if (!repaired) {
+    return plan;
+  }
+
+  return {
+    ...plan,
+
+    filters:
+      repairedFilters,
+
+    showAll:
+      plan.operation === "lookup"
+        ? true
+        : plan.showAll,
+  };
+}
+
+/**
+ * ==========================================================
+ * STEP 10 — DETECT ANALYTICAL COMPARISONS
+ * ==========================================================
+ *
+ * Examples:
+ *
+ * "Who has the higher salary?"
+ * "Which one is lower?"
+ * "What is the difference?"
+ * "Compare them."
+ *
+ * This does NOT perform calculations.
+ *
+ * It only determines which comparison operation
+ * JavaScript should execute.
+ */
+function detectComparisonRequest(
+  question
+) {
+  const text = String(
+    question || ""
+  )
+    .toLowerCase()
+    .trim();
+
+  if (!text) {
+    return null;
+  }
+
+  // ========================================================
+  // DIFFERENCE
+  // ========================================================
+
+  if (
+    /\b(?:what(?:'s| is) )?(?:the )?difference\b/i.test(
+      text
+    ) ||
+    /\bhow much (?:more|less|higher|lower)\b/i.test(
+      text
+    )
+  ) {
+    return "difference";
+  }
+
+  // ========================================================
+  // LOWER
+  // ========================================================
+
+  if (
+    /\bwhich (?:one )?is (?:the )?lower\b/i.test(
+      text
+    ) ||
+    /\bwho (?:has|have) (?:the )?lower\b/i.test(
+      text
+    ) ||
+    /\bwhich (?:one )?has (?:the )?lower\b/i.test(
+      text
+    )
+  ) {
+    return "lower";
+  }
+
+  // ========================================================
+  // HIGHER
+  // ========================================================
+
+  if (
+    /\bwhich (?:one )?is (?:the )?higher\b/i.test(
+      text
+    ) ||
+    /\bwho (?:has|have) (?:the )?higher\b/i.test(
+      text
+    ) ||
+    /\bwhich (?:one )?has (?:the )?higher\b/i.test(
+      text
+    )
+  ) {
+    return "higher";
+  }
+
+  // ========================================================
+  // GENERIC COMPARISON
+  // ========================================================
+
+  if (
+    /\bcompare (?:them|those|the two)\b/i.test(
+      text
+    )
+  ) {
+    return "higher";
+  }
+
+  return null;
+}
+
+/**
+ * ==========================================================
+ * MAIN CHATBOT ENTRY POINT
+ * ==========================================================
+ *
+ * GROQ-FIRST, DATA-SAFE ARCHITECTURE
+ *
+ * 1. Normalize question.
+ * 2. Load current datasets.
+ * 3. Retrieve conversation context.
+ * 4. Handle analytical comparison follow-ups.
+ * 5. Groq interprets natural language.
+ * 6. JavaScript applies conversation context.
+ * 7. Query Validator validates the plan.
+ * 8. Entity Resolver resolves real dataset values.
+ * 9. JavaScript executes the plan.
+ * 10. Result Validator verifies the result.
+ * 11. Verified result is saved to conversation memory.
+ * 12. Natural Response Generator improves wording.
+ *
+ * Groq never performs dataset calculations.
+ */
+async function answerQuestion(
+  input,
+  question,
+  sessionId = "default"
+) {
+  const originalQuestion =
+    String(
+      question || ""
+    ).trim();
+
+  const cleanQuestion =
+    normalizeQuestion(
+      originalQuestion
+    );
+
+  if (!cleanQuestion) {
+    return {
+      success: false,
+      source: "system",
+      answer:
+        "Please enter a question.",
+    };
+  }
+
+  // ========================================================
+  // NORMALIZE ALL CURRENT DATASETS
+  // ========================================================
+
+  const datasets =
+    normalizeDatasets(
+      input
+    );
+
+  if (
+    !Object.keys(
+      datasets
+    ).length
+  ) {
+    return {
+      success: false,
+      source: "system",
+      answer:
+        "No usable worksheet data is currently available.",
+    };
+  }
+
+  // ========================================================
+  // STEP 2 — RETRIEVE RELEVANT REAL DATA
+  // ========================================================
+  //
+  // Searches the ACTUAL currently loaded datasets using
+  // dataRetriever.js.
+  //
+  // IMPORTANT:
+  // This does NOT change planning or answers yet.
+  // Step 3 will pass this retrievalContext into Groq.
+  //
+
+  const retrieval =
+    retrieveRelevantData({
+      datasets,
+
+      question:
+        cleanQuestion,
+    });
+
+  const retrievalContext =
+    buildRetrievalContext(
+      retrieval
+    );
+
+  if (
+    process.env.NODE_ENV !==
+      "production"
+  ) {
+    console.log(
+      "Chatbot retrieval context:",
+      JSON.stringify(
+        retrievalContext,
+        null,
+        2
+      )
+    );
+  }
+
+  // ========================================================
+  // BUILD LIVE SCHEMA
+  // ========================================================
+
+  const schema =
+    buildSchema(
+      datasets
+    );
+
+  // ========================================================
+  // LOAD CONVERSATION CONTEXT
+  // ========================================================
+
+  const conversationContext =
+    getRelevantContext(
+      sessionId,
+      cleanQuestion
+    );
+
+  if (
+    process.env.NODE_ENV !==
+      "production"
+  ) {
+    console.log(
+      "Chatbot conversation context:",
+      JSON.stringify(
+        conversationContext,
+        null,
+        2
+      )
+    );
+  }
+
+  // ========================================================
+  // STEP 10 — ANALYTICAL COMPARISON FOLLOW-UPS
+  // ========================================================
+  //
+  // These questions should NOT be sent through the normal
+  // dataset planner because they refer to already verified
+  // previous results.
+  //
+  // Example:
+  //
+  // User:
+  // "What is Roberto's salary?"
+  //
+  // User:
+  // "What is Vener's salary?"
+  //
+  // User:
+  // "Who has the higher salary?"
+  //
+  // We compare the previous VERIFIED JavaScript results.
+  //
+
+  const comparisonMode =
+    detectComparisonRequest(
+      cleanQuestion
+    );
+
+  if (comparisonMode) {
+    const recentResults =
+      getRecentResults(
+        sessionId
+      );
+
+    if (
+      process.env.NODE_ENV !==
+        "production"
+    ) {
+      console.log(
+        "Chatbot comparison history:",
+        JSON.stringify(
+          recentResults,
+          null,
+          2
+        )
+      );
+    }
+
+    // ======================================================
+    // REQUIRE TWO VERIFIED RESULTS
+    // ======================================================
+
+    if (
+      recentResults.length <
+      2
+    ) {
+      return {
+        success: false,
+        source:
+          "comparison",
+        operation:
+          "clarify",
+        answer:
+          "I need two previous results before I can compare them.",
+      };
+    }
+
+    /**
+     * Compare the two most recent verified results.
+     */
+    const left =
+      recentResults[
+        recentResults.length -
+          2
+      ];
+
+    const right =
+      recentResults[
+        recentResults.length -
+          1
+      ];
+
+    const comparisonResult =
+      compareVerifiedResults({
+        left,
+        right,
+        mode:
+          comparisonMode,
+      });
+
+    if (
+      process.env.NODE_ENV !==
+        "production"
+    ) {
+      console.log(
+        "Chatbot comparison result:",
+        JSON.stringify(
+          comparisonResult,
+          null,
+          2
+        )
+      );
+    }
+
+    /**
+     * Comparison Engine performs all arithmetic.
+     *
+     * Do NOT ask Groq to recalculate this result.
+     */
+    return comparisonResult;
+  }
+
+  // ========================================================
+  // EXECUTE A RESOLVED QUERY PLAN
+  // ========================================================
+
+  const executeResolvedPlan =
+    async (plan) => {
+      if (
+        !plan ||
+        typeof plan !==
+          "object"
+      ) {
+        throw new Error(
+          "The query planner returned an invalid plan."
+        );
+      }
+
+      // ====================================================
+      // QUERY VALIDATOR
+      // ====================================================
+
+      const validation =
+        validateQueryPlan({
+          datasets,
+          schema,
+          plan,
+        });
+
+      if (
+        !validation.valid
+      ) {
+        throw new Error(
+          validation.message
+        );
+      }
+
+      plan =
+        validation.plan;
+
+      // ====================================================
+      // STEP 9 — RESOLVE REAL DATASET VALUES
+      // ====================================================
+
+      const entityResolution =
+        resolvePlanEntities({
+          datasets,
+          plan,
+        });
+
+      plan =
+        entityResolution.plan;
+
+      if (
+        process.env.NODE_ENV !==
+          "production" &&
+        entityResolution
+          .changes?.length
+      ) {
+        console.log(
+          "Chatbot entity corrections:",
+          JSON.stringify(
+            entityResolution.changes,
+            null,
+            2
+          )
+        );
+      }
+
+      let result;
+
+      // ====================================================
+      // SCHEMA QUESTION
+      // ====================================================
+
+      if (
+        plan.route ===
+        "schema"
+      ) {
+        result =
+          await answerSchemaQuestion({
+            datasets,
+            schema,
+            plan,
+
+            question:
+              cleanQuestion,
+          });
+      }
+
+      // ====================================================
+      // DATASET QUESTION
+      // ====================================================
+
+      else if (
+        plan.route ===
+        "dataset"
+      ) {
+        result =
+          await executePlan({
+            datasets,
+            schema,
+            plan,
+
+            question:
+              cleanQuestion,
+          });
+      }
+
+      // ====================================================
+      // GENERAL QUESTION
+      // ====================================================
+
+      else if (
+        plan.route ===
+        "general"
+      ) {
+        result =
+          await answerGeneralQuestion({
+            question:
+              cleanQuestion,
+
+            schema,
+          });
+      }
+
+      // ====================================================
+      // CLARIFICATION
+      // ====================================================
+
+      else if (
+        plan.route ===
+        "clarify"
+      ) {
+        result = {
+          success: false,
+
+          source:
+            "router",
+
+          operation:
+            "clarify",
+
+          answer:
+            plan.question ||
+            "Please clarify which worksheet, field, or calculation you want.",
+        };
+      }
+
+      // ====================================================
+      // UNKNOWN ROUTE
+      // ====================================================
+
+      else {
+        throw new Error(
+          `Unsupported query route: ${String(
+            plan.route ||
+              "unknown"
+          )}`
+        );
+      }
+
+      // ====================================================
+      // STEP 6 — RESULT VALIDATOR
+      // ====================================================
+
+      const resultValidation =
+        validateResult({
+          plan,
+          result,
+        });
+
+      if (
+        !resultValidation.valid
+      ) {
+        console.error(
+          "Chatbot result validation failed:",
+          {
+            code:
+              resultValidation.code,
+
+            message:
+              resultValidation.message,
+
+            details:
+              resultValidation.details,
+
+            plan,
+            result,
+          }
+        );
+
+        throw new Error(
+          resultValidation.message
+        );
+      }
+
+      result =
+        resultValidation.result;
+
+      // ====================================================
+      // SAVE VERIFIED CONVERSATION STATE
+      // ====================================================
+      //
+      // IMPORTANT:
+      //
+      // Save BEFORE natural-response rewriting.
+      //
+      // This ensures Step 10 stores and compares the
+      // verified JavaScript result instead of Groq prose.
+      //
+
+      if (
+        result &&
+        plan.route !==
+          "clarify"
+      ) {
+        updateConversation(
+          sessionId,
+          {
+            question:
+              cleanQuestion,
+
+            plan,
+
+            result,
+          }
+        );
+      }
+
+      // ====================================================
+      // STEP 7 — NATURAL RESPONSE GENERATOR
+      // ====================================================
+
+      if (
+        result &&
+        result.success !==
+          false &&
+        plan.route !==
+          "clarify"
+      ) {
+        const naturalAnswer =
+          await generateNaturalResponse({
+            question:
+              cleanQuestion,
+
+            plan,
+
+            result,
+          });
+
+        return {
+          ...result,
+
+          /**
+           * Only presentation is changed.
+           *
+           * Numeric and structured result properties
+           * remain untouched.
+           */
+          answer:
+            naturalAnswer,
+
+          responseStyle:
+            "natural",
+
+          /**
+           * TEMPORARY DEBUG OUTPUT
+           *
+           * Remove these after the multi-entity issue is fixed.
+           */
+          debugPlan:
+            plan,
+
+          debugEntityChanges:
+            entityResolution.changes || [],
+        };
+      }
+
+      return {
+        ...result,
+
+        /**
+         * TEMPORARY DEBUG OUTPUT
+         *
+         * Remove these after the multi-entity issue is fixed.
+         */
+        debugPlan:
+          plan,
+
+        debugEntityChanges:
+          entityResolution.changes || [],
+      };
+    };
+
+  // ========================================================
+  // 1. GROQ FIRST
+  // ========================================================
+
+  let groqPlan = null;
+  let groqPlanningError = null;
+
+  /**
+   * IMPORTANT:
+   * Only GROQ PLANNING is inside this try/catch.
+   *
+   * If Groq successfully returns a plan, execution errors must
+   * not silently cause a second planner to choose another field.
+   */
+  try {
+    groqPlan =
+      await createSchemaAwarePlan({
+        question:
+          cleanQuestion,
+
+        schema,
+
+        context:
+          conversationContext,
+
+        retrievalContext,
+      });
+  } catch (error) {
+    groqPlanningError =
+      error;
+
+    console.error(
+      "Groq planning failed; local fallback will be used:",
+      error
+    );
+  }
+
+  if (groqPlan) {
+    groqPlan =
+      applyConversationContext(
+        groqPlan,
+        conversationContext,
+        {
+          schema,
+
+          question:
+            cleanQuestion,
+        }
+      );
+
+    groqPlan =
+      repairMultiEntityFilters({
+        datasets,
+
+        plan:
+          groqPlan,
+
+        question:
+          cleanQuestion,
+      });
+
+    /**
+     * Planner-independent exact-column safeguard.
+     */
+    groqPlan =
+      enforceExplicitQuestionColumn({
+        plan:
+          groqPlan,
+
+        schema,
+
+        question:
+          cleanQuestion,
+      });
+
+    if (
+      process.env.NODE_ENV !==
+        "production"
+    ) {
+      console.log(
+        "Chatbot Groq plan:",
+        JSON.stringify(
+          groqPlan,
+          null,
+          2
+        )
+      );
+    }
+
+    try {
+      const result =
+        await executeResolvedPlan(
+          groqPlan
+        );
+
+      return {
+        ...result,
+
+        plannerSource:
+          "groq",
+      };
+    } catch (groqExecutionError) {
+      console.error(
+        "Groq plan was created successfully, but execution failed. Local parser was NOT used:",
+        groqExecutionError
+      );
+
+      return {
+        success: false,
+
+        source:
+          "system",
+
+        operation:
+          "error",
+
+        plannerSource:
+          "groq",
+
+        answer:
+          groqExecutionError.message ||
+          "The Groq plan could not be executed.",
+
+        debugPlan:
+          groqPlan,
+      };
+    }
+  }
+
+  // ========================================================
+  // 2. LOCAL PARSER FALLBACK
+  // ========================================================
+  //
+  // Used ONLY when Groq could not create a plan.
+  //
+
+  try {
+    let localPlan =
+      await createPlan({
+        question:
+          cleanQuestion,
+
+        schema,
+
+        datasets,
+
+        context:
+          conversationContext,
+      });
+
+    localPlan =
+      applyConversationContext(
+        localPlan,
+        conversationContext,
+        {
+          schema,
+
+          question:
+            cleanQuestion,
+        }
+      );
+
+    localPlan =
+      repairMultiEntityFilters({
+        datasets,
+
+        plan:
+          localPlan,
+
+        question:
+          cleanQuestion,
+      });
+
+    /**
+     * Critical fallback safeguard:
+     * even if the local parser chooses a similar field, an
+     * explicitly named REAL schema column wins.
+     */
+    localPlan =
+      enforceExplicitQuestionColumn({
+        plan:
+          localPlan,
+
+        schema,
+
+        question:
+          cleanQuestion,
+      });
+
+    if (
+      process.env.NODE_ENV !==
+        "production"
+    ) {
+      console.log(
+        "Chatbot local fallback plan:",
+        JSON.stringify(
+          localPlan,
+          null,
+          2
+        )
+      );
+    }
+
+    const result =
+      await executeResolvedPlan(
+        localPlan
+      );
+
+    return {
+      ...result,
+
+      plannerSource:
+        "local-fallback",
+
+      /**
+       * Temporary debugging only.
+       * This tells us WHY Groq was unavailable without changing
+       * the dataset answer.
+       */
+      groqPlanningError:
+        groqPlanningError?.message ||
+        null,
+    };
+  } catch (localError) {
+    console.error(
+      "Local chatbot fallback failed:",
+      localError
+    );
+
+    return {
+      success: false,
+
+      source:
+        "system",
+
+      operation:
+        "error",
+
+      plannerSource:
+        "local-fallback",
+
+      groqPlanningError:
+        groqPlanningError?.message ||
+        null,
+
+      answer:
+        localError.message ||
+        "The chatbot could not process the question.",
+    };
+  }
+
+}
+
+module.exports = {
+  answerQuestion,
+};

@@ -1,0 +1,16 @@
+[
+  {
+    "id": "1",
+    "title": "Sales Dashboard",
+    "url": "https://app.powerbi.com/view?r=SAMPLE_SALES_DASHBOARD_URL",
+    "description": "Monthly sales performance dashboard.",
+    "createdAt": "2026-03-24T08:20:00.000Z"
+  },
+  {
+    "id": "2",
+    "title": "Inventory Report",
+    "url": "https://app.powerbi.com/view?r=SAMPLE_INVENTORY_REPORT_URL",
+    "description": "Real-time inventory tracking and stock levels.",
+    "createdAt": "2026-03-24T08:21:00.000Z"
+  }
+]
