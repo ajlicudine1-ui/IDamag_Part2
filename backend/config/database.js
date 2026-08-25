@@ -45,4 +45,6 @@ if (process.env.DATABASE_URL) {
   );
 }
 
+// Support both normal CommonJS and Vercel's bundled module interop.
 module.exports = sequelize;
+module.exports.default = sequelize;

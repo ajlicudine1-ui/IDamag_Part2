@@ -6,7 +6,15 @@ const cors = corsModule.default || corsModule;
 const dotenv = require("dotenv");
 const bcrypt = require("bcryptjs");
 
-const chatbotRoutesModule = require("./chatbot/chatbotRoutes");
+// Load environment variables before database/model modules.
+dotenv.config();
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+// ============================================================
+// CHATBOT ROUTER LOADER
+// ============================================================
 
 function resolveRouter(moduleValue) {
   let current = moduleValue;
@@ -31,78 +39,131 @@ function resolveRouter(moduleValue) {
   return current;
 }
 
-const chatbotRoutes = resolveRouter(chatbotRoutesModule);
+let chatbotRoutes = null;
 
-console.log(
-  "chatbotRoutes module keys:",
-  Object.keys(chatbotRoutesModule || {})
-);
+try {
+  const chatbotRoutesModule = require("./chatbot/chatbotRoutes");
+  chatbotRoutes = resolveRouter(chatbotRoutesModule);
+
+  console.log(
+    "chatbotRoutes module keys:",
+    Object.keys(chatbotRoutesModule || {})
+  );
+} catch (error) {
+  console.error("Unable to load chatbot routes:", error);
+}
 
 // ============================================================
 // DATABASE MODELS
-// Vercel-safe loading
 // ============================================================
+
+function unwrapModel(mod) {
+  if (!mod) {
+    return mod;
+  }
+
+  // Already a Sequelize model
+  if (
+    typeof mod.findAll === "function" ||
+    typeof mod.findOne === "function" ||
+    typeof mod.create === "function"
+  ) {
+    return mod;
+  }
+
+  // Wrapped as default export
+  if (
+    mod.default &&
+    (
+      typeof mod.default.findAll === "function" ||
+      typeof mod.default.findOne === "function" ||
+      typeof mod.default.create === "function"
+    )
+  ) {
+    return mod.default;
+  }
+
+  return mod.default || mod;
+}
 
 const modelsModule = require("./models/index");
 
 const sequelize =
+  modelsModule.sequelize?.default ||
   modelsModule.sequelize ||
   require("./config/database");
 
-const Office =
+const Office = unwrapModel(
   modelsModule.Office ||
-  require("./models/Office");
-
-const Division =
-  modelsModule.Division ||
-  require("./models/Division");
-
-const Report =
-  modelsModule.Report ||
-  require("./models/Report");
-
-const DashboardWorksheet =
-  modelsModule.DashboardWorksheet ||
-  require("./models/DashboardWorksheet");
-
-const User =
-  modelsModule.User ||
-  require("./models/User");
-
-const ActivityLog =
-  modelsModule.ActivityLog ||
-  require("./models/ActivityLog");
-
-const DashboardFeedback =
-  modelsModule.DashboardFeedback ||
-  require("./models/DashboardFeedback");
-
-const WebsiteFeedback =
-  modelsModule.WebsiteFeedback ||
-  require("./models/WebsiteFeedback");
-
-console.log(
-  "models/index keys:",
-  Object.keys(modelsModule || {})
+  require("./models/Office")
 );
 
-console.log("typeof Office:", typeof Office);
-console.log("typeof Division:", typeof Division);
-console.log("typeof Report:", typeof Report);
-console.log("typeof User:", typeof User);
+const Division = unwrapModel(
+  modelsModule.Division ||
+  require("./models/Division")
+);
+
+const Report = unwrapModel(
+  modelsModule.Report ||
+  require("./models/Report")
+);
+
+const DashboardWorksheet = unwrapModel(
+  modelsModule.DashboardWorksheet ||
+  require("./models/DashboardWorksheet")
+);
+
+const User = unwrapModel(
+  modelsModule.User ||
+  require("./models/User")
+);
+
+const ActivityLog = unwrapModel(
+  modelsModule.ActivityLog ||
+  require("./models/ActivityLog")
+);
+
+const DashboardFeedback = unwrapModel(
+  modelsModule.DashboardFeedback ||
+  require("./models/DashboardFeedback")
+);
+
+const WebsiteFeedback = unwrapModel(
+  modelsModule.WebsiteFeedback ||
+  require("./models/WebsiteFeedback")
+);
 
 const {
   sendWelcomeEmail,
   generateSecurePassword,
 } = require("./utils/emailService");
 
-dotenv.config();
+console.log(
+  "models/index keys:",
+  Object.keys(modelsModule || {})
+);
 
-const app = express();
-const PORT = process.env.PORT || 5000;
+console.log(
+  "typeof sequelize.define:",
+  typeof sequelize?.define
+);
+
+console.log(
+  "typeof Office.findAll:",
+  typeof Office?.findAll
+);
+
+console.log(
+  "typeof Division.findAll:",
+  typeof Division?.findAll
+);
 
 console.log("typeof cors:", typeof cors);
-console.log("typeof chatbotRoutes:", typeof chatbotRoutes);
+
+console.log(
+  "typeof chatbotRoutes:",
+  typeof chatbotRoutes
+);
 
 // ============================================================
 // MIDDLEWARE
@@ -140,9 +201,11 @@ app.use(
   })
 );
 
+
 app.use(express.json());
 
-// Mount chatbot only if Vercel loaded it correctly.
+// Mount chatbot only if the router loaded correctly.
+// A chatbot bundling issue must not crash the rest of the API.
 if (typeof chatbotRoutes === "function") {
   app.use("/api/chatbot", chatbotRoutes);
 
