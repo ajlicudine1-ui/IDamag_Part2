@@ -6,7 +6,8 @@
     },
     "backend": {
       "root": "backend/",
-      "entrypoint": "server.js"
+      "runtime": "container",
+      "entrypoint": "Dockerfile.vercel"
     }
   },
   "rewrites": [
