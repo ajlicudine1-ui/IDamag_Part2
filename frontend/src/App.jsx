@@ -35,7 +35,7 @@ import FeedbackManagement from "./pages/admin/FeedbackManagement";
  */
 const RAW_API_URL = (
   import.meta.env.VITE_API_URL ||
-  "https://i-damag-chatbot-61hx.vercel.app"
+  ""
 ).replace(/\/+$/, "");
 
 const API_URL = RAW_API_URL.endsWith("/api")

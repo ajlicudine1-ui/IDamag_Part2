@@ -1,6 +1,6 @@
 const API_URL = (
   import.meta.env.VITE_API_URL ||
-  "https://i-damag-chatbot-61hx.vercel.app/api"
+  "/api"
 ).replace(/\/$/, "");
 
 /**
