@@ -72,7 +72,6 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
-
 app.use(
   cors({
     origin(origin, callback) {
@@ -102,18 +101,18 @@ app.use(
 
 app.use(express.json());
 
-// Mount chatbot routes only when Vercel loaded the router correctly.
-// A chatbot bundling problem should not crash the whole backend.
+// Mount chatbot only if Vercel loaded it correctly.
 if (typeof chatbotRoutes === "function") {
   app.use("/api/chatbot", chatbotRoutes);
-  console.log("Chatbot routes loaded successfully.");
+
+  console.log(
+    "Chatbot routes loaded successfully."
+  );
 } else {
   console.warn(
     "Chatbot routes were not loaded. Other API routes will continue working."
   );
 }
-
-app.use("/api/chatbot", chatbotRoutes);
 
 // ============================================================
 // LOGGING HELPER
