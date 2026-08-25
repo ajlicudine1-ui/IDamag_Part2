@@ -2281,26 +2281,29 @@ const initializeDatabase =
 // LOCAL DEVELOPMENT
 // ============================================================
 
-if (!process.env.VERCEL) {
-  initializeDatabase()
-    .then(() => {
-      app.listen(
-        PORT,
-        "0.0.0.0",
-        () => {
-          console.log(
-            `Server running on http://localhost:${PORT}`
-          );
-        }
-      );
-    })
-    .catch(() => {
-      process.exit(1);
-    });
-}
+const startServer = async () => {
+  try {
+    await initializeDatabase();
 
-// ============================================================
-// VERCEL
-// ============================================================
+    app.listen(
+      PORT,
+      "0.0.0.0",
+      () => {
+        console.log(
+          `Server running on port ${PORT}`
+        );
+      }
+    );
+  } catch (error) {
+    console.error(
+      "Server startup failed:",
+      error
+    );
+
+    process.exit(1);
+  }
+};
+
+startServer();
 
 module.exports = app;
