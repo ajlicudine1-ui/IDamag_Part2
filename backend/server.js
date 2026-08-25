@@ -102,14 +102,14 @@ app.use(
 
 app.use(express.json());
 
-if (typeof chatbotRoutes !== "function") {
-  console.error(
-    "Invalid chatbot router:",
-    chatbotRoutes
-  );
-
-  throw new Error(
-    "chatbotRoutes did not resolve to an Express router"
+// Mount chatbot routes only when Vercel loaded the router correctly.
+// A chatbot bundling problem should not crash the whole backend.
+if (typeof chatbotRoutes === "function") {
+  app.use("/api/chatbot", chatbotRoutes);
+  console.log("Chatbot routes loaded successfully.");
+} else {
+  console.warn(
+    "Chatbot routes were not loaded. Other API routes will continue working."
   );
 }
 
