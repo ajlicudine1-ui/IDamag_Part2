@@ -7,10 +7,36 @@ const dotenv = require("dotenv");
 const bcrypt = require("bcryptjs");
 
 const chatbotRoutesModule = require("./chatbot/chatbotRoutes");
-const chatbotRoutes =
-  chatbotRoutesModule.default ||
-  chatbotRoutesModule.router ||
-  chatbotRoutesModule;
+
+function resolveRouter(moduleValue) {
+  let current = moduleValue;
+
+  for (let i = 0; i < 5; i++) {
+    if (typeof current === "function") {
+      return current;
+    }
+
+    if (current && typeof current.router === "function") {
+      return current.router;
+    }
+
+    if (current && current.default) {
+      current = current.default;
+      continue;
+    }
+
+    break;
+  }
+
+  return current;
+}
+
+const chatbotRoutes = resolveRouter(chatbotRoutesModule);
+
+console.log(
+  "chatbotRoutes module keys:",
+  Object.keys(chatbotRoutesModule || {})
+);
 
 const {
   sequelize,
@@ -46,6 +72,7 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
+
 app.use(
   cors({
     origin(origin, callback) {
@@ -74,6 +101,17 @@ app.use(
 );
 
 app.use(express.json());
+
+if (typeof chatbotRoutes !== "function") {
+  console.error(
+    "Invalid chatbot router:",
+    chatbotRoutes
+  );
+
+  throw new Error(
+    "chatbotRoutes did not resolve to an Express router"
+  );
+}
 
 app.use("/api/chatbot", chatbotRoutes);
 
