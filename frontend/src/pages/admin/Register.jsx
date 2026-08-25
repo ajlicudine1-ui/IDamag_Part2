@@ -963,16 +963,19 @@ function Register() {
             </label>
 
             <SearchableSelect
-                options={divisions}
-                value={formData.divisionId}
-                onChange={handleSelectChange('divisionId')}
-                disabled={!formData.officeId}
-                placeholder={
-                  formData.officeId
-                    ? "Select your Subcategory..."
-                    : "Select Category First"
-                }
-              />
+              options={offices}
+              value={
+                formData.officeId
+              }
+              onChange={
+                handleSelectChange(
+                  'officeId'
+                )
+              }
+              placeholder="
+                Select your Category...
+              "
+            />
 
           </div>
 
@@ -1001,21 +1004,16 @@ function Register() {
             </label>
 
             <SearchableSelect
-              options={divisions}
-              value={
-                formData.divisionId
-              }
-              onChange={
-                handleSelectChange(
-                  'divisionId'
-                )
-              }
-              placeholder={
-                formData.officeId
-                  ? "Select your Subcategory..."
-                  : "Select Category First"
-              }
-            />
+            options={divisions}
+            value={formData.divisionId}
+            onChange={handleSelectChange('divisionId')}
+            disabled={!formData.officeId}
+            placeholder={
+              formData.officeId
+                ? "Select your Subcategory..."
+                : "Select Category First"
+            }
+          />
 
           </div>
 
