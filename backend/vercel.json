@@ -3,7 +3,17 @@
   "builds": [
     {
       "src": "server.js",
-      "use": "@vercel/node"
+      "use": "@vercel/node",
+      "config": {
+        "includeFiles": [
+          "node_modules/pg/**",
+          "node_modules/pg-pool/**",
+          "node_modules/pg-protocol/**",
+          "node_modules/pg-types/**",
+          "node_modules/pgpass/**",
+          "node_modules/pg-hstore/**"
+        ]
+      }
     }
   ],
   "routes": [
