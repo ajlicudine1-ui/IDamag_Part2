@@ -38,17 +38,58 @@ console.log(
   Object.keys(chatbotRoutesModule || {})
 );
 
-const {
-  sequelize,
-  Office,
-  Division,
-  Report,
-  DashboardWorksheet,
-  User,
-  ActivityLog,
-  DashboardFeedback,
-  WebsiteFeedback,
-} = require("./models/index");
+// ============================================================
+// DATABASE MODELS
+// Vercel-safe loading
+// ============================================================
+
+const modelsModule = require("./models/index");
+
+const sequelize =
+  modelsModule.sequelize ||
+  require("./config/database");
+
+const Office =
+  modelsModule.Office ||
+  require("./models/Office");
+
+const Division =
+  modelsModule.Division ||
+  require("./models/Division");
+
+const Report =
+  modelsModule.Report ||
+  require("./models/Report");
+
+const DashboardWorksheet =
+  modelsModule.DashboardWorksheet ||
+  require("./models/DashboardWorksheet");
+
+const User =
+  modelsModule.User ||
+  require("./models/User");
+
+const ActivityLog =
+  modelsModule.ActivityLog ||
+  require("./models/ActivityLog");
+
+const DashboardFeedback =
+  modelsModule.DashboardFeedback ||
+  require("./models/DashboardFeedback");
+
+const WebsiteFeedback =
+  modelsModule.WebsiteFeedback ||
+  require("./models/WebsiteFeedback");
+
+console.log(
+  "models/index keys:",
+  Object.keys(modelsModule || {})
+);
+
+console.log("typeof Office:", typeof Office);
+console.log("typeof Division:", typeof Division);
+console.log("typeof Report:", typeof Report);
+console.log("typeof User:", typeof User);
 
 const {
   sendWelcomeEmail,
