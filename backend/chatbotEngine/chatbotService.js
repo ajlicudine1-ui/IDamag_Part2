@@ -1449,31 +1449,25 @@ function enforceExplicitQuestionColumn({
     return plan;
   }
 
-  /**
-   * IMPORTANT RANKING SAFETY RULE
-   * -----------------------------
-   *
-   * Ranking questions can explicitly mention BOTH:
-   * a label/entity field and a numeric metric field.
-   *
-   * normalizePlannerPlan() already separates them into:
-   *
-   *   labelColumn = entity/label field
-   *   column      = numeric ranking metric
-   *
-   * The single-column safeguard below must not run after that,
-   * because it can overwrite the metric with the label field.
-   *
-   * This rule is dataset-agnostic.
-   */
   const normalizedOperation =
     String(plan.operation || "")
       .trim()
       .toLowerCase();
 
+  /**
+   * Ranking and grouped calculation plans already have
+   * their metric and grouping columns resolved.
+   *
+   * Do not let the single-column safeguard overwrite them.
+   */
   if (
     normalizedOperation === "rank_rows" ||
-    normalizedOperation === "rank_groups"
+    normalizedOperation === "rank_groups" ||
+    normalizedOperation === "group_sum" ||
+    normalizedOperation === "group_average" ||
+    normalizedOperation === "group_minimum" ||
+    normalizedOperation === "group_maximum" ||
+    normalizedOperation === "group_count"
   ) {
     return plan;
   }
