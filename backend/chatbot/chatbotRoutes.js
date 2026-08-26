@@ -711,6 +711,22 @@ router.get(
 // }
 // ============================================================
 
+router.post("/chat-test", async (req, res) => {
+  try {
+    return res.json({
+      success: true,
+      body: req.body,
+      groqKeyExists: Boolean(process.env.GROQ_API_KEY),
+      groqModel: process.env.GROQ_MODEL || null
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
 router.post("/chat", async (req, res) => {
 
   console.log(
