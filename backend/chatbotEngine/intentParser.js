@@ -694,215 +694,382 @@ function detectRequestedOutputColumns(
 }
 
 
+
+function isNumericLikeSchemaColumn(
+  column
+) {
+  if (!column) {
+    return false;
+  }
+
+  if (column.type === "number") {
+    return true;
+  }
+
+  const examples =
+    Array.isArray(column.examples)
+      ? column.examples
+      : [];
+
+  if (!examples.length) {
+    return false;
+  }
+
+  let usable = 0;
+  let numeric = 0;
+
+  for (const value of examples) {
+    if (
+      value === null ||
+      value === undefined ||
+      String(value).trim() === ""
+    ) {
+      continue;
+    }
+
+    usable += 1;
+
+    const cleaned =
+      String(value)
+        .trim()
+        .replace(/[,₱$€£¥%]/g, "")
+        .replace(/\s+/g, "");
+
+    if (
+      cleaned !== "" &&
+      Number.isFinite(
+        Number(cleaned)
+      )
+    ) {
+      numeric += 1;
+    }
+  }
+
+  return (
+    usable > 0 &&
+    numeric / usable >= 0.6
+  );
+}
+
+
 function extractRankingRequest(
   question,
   schema,
   datasetName
 ) {
-  const text = normalizeText(question);
+  const text =
+    normalizeText(question);
 
   const hasDescendingMetric =
-    /\b(highest|largest|biggest|greatest|most)\b/.test(text);
+    /\b(highest|largest|biggest|greatest|most|maximum|max|top)\b/.test(
+      text
+    );
+
   const hasAscendingMetric =
-    /\b(lowest|smallest|least)\b/.test(text);
+    /\b(lowest|smallest|least|minimum|min|bottom)\b/.test(
+      text
+    );
 
   const direction =
     hasAscendingMetric
       ? "asc"
       : hasDescendingMetric
         ? "desc"
-        : /\b(bottom|last)\b/.test(text)
-          ? "asc"
-          : /\b(top|first)\b/.test(text)
-            ? "desc"
-            : null;
+        : null;
 
   if (!direction) {
     return null;
   }
 
-  const explicitTopN =
-    /\b(?:top|bottom|first|last)\s+\d{1,3}\b/.test(
-      text
+  const explicitN =
+    text.match(
+      /\b(?:top|bottom|first|last)\s+(\d{1,3})\b/
+    ) ||
+    text.match(
+      /\b(\d{1,3})\s+(?:highest|lowest|largest|smallest)\b/
     );
 
-  const limit = detectLimit(
-    question,
-    explicitTopN ? 10 : 1
-  );
+  const limit =
+    explicitN?.[1]
+      ? Math.min(
+          Math.max(
+            Number(explicitN[1]),
+            1
+          ),
+          100
+        )
+      : 1;
 
   let labelTarget = null;
   let metricTarget = null;
   let aggregation = null;
 
   /**
-   * Generic identity-ranking language.
+   * WHO has the highest/lowest METRIC ...
    *
-   * Examples:
-   * - "who has the highest actual salary in PMED division"
-   * - "which municipality has the highest production"
-   * - "what position title has the highest actual salary"
-   *
-   * "who" intentionally maps to a semantic identity target rather
-   * than a hardcoded schema column. rankColumns() will choose from
-   * the CURRENT worksheet schema.
+   * "who" is semantic identity language. The actual label
+   * field is inferred dynamically from the current schema.
    */
   let match = text.match(
-    /\bwho\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least)\s+(.+?)(?:\s+\b(?:in|within|among|for)\b\s+.+)?$/
+    /\bwho\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\s+(.+?)(?:\s+\b(?:in|within|among|for)\b\s+.+)?$/
   );
 
   if (match?.[1]) {
-    labelTarget = "person name employee";
-    metricTarget = normalizeTarget(match[1]);
+    labelTarget =
+      "person name employee";
+
+    metricTarget =
+      normalizeTarget(
+        match[1]
+      );
   }
 
-  if (!labelTarget || !metricTarget) {
+  /**
+   * WHICH/WHAT ENTITY has the highest/lowest METRIC ...
+   *
+   * Examples:
+   * - which municipality has the highest production
+   * - what position title has the highest actual salary
+   */
+  if (
+    !labelTarget ||
+    !metricTarget
+  ) {
     match = text.match(
-      /\b(?:which|what)\s+(.+?)\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least)\s+(.+?)(?:\s+\b(?:in|within|among|for)\b\s+.+)?$/
+      /\b(?:which|what)\s+(.+?)\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\s+(.+?)(?:\s+\b(?:in|within|among|for)\b\s+.+)?$/
     );
 
-    if (match?.[1] && match?.[2]) {
-      labelTarget = normalizeTarget(match[1]);
-      metricTarget = normalizeTarget(match[2]);
+    if (
+      match?.[1] &&
+      match?.[2]
+    ) {
+      labelTarget =
+        normalizeTarget(
+          match[1]
+        );
+
+      metricTarget =
+        normalizeTarget(
+          match[2]
+        );
     }
   }
 
-  // Examples:
-  // top 10 farmers by area
-  // bottom 5 municipalities by production
-  if (!labelTarget || !metricTarget) {
+  /**
+   * top/bottom N LABEL by METRIC
+   */
+  if (
+    !labelTarget ||
+    !metricTarget
+  ) {
     match = text.match(
       /\b(?:top|bottom|first|last)\s+\d{1,3}\s+(.+?)\s+(?:by|based on|according to)\s+(.+)$/
     );
+
+    if (match) {
+      labelTarget =
+        normalizeTarget(
+          match[1]
+        );
+
+      metricTarget =
+        normalizeTarget(
+          match[2]
+        );
+    }
+  }
+
+  /**
+   * LABEL with highest/lowest METRIC
+   */
+  if (
+    !labelTarget ||
+    !metricTarget
+  ) {
+    match = text.match(
+      /\b(?:top|bottom|first|last)?\s*(?:\d{1,3})?\s*(.+?)\s+(?:with|having)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\s+(.+)$/
+    );
+
+    if (match) {
+      labelTarget =
+        normalizeTarget(
+          match[1]
+        );
+
+      metricTarget =
+        normalizeTarget(
+          match[2]
+        );
+    }
+  }
+
+  /**
+   * highest/lowest METRIC for/among LABEL
+   */
+  if (
+    !labelTarget ||
+    !metricTarget
+  ) {
+    match = text.match(
+      /\b(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\s+(.+?)\s+(?:for|among)\s+(.+)$/
+    );
+
+    if (match) {
+      metricTarget =
+        normalizeTarget(
+          match[1]
+        );
+
+      labelTarget =
+        normalizeTarget(
+          match[2]
+        );
+    }
   }
 
   if (
-    (!labelTarget || !metricTarget) &&
-    match
+    !labelTarget ||
+    !metricTarget
   ) {
-    labelTarget = normalizeTarget(match[1]);
-    metricTarget = normalizeTarget(match[2]);
-  }
-
-  // Examples:
-  // top 5 farmers with the biggest area
-  // 10 farmers with highest expected yield
-  if (!match) {
-    match = text.match(
-      /\b(?:top|bottom|first|last)?\s*(?:\d{1,3})?\s*(.+?)\s+(?:with|having)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least)\s+(.+)$/
-    );
-
-    if (match) {
-      labelTarget = normalizeTarget(match[1]);
-      metricTarget = normalizeTarget(match[2]);
-    }
-  }
-
-  // Examples:
-  // highest area farmers
-  // lowest yield municipalities
-  if (!labelTarget || !metricTarget) {
-    match = text.match(
-      /\b(?:highest|lowest|largest|smallest|biggest|greatest|most|least)\s+(.+?)\s+(?:for|among)\s+(.+)$/
-    );
-
-    if (match) {
-      metricTarget = normalizeTarget(match[1]);
-      labelTarget = normalizeTarget(match[2]);
-    }
-  }
-
-  if (!labelTarget || !metricTarget) {
     return null;
   }
 
-  // If the metric explicitly asks for an aggregate, preserve that intent.
-  if (/\b(total|sum|combined|overall)\b/.test(metricTarget)) {
+  if (
+    /\b(total|sum|combined|overall)\b/.test(
+      metricTarget
+    )
+  ) {
     aggregation = "sum";
-  } else if (/\b(average|avg|mean)\b/.test(metricTarget)) {
+  } else if (
+    /\b(average|avg|mean)\b/.test(
+      metricTarget
+    )
+  ) {
     aggregation = "average";
-  } else if (/\b(count|number)\b/.test(metricTarget)) {
+  } else if (
+    /\b(count|number)\b/.test(
+      metricTarget
+    )
+  ) {
     aggregation = "count";
   }
 
-  metricTarget = metricTarget
-    .replace(/\b(total|sum|combined|overall|average|avg|mean|count|number)\b/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  metricTarget =
+    metricTarget
+      .replace(
+        /\b(total|sum|combined|overall|average|avg|mean|count|number)\b/g,
+        ""
+      )
+      .replace(/\s+/g, " ")
+      .trim();
 
   const asksWho =
     /\bwho\b/.test(text);
 
-  const labelCandidates = rankColumns(
-    labelTarget,
-    schema,
-    datasetName
-  )
-    .filter((item) => item.type !== "number")
-    .map((item) => {
-      let score = item.score;
-
-      if (asksWho) {
-        const name =
-          normalizeText(item.name);
-
-        const examples =
-          Array.isArray(item.examples)
-            ? item.examples
-            : [];
-
-        if (
-          /\b(full name|name|first name|last name|surname|employee|staff|person|respondent|beneficiary|owner|operator|applicant|client|customer|student|teacher|member)\b/.test(
-            name
+  const labelCandidates =
+    rankColumns(
+      labelTarget,
+      schema,
+      datasetName
+    )
+      .filter(
+        (item) =>
+          !isNumericLikeSchemaColumn(
+            item
           )
-        ) {
-          score += 1.25;
+      )
+      .map((item) => {
+        let score =
+          item.score;
+
+        if (asksWho) {
+          const normalizedName =
+            normalizeText(
+              item.name
+            );
+
+          if (
+            /\b(full name|name|first name|last name|surname|employee|staff|person|respondent|beneficiary|owner|operator|applicant|client|customer|student|teacher|member)\b/.test(
+              normalizedName
+            )
+          ) {
+            score += 1.2;
+          }
+
+          const examples =
+            Array.isArray(
+              item.examples
+            )
+              ? item.examples
+              : [];
+
+          if (
+            examples.some(
+              (value) =>
+                /^[\p{L}.'-]+(?:\s+[\p{L}.'-]+)+$/u.test(
+                  String(
+                    value
+                  ).trim()
+                )
+            )
+          ) {
+            score += 0.3;
+          }
         }
 
-        if (
-          examples.some(
-            (value) =>
-              /^[\p{L}.'-]+(?:\s+[\p{L}.'-]+)+$/u.test(
-                String(value).trim()
-              )
+        return {
+          ...item,
+          score,
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.score - a.score
+      );
+
+  const metricCandidates =
+    rankColumns(
+      metricTarget,
+      schema,
+      datasetName
+    )
+      .filter(
+        (item) =>
+          isNumericLikeSchemaColumn(
+            item
           )
-        ) {
-          score += 0.35;
-        }
-      }
-
-      return {
-        ...item,
-        score,
-      };
-    })
-    .sort((a, b) => b.score - a.score);
-
-  const metricCandidates = rankColumns(
-    metricTarget,
-    schema,
-    datasetName
-  )
-    .filter((item) => item.type === "number")
-    .sort((a, b) => b.score - a.score);
+      )
+      .sort(
+        (a, b) =>
+          b.score - a.score
+      );
 
   const labelColumn =
-    labelCandidates[0]?.score >= 0.75
+    labelCandidates[0]?.score >=
+    0.55
       ? labelCandidates[0]
       : null;
 
   const metricColumn =
-    metricCandidates[0]?.score >= 0.75
+    metricCandidates[0]?.score >=
+    0.55
       ? metricCandidates[0]
       : null;
 
-  if (!labelColumn || !metricColumn) {
+  if (
+    !labelColumn ||
+    !metricColumn
+  ) {
     return null;
   }
 
   return {
-    labelColumn: labelColumn.name,
-    metricColumn: metricColumn.name,
+    labelColumn:
+      labelColumn.name,
+
+    metricColumn:
+      metricColumn.name,
+
     direction,
     limit,
     aggregation,

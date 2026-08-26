@@ -1079,16 +1079,17 @@ RULES
 11. Requested fields may live in different worksheets. Preserve them;
     JavaScript handles cross-worksheet resolution. Do not invent a join.
 12. For rankings use rank_rows/rank_groups with direction and limit.
-    If the user asks WHO/WHICH/WHAT entity has the highest/lowest metric,
-    the plan MUST include BOTH:
-    - the numeric metric in "column"
-    - the identifying/entity field in "labelColumn"
-    and include both in selectColumns. Do not return a plain lookup for
-    this kind of question. For singular highest/lowest use limit=1 unless
-    the user explicitly asks for top/bottom N.
-    Examples of identity wording are generic: who, which municipality,
-    which project, which program, which commodity, which position title.
-    Choose the identity column only from the CURRENT SCHEMA.
+    IMPORTANT: distinguish the ENTITY/LABEL from the NUMERIC METRIC.
+    Example: "What position title has the highest actual salary?"
+    - labelColumn = POSITION TITLE
+    - column = ACTUAL SALARY
+    - selectColumns includes POSITION TITLE and ACTUAL SALARY
+    - operation = rank_rows
+    - direction = desc
+    - limit = 1
+    Never rank a text identity column by itself when the question names a
+    different numeric metric. For "who has the highest/lowest X", infer an
+    identity/name field only from the CURRENT SCHEMA and rank by X.
 13. For follow-ups, inherit only missing pieces from CONVERSATION CONTEXT.
     Current explicit field/entity wording overrides old context.
 14. If genuinely ambiguous, return route "clarify".

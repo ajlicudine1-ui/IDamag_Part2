@@ -265,7 +265,7 @@ function splitExplicitEntitySegments(
 }
 
 
-function detectRankingDirectionFromQuestion(
+function detectRankingDirection(
   question
 ) {
   const text =
@@ -291,7 +291,7 @@ function detectRankingDirectionFromQuestion(
 }
 
 
-function detectRankingLimitFromQuestion(
+function detectRankingLimit(
   question
 ) {
   const text =
@@ -307,11 +307,18 @@ function detectRankingLimitFromQuestion(
 
   if (match?.[1]) {
     const value =
-      Number(match[1]);
+      Number(
+        match[1]
+      );
 
-    if (Number.isInteger(value)) {
+    if (
+      Number.isInteger(value)
+    ) {
       return Math.min(
-        Math.max(value, 1),
+        Math.max(
+          value,
+          1
+        ),
         100
       );
     }
@@ -321,273 +328,227 @@ function detectRankingLimitFromQuestion(
 }
 
 
-function getDatasetSchemaEntry(
-  schema,
-  datasetName
+function looksNumericValue(
+  value
 ) {
+  if (
+    value === null ||
+    value === undefined ||
+    String(value).trim() === ""
+  ) {
+    return false;
+  }
+
+  const cleaned =
+    String(value)
+      .trim()
+      .replace(
+        /[,₱$€£¥%]/g,
+        ""
+      )
+      .replace(/\s+/g, "");
+
   return (
-    (schema || []).find(
-      (item) =>
-        String(item?.name || "") ===
-        String(datasetName || "")
-    ) ||
-    null
+    cleaned !== "" &&
+    Number.isFinite(
+      Number(cleaned)
+    )
   );
 }
 
 
-function inferRankingMetricColumn({
-  schema,
-  plan,
-  question,
+function isNumericLikeColumn({
+  column,
+  rows,
 }) {
-  const dataset =
-    getDatasetSchemaEntry(
-      schema,
-      plan?.dataset
-    );
-
-  if (!dataset) {
-    return null;
+  if (!column) {
+    return false;
   }
 
-  const columns =
-    Array.isArray(dataset.columns)
-      ? dataset.columns
+  if (
+    column.type === "number"
+  ) {
+    return true;
+  }
+
+  const examples =
+    Array.isArray(
+      column.examples
+    )
+      ? column.examples
       : [];
 
-  const byName =
-    new Map(
-      columns.map(
-        (column) => [
-          String(column?.name || ""),
-          column,
-        ]
-      )
-    );
-
-  const candidates = [
-    plan?.column,
-    ...(Array.isArray(plan?.selectColumns)
-      ? plan.selectColumns
+  const samples = [
+    ...examples,
+    ...(Array.isArray(rows)
+      ? rows
+          .slice(0, 40)
+          .map(
+            (row) =>
+              row?.[
+                column.name
+              ]
+          )
       : []),
-  ].filter(Boolean);
+  ];
 
-  for (const name of candidates) {
-    const column =
-      byName.get(String(name));
+  let usable = 0;
+  let numeric = 0;
+
+  for (
+    const value of samples
+  ) {
+    if (
+      value === null ||
+      value === undefined ||
+      String(value).trim() === ""
+    ) {
+      continue;
+    }
+
+    usable += 1;
 
     if (
-      column &&
-      column.type === "number"
+      looksNumericValue(
+        value
+      )
     ) {
-      return column.name;
+      numeric += 1;
     }
   }
 
-  const explicit =
-    findExplicitSchemaColumns({
-      schema,
-      question,
-      preferredDataset:
-        plan?.dataset || null,
-    });
+  return (
+    usable > 0 &&
+    numeric / usable >= 0.6
+  );
+}
 
-  for (const match of explicit) {
-    const column =
-      byName.get(
-        String(match.column)
-      );
 
-    if (
-      column &&
-      column.type === "number"
-    ) {
-      return column.name;
-    }
+function parseRankingTargets(
+  question
+) {
+  const text =
+    normalizeText(question);
+
+  let match =
+    text.match(
+      /\bwho\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\s+(.+?)(?:\s+\b(?:in|within|among|for)\b\s+.+)?$/
+    );
+
+  if (match?.[1]) {
+    return {
+      asksWho: true,
+      labelTarget:
+        "person name employee",
+      metricTarget:
+        normalizeText(
+          match[1]
+        ),
+    };
+  }
+
+  match =
+    text.match(
+      /\b(?:which|what)\s+(.+?)\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\s+(.+?)(?:\s+\b(?:in|within|among|for)\b\s+.+)?$/
+    );
+
+  if (
+    match?.[1] &&
+    match?.[2]
+  ) {
+    return {
+      asksWho: false,
+      labelTarget:
+        normalizeText(
+          match[1]
+        ),
+      metricTarget:
+        normalizeText(
+          match[2]
+        ),
+    };
   }
 
   return null;
 }
 
 
-function inferRankingLabelColumns({
-  schema,
-  plan,
-  question,
-  metricColumn,
-}) {
-  const dataset =
-    getDatasetSchemaEntry(
-      schema,
-      plan?.dataset
+function scoreTargetToColumn(
+  target,
+  columnName
+) {
+  const left =
+    normalizeText(
+      target
     );
 
-  if (!dataset) {
-    return [];
+  const right =
+    normalizeText(
+      columnName
+    );
+
+  if (
+    !left ||
+    !right
+  ) {
+    return 0;
   }
 
-  const text =
-    normalizeText(question);
+  if (left === right) {
+    return 3;
+  }
 
-  const filterColumns =
+  let score =
+    similarity(
+      left,
+      right
+    );
+
+  if (
+    left.includes(
+      right
+    ) ||
+    right.includes(
+      left
+    )
+  ) {
+    score += 1;
+  }
+
+  const leftTokens =
     new Set(
-      (plan?.filters || [])
-        .map(
-          (filter) =>
-            String(
-              filter?.column || ""
-            )
-        )
+      left
+        .split(/\s+/)
         .filter(Boolean)
     );
 
-  const columns =
-    (dataset.columns || [])
-      .filter(
-        (column) =>
-          column?.name &&
-          column.type !== "number" &&
-          column.name !== metricColumn &&
-          !filterColumns.has(
-            column.name
-          )
-      );
-
-  let target = "";
-
-  const whichMatch =
-    text.match(
-      /\b(?:which|what)\s+(.+?)\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\b/
-    );
-
-  if (whichMatch?.[1]) {
-    target =
-      normalizeText(
-        whichMatch[1]
-      );
-  } else if (/\bwho\b/.test(text)) {
-    target =
-      "person name employee";
-  }
-
-  const scored =
-    columns.map((column, index) => {
-      const name =
-        normalizeText(column.name);
-
-      let score =
-        target
-          ? similarity(
-              target,
-              name
-            )
-          : 0;
-
-      if (
-        target &&
-        (
-          target.includes(name) ||
-          name.includes(target)
-        )
-      ) {
-        score += 0.8;
-      }
-
-      if (/\bwho\b/.test(text)) {
-        if (
-          /\b(full name|name|first name|last name|surname|employee|staff|person|respondent|beneficiary|owner|operator|applicant|client|customer|student|teacher|member)\b/.test(
-            name
-          )
-        ) {
-          score += 1.25;
-        }
-
-        const examples =
-          Array.isArray(
-            column.examples
-          )
-            ? column.examples
-            : [];
-
-        if (
-          examples.some(
-            (value) =>
-              /^[\p{L}.'-]+(?:\s+[\p{L}.'-]+)+$/u.test(
-                String(value).trim()
-              )
-          )
-        ) {
-          score += 0.35;
-        }
-      }
-
-      return {
-        name: column.name,
-        score,
-        index,
-      };
-    })
-    .sort(
-      (a, b) =>
-        b.score - a.score ||
-        a.index - b.index
-    );
-
-  if (!scored.length) {
-    return [];
-  }
-
-  const best =
-    scored[0];
+  const rightTokens =
+    right
+      .split(/\s+/)
+      .filter(Boolean);
 
   if (
-    target &&
-    best.score < 0.55
+    rightTokens.length
   ) {
-    return [];
+    const overlap =
+      rightTokens.filter(
+        (token) =>
+          leftTokens.has(
+            token
+          )
+      ).length;
+
+    score +=
+      overlap /
+      rightTokens.length;
   }
 
-  const selected = [
-    best.name,
-  ];
-
-  /**
-   * If "who" maps to split identity fields such as FIRST NAME
-   * and LAST NAME, preserve closely related identity columns too.
-   * This remains schema-driven; nothing is hardcoded to one dashboard.
-   */
-  if (/\bwho\b/.test(text)) {
-    for (const item of scored.slice(1)) {
-      const normalized =
-        normalizeText(item.name);
-
-      if (
-        /\b(first name|last name|surname|middle name|middle initial|full name|name)\b/.test(
-          normalized
-        ) &&
-        !selected.includes(
-          item.name
-        )
-      ) {
-        selected.push(
-          item.name
-        );
-      }
-
-      if (
-        selected.length >= 3
-      ) {
-        break;
-      }
-    }
-  }
-
-  return selected;
+  return score;
 }
 
 
-function repairRankingPlan({
+function repairRankingIdentityPlan({
+  datasets,
   schema,
   plan,
   question,
@@ -600,103 +561,235 @@ function repairRankingPlan({
   }
 
   const direction =
-    detectRankingDirectionFromQuestion(
+    detectRankingDirection(
       question
     );
 
-  const asksIdentity =
-    /\bwho\b/.test(
-      normalizeText(question)
-    ) ||
-    /\b(?:which|what)\s+.+?\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\b/.test(
-      normalizeText(question)
+  const targets =
+    parseRankingTargets(
+      question
     );
 
   if (
     !direction ||
-    !asksIdentity
+    !targets
   ) {
     return plan;
   }
 
-  const metricColumn =
-    inferRankingMetricColumn({
-      schema,
-      plan,
-      question,
-    });
+  const datasetSchema =
+    (schema || []).find(
+      (item) =>
+        String(
+          item?.name || ""
+        ) ===
+        String(
+          plan.dataset || ""
+        )
+    );
 
-  if (!metricColumn) {
+  const rows =
+    datasets?.[
+      plan.dataset
+    ];
+
+  if (
+    !datasetSchema ||
+    !Array.isArray(rows)
+  ) {
     return plan;
   }
 
-  const labelColumns =
-    inferRankingLabelColumns({
-      schema,
-      plan,
-      question,
-      metricColumn,
-    });
-
-  if (!labelColumns.length) {
-    return plan;
-  }
-
-  const existingSelect =
+  const columns =
     Array.isArray(
-      plan.selectColumns
+      datasetSchema.columns
     )
-      ? plan.selectColumns
+      ? datasetSchema.columns
       : [];
 
-  const selectColumns =
-    [
-      ...labelColumns,
-      metricColumn,
-      ...existingSelect.filter(
+  const numericCandidates =
+    columns
+      .filter(
         (column) =>
-          column !== metricColumn &&
-          !labelColumns.includes(
-            column
-          )
-      ),
-    ].filter(
-      (value, index, array) =>
-        value &&
-        array.indexOf(value) ===
-          index
-    );
+          isNumericLikeColumn({
+            column,
+            rows,
+          })
+      )
+      .map(
+        (column) => ({
+          column,
+          score:
+            scoreTargetToColumn(
+              targets.metricTarget,
+              column.name
+            ),
+        })
+      )
+      .sort(
+        (a, b) =>
+          b.score - a.score
+      );
+
+  const metric =
+    numericCandidates[0];
+
+  if (
+    !metric ||
+    metric.score < 0.55
+  ) {
+    return plan;
+  }
+
+  const textCandidates =
+    columns
+      .filter(
+        (column) =>
+          column?.name &&
+          column.name !==
+            metric.column.name &&
+          !isNumericLikeColumn({
+            column,
+            rows,
+          })
+      )
+      .map((column, index) => {
+        let score =
+          scoreTargetToColumn(
+            targets.labelTarget,
+            column.name
+          );
+
+        const normalizedName =
+          normalizeText(
+            column.name
+          );
+
+        if (targets.asksWho) {
+          if (
+            /\b(full name|name|first name|last name|surname|employee|staff|person|respondent|beneficiary|owner|operator|applicant|client|customer|student|teacher|member)\b/.test(
+              normalizedName
+            )
+          ) {
+            score += 1.2;
+          }
+
+          const values =
+            rows
+              .slice(0, 40)
+              .map(
+                (row) =>
+                  row?.[
+                    column.name
+                  ]
+              )
+              .filter(
+                (value) =>
+                  value !== null &&
+                  value !== undefined &&
+                  String(value).trim() !== ""
+              );
+
+          if (
+            values.length &&
+            values.some(
+              (value) =>
+                /^[\p{L}.'-]+(?:\s+[\p{L}.'-]+)+$/u.test(
+                  String(value).trim()
+                )
+            )
+          ) {
+            score += 0.3;
+          }
+        }
+
+        return {
+          column,
+          score,
+          index,
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.score -
+            a.score ||
+          a.index -
+            b.index
+      );
+
+  const label =
+    textCandidates[0];
+
+  if (
+    !label ||
+    label.score < 0.55
+  ) {
+    return plan;
+  }
+
+  const identityColumns = [
+    label.column.name,
+  ];
+
+  /**
+   * For "who", keep closely related name components when the
+   * schema stores identity across multiple fields.
+   */
+  if (targets.asksWho) {
+    for (
+      const candidate of
+      textCandidates.slice(1)
+    ) {
+      const name =
+        normalizeText(
+          candidate.column.name
+        );
+
+      if (
+        /\b(first name|last name|surname|middle name|middle initial|full name|name)\b/.test(
+          name
+        ) &&
+        !identityColumns.includes(
+          candidate.column.name
+        )
+      ) {
+        identityColumns.push(
+          candidate.column.name
+        );
+      }
+
+      if (
+        identityColumns.length >= 3
+      ) {
+        break;
+      }
+    }
+  }
+
+  const selectColumns = [
+    ...identityColumns,
+    metric.column.name,
+  ];
 
   return {
     ...plan,
 
     operation:
-      String(plan.operation || "")
-        .toLowerCase() ===
-        "rank_groups"
-        ? "rank_groups"
-        : "rank_rows",
+      "rank_rows",
 
     column:
-      metricColumn,
+      metric.column.name,
 
     labelColumn:
-      labelColumns[0],
+      identityColumns[0],
 
     groupBy:
-      String(plan.operation || "")
-        .toLowerCase() ===
-        "rank_groups"
-        ? (
-            plan.groupBy ||
-            labelColumns[0]
-          )
-        : null,
+      null,
 
     direction,
 
     limit:
-      detectRankingLimitFromQuestion(
+      detectRankingLimit(
         question
       ),
 
@@ -769,8 +862,20 @@ function normalizePlannerPlan({
         null,
     });
 
+  const rankingDirection =
+    detectRankingDirection(
+      question
+    );
+
+  /**
+   * Multiple explicitly named output columns normally mean a
+   * multi-field lookup. Do NOT apply that rule to ranking
+   * questions, where one field is often the identity/label and
+   * another is the numeric ranking metric.
+   */
   if (
-    explicitColumns.length >= 2
+    explicitColumns.length >= 2 &&
+    !rankingDirection
   ) {
     normalized.operation =
       "lookup";
@@ -901,7 +1006,8 @@ function normalizePlannerPlan({
         );
   }
 
-  return repairRankingPlan({
+  return repairRankingIdentityPlan({
+    datasets,
     schema,
     plan:
       normalized,
