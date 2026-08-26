@@ -38,6 +38,257 @@ function normalizeValue(value) {
 }
 
 /**
+ * Determine whether a column is likely to contain a PERSON name.
+ *
+ * This is intentionally conservative so fields such as
+ * "Project Name" or "Office Name" are NOT treated as person names.
+ */
+function isLikelyPersonColumn(column) {
+  const normalized =
+    normalizeValue(column);
+
+  if (!normalized) {
+    return false;
+  }
+
+  if (
+    normalized === "name" ||
+    normalized === "full name" ||
+    normalized === "fullname" ||
+    normalized === "first name" ||
+    normalized === "given name" ||
+    normalized === "middle name" ||
+    normalized === "last name" ||
+    normalized === "surname"
+  ) {
+    return true;
+  }
+
+  return /^(employee|personnel|staff|respondent|beneficiary|farmer|fisherfolk|client|recipient|owner|proponent)( full)? name$/.test(
+    normalized
+  );
+}
+
+/**
+ * Greedily match requested name tokens to distinct actual-name tokens.
+ *
+ * This keeps name order flexible:
+ * "Doris Joy Garcia" can match "GARCIA, DORIS JOY".
+ *
+ * It also tolerates small spelling differences:
+ * "Roberto Peralez" can match "PERALES, ROBERTO TAN".
+ */
+function getPersonTokenMatch(
+  requestedValue,
+  actualValue
+) {
+  const requestedTokens =
+    normalizeValue(requestedValue)
+      .split(/\s+/)
+      .filter(Boolean);
+
+  const actualTokens =
+    normalizeValue(actualValue)
+      .split(/\s+/)
+      .filter(Boolean);
+
+  if (
+    !requestedTokens.length ||
+    !actualTokens.length
+  ) {
+    return {
+      requestedTokens,
+      actualTokens,
+      matchedScores: [],
+      strongMatches: 0,
+      exactMatches: 0,
+      averageScore: 0,
+    };
+  }
+
+  const unusedActualIndexes =
+    new Set(
+      actualTokens.map(
+        (_, index) => index
+      )
+    );
+
+  const matchedScores = [];
+  let exactMatches = 0;
+
+  for (
+    const requestedToken of
+    requestedTokens
+  ) {
+    let bestIndex = null;
+    let bestScore = 0;
+
+    for (
+      const index of
+      unusedActualIndexes
+    ) {
+      const actualToken =
+        actualTokens[index];
+
+      const score =
+        requestedToken === actualToken
+          ? 1
+          : similarity(
+              requestedToken,
+              actualToken
+            );
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = index;
+      }
+    }
+
+    if (bestIndex !== null) {
+      unusedActualIndexes.delete(
+        bestIndex
+      );
+
+      matchedScores.push(
+        bestScore
+      );
+
+      if (bestScore === 1) {
+        exactMatches += 1;
+      }
+    } else {
+      matchedScores.push(0);
+    }
+  }
+
+  const strongMatches =
+    matchedScores.filter(
+      (score) => score >= 0.82
+    ).length;
+
+  const averageScore =
+    matchedScores.reduce(
+      (total, score) =>
+        total + score,
+      0
+    ) /
+    Math.max(
+      1,
+      requestedTokens.length
+    );
+
+  return {
+    requestedTokens,
+    actualTokens,
+    matchedScores,
+    strongMatches,
+    exactMatches,
+    averageScore,
+  };
+}
+
+/**
+ * Strict person-name score.
+ *
+ * Most importantly, a multi-word requested person cannot resolve
+ * from only ONE shared token. This prevents:
+ *
+ * "Doris Joy Garcia"
+ * from accidentally resolving to another person containing "Joy".
+ */
+function scorePersonNameMatch(
+  requestedValue,
+  actualValue
+) {
+  const requested =
+    normalizeValue(
+      requestedValue
+    );
+
+  const actual =
+    normalizeValue(
+      actualValue
+    );
+
+  if (!requested || !actual) {
+    return 0;
+  }
+
+  if (requested === actual) {
+    return 6;
+  }
+
+  const match =
+    getPersonTokenMatch(
+      requestedValue,
+      actualValue
+    );
+
+  const requestedCount =
+    match.requestedTokens.length;
+
+  /**
+   * Single-token person searches still support a typo, but a
+   * partial token does not receive the old containment bonus.
+   */
+  if (requestedCount === 1) {
+    const best =
+      match.matchedScores[0] || 0;
+
+    if (best < 0.86) {
+      return 0;
+    }
+
+    return 3.2 + best;
+  }
+
+  /**
+   * A multi-word person must match at least two strong tokens and
+   * at least two-thirds of the requested name tokens.
+   */
+  const minimumStrongMatches =
+    Math.max(
+      2,
+      Math.ceil(
+        requestedCount * 0.67
+      )
+    );
+
+  if (
+    match.strongMatches <
+      minimumStrongMatches
+  ) {
+    return 0;
+  }
+
+  if (match.averageScore < 0.78) {
+    return 0;
+  }
+
+  const allRequestedTokensStrong =
+    match.strongMatches ===
+    requestedCount;
+
+  const exactCoverage =
+    match.exactMatches /
+    Math.max(1, requestedCount);
+
+  if (allRequestedTokensStrong) {
+    return (
+      4.2 +
+      match.averageScore +
+      exactCoverage
+    );
+  }
+
+  return (
+    3.2 +
+    match.averageScore +
+    exactCoverage
+  );
+}
+
+/**
  * Produce a compact unique list of actual values
  * from one column.
  */
@@ -89,7 +340,10 @@ function getColumnValues(
  */
 function scoreValueMatch(
   requestedValue,
-  actualValue
+  actualValue,
+  {
+    column = null,
+  } = {}
 ) {
   const requested =
     normalizeValue(
@@ -106,6 +360,20 @@ function scoreValueMatch(
     !actual
   ) {
     return 0;
+  }
+
+  /**
+   * Person-name columns use stricter token-aware matching.
+   * This prevents a full name from resolving because of one
+   * shared first/middle/last-name token.
+   */
+  if (
+    isLikelyPersonColumn(column)
+  ) {
+    return scorePersonNameMatch(
+      requestedValue,
+      actualValue
+    );
   }
 
   /**
@@ -287,7 +555,13 @@ function searchColumnValues({
         score:
           scoreValueMatch(
             requestedValue,
-            actualValue
+            actualValue,
+            { column }
+          ),
+
+        personLike:
+          isLikelyPersonColumn(
+            column
           ),
       }))
       .filter(
@@ -360,8 +634,11 @@ function findEntityCandidates({
         const match of
         matches.slice(0, 3)
       ) {
-        let adjustedScore =
+        const rawScore =
           match.score;
+
+        let adjustedScore =
+          rawScore;
 
         /**
          * Prefer the planner's selected dataset.
@@ -395,6 +672,9 @@ function findEntityCandidates({
 
         candidates.push({
           ...match,
+
+          rawScore,
+
           score:
             adjustedScore,
         });
@@ -449,6 +729,105 @@ function resolveEntityAcrossDatasets({
 
   const second =
     candidates[1];
+
+  // ========================================================
+  // STRICT PERSON-NAME RESOLUTION
+  // ========================================================
+  //
+  // Do not let dataset/column preference bonuses turn a weak
+  // person-name match into a valid identity match. We evaluate
+  // the raw name score first.
+  //
+  if (best.personLike) {
+    const bestRawScore =
+      Number(
+        best.rawScore ??
+        best.score ??
+        0
+      );
+
+    const secondSamePersonColumn =
+      second &&
+      second.personLike &&
+      normalizeText(
+        second.dataset
+      ) ===
+        normalizeText(
+          best.dataset
+        ) &&
+      normalizeText(
+        second.column
+      ) ===
+        normalizeText(
+          best.column
+        );
+
+    const secondRawScore =
+      secondSamePersonColumn
+        ? Number(
+            second.rawScore ??
+            second.score ??
+            0
+          )
+        : 0;
+
+    if (bestRawScore < 3.5) {
+      return {
+        resolved: false,
+        reason:
+          "LOW_CONFIDENCE_PERSON_MATCH",
+        requestedValue,
+        candidates:
+          candidates.slice(
+            0,
+            5
+          ),
+      };
+    }
+
+    /**
+     * If two different person values in the SAME person column
+     * score almost equally, do not silently choose one.
+     */
+    if (
+      secondSamePersonColumn &&
+      normalizeValue(
+        best.resolvedValue
+      ) !==
+        normalizeValue(
+          second.resolvedValue
+        ) &&
+      secondRawScore >= 3.5 &&
+      Math.abs(
+        bestRawScore -
+        secondRawScore
+      ) < 0.35
+    ) {
+      return {
+        resolved: false,
+        ambiguous: true,
+        reason:
+          "AMBIGUOUS_PERSON_MATCH",
+        requestedValue,
+        candidates:
+          candidates.slice(
+            0,
+            5
+          ),
+      };
+    }
+
+    return {
+      resolved: true,
+      ambiguous: false,
+      ...best,
+      candidates:
+        candidates.slice(
+          0,
+          5
+        ),
+    };
+  }
 
   /**
    * Exact/very strong match.
@@ -879,6 +1258,9 @@ function resolvePlanEntities({
 
 module.exports = {
   normalizeValue,
+  isLikelyPersonColumn,
+  getPersonTokenMatch,
+  scorePersonNameMatch,
   getColumnValues,
   scoreValueMatch,
   findEntityCandidates,
