@@ -5,6 +5,7 @@ const {
 } = require("./utils");
 const {
   inferValueFilters,
+  inferCoherentFilters,
   inferDatasetValueFilters,
   mergeFilters,
 } = require("./filterEngine");
@@ -1178,6 +1179,14 @@ function detectFilteredFieldLookup(
         /^(?:what|which)\s+are\b/.test(text) ||
         /\bunder\b/.test(text);
 
+      const coherentFilters =
+        inferCoherentFilters(
+          datasets[
+            output.dataset
+          ] || [],
+          identifierText
+        );
+
       return {
         route: "dataset",
         dataset: output.dataset,
@@ -1188,19 +1197,23 @@ function detectFilteredFieldLookup(
         column: output.column,
         groupBy: null,
         filters:
-          sameDatasetIdentifiers.length
-            ? sameDatasetIdentifiers
-            : [
-                {
-                  column:
-                    sameDatasetIdentifier.column,
-                  operator:
-                    sameDatasetIdentifier.operator ||
-                    "equals",
-                  value:
-                    sameDatasetIdentifier.value,
-                },
-              ],
+          coherentFilters.length
+            ? coherentFilters
+            : (
+                sameDatasetIdentifiers.length
+                  ? sameDatasetIdentifiers
+                  : [
+                      {
+                        column:
+                          sameDatasetIdentifier.column,
+                        operator:
+                          sameDatasetIdentifier.operator ||
+                          "equals",
+                        value:
+                          sameDatasetIdentifier.value,
+                      },
+                    ]
+              ),
         selectColumns:
           asksForList
             ? []
@@ -1576,6 +1589,210 @@ function detectTextCountWithFilter(
 }
 
 
+
+function splitExplicitEntitySegments(
+  question
+) {
+  const text =
+    normalizeText(question);
+
+  if (!text) {
+    return [];
+  }
+
+  const tailMatch =
+    text.match(
+      /\b(?:of|for)\b\s+(.+)$/
+    );
+
+  if (!tailMatch?.[1]) {
+    return [];
+  }
+
+  const entityText =
+    tailMatch[1]
+      .replace(/[?.!]+$/g, "")
+      .trim();
+
+  const segments =
+    entityText
+      .split(
+        /\s+(?:and|vs\.?|versus)\s+/i
+      )
+      .map(
+        (part) =>
+          part.trim()
+      )
+      .filter(Boolean);
+
+  return segments.length >= 2
+    ? segments
+    : [];
+}
+
+function detectMultiEntityLookup(
+  question,
+  schema,
+  datasets
+) {
+  const segments =
+    splitExplicitEntitySegments(
+      question
+    );
+
+  if (segments.length < 2) {
+    return null;
+  }
+
+  const candidates = [];
+
+  for (
+    const [
+      datasetName,
+      rows,
+    ] of Object.entries(
+      datasets || {}
+    )
+  ) {
+    if (
+      !Array.isArray(rows) ||
+      !rows.length
+    ) {
+      continue;
+    }
+
+    const groups =
+      segments.map(
+        (segment) =>
+          inferCoherentFilters(
+            rows,
+            segment
+          )
+      );
+
+    if (
+      groups.some(
+        (filters) =>
+          !filters.length
+      )
+    ) {
+      continue;
+    }
+
+    const excludedColumns =
+      [...new Set(
+        groups
+          .flat()
+          .map(
+            (filter) =>
+              filter.column
+          )
+      )];
+
+    const output =
+      detectRequestedOutputColumns(
+        question,
+        schema,
+        datasetName,
+        excludedColumns
+      );
+
+    const selectColumns =
+      Array.isArray(
+        output?.selectColumns
+      )
+        ? output.selectColumns
+        : [];
+
+    if (!selectColumns.length) {
+      continue;
+    }
+
+    candidates.push({
+      dataset:
+        datasetName,
+      groups,
+      selectColumns,
+      transform:
+        output?.transform ||
+        null,
+      score:
+        groups.reduce(
+          (sum, filters) =>
+            sum + filters.length,
+          0
+        ) * 1000 +
+        selectColumns.length,
+    });
+  }
+
+  if (!candidates.length) {
+    return null;
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score -
+      a.score
+  );
+
+  const best =
+    candidates[0];
+
+  return {
+    route:
+      "dataset",
+
+    dataset:
+      best.dataset,
+
+    operation:
+      "lookup",
+
+    column:
+      best.selectColumns.length === 1
+        ? best.selectColumns[0]
+        : null,
+
+    groupBy:
+      null,
+
+    filters:
+      [],
+
+    filterGroups:
+      best.groups.map(
+        (filters) => ({
+          logic:
+            "and",
+          filters,
+        })
+      ),
+
+    filterGroupLogic:
+      "or",
+
+    selectColumns:
+      best.selectColumns,
+
+    transform:
+      best.transform,
+
+    outputRequested:
+      true,
+
+    limit:
+      detectLimit(question),
+
+    showAll:
+      true,
+
+    confidence:
+      0.999,
+  };
+}
+
+
 function detectMultiFieldLookup(question, schema, datasets) {
   const text = normalizeText(question);
 
@@ -1719,19 +1936,34 @@ function detectMultiFieldLookup(question, schema, datasets) {
     groupBy:
       null,
 
-    filters: [
-      {
-        column:
-          identifier.column,
+    filters:
+      (
+        inferCoherentFilters(
+          datasets[
+            identifier.dataset
+          ] || [],
+          text
+        ).length
+          ? inferCoherentFilters(
+              datasets[
+                identifier.dataset
+              ] || [],
+              text
+            )
+          : [
+              {
+                column:
+                  identifier.column,
 
-        operator:
-          identifier.operator ||
-          "equals",
+                operator:
+                  identifier.operator ||
+                  "equals",
 
-        value:
-          identifier.value,
-      },
-    ],
+                value:
+                  identifier.value,
+              },
+            ]
+      ),
 
     selectColumns,
 
@@ -1794,6 +2026,19 @@ function createLocalPlan({
 
   if (groupedListRequest) {
     return groupedListRequest;
+  }
+
+  // Resolve explicit multi-entity lookups before ordinary
+  // multi-field/single-entity lookup logic.
+  const multiEntityLookup =
+    detectMultiEntityLookup(
+      question,
+      schema,
+      datasets
+    );
+
+  if (multiEntityLookup) {
+    return multiEntityLookup;
   }
 
   // Resolve TRUE multi-field lookups BEFORE any single-field lookup.
@@ -2136,6 +2381,7 @@ module.exports = {
   extractTargetPhrase,
   extractGroupingPhrase,
   detectCrossDatasetLookup,
+  detectMultiEntityLookup,
   detectMultiFieldLookup,
   detectTextCountWithFilter,
   detectFilteredFieldLookup,

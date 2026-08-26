@@ -352,28 +352,44 @@ function findTextOccurrences(
     return [];
   }
 
+  const escaped =
+    needle.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&"
+    );
+
+  const regex =
+    new RegExp(
+      `(^|[^\p{L}\p{N}])(${escaped})(?=$|[^\p{L}\p{N}])`,
+      "gu"
+    );
+
   const spans = [];
-  let start = 0;
+  let match;
 
-  while (start <= haystack.length - needle.length) {
-    const index =
-      haystack.indexOf(
-        needle,
-        start
-      );
+  while (
+    (match = regex.exec(haystack)) !== null
+  ) {
+    const prefixLength =
+      match[1]?.length || 0;
 
-    if (index < 0) {
-      break;
-    }
+    const start =
+      match.index +
+      prefixLength;
 
     spans.push({
-      start: index,
+      start,
       end:
-        index +
-        needle.length,
+        start +
+        match[2].length,
     });
 
-    start = index + 1;
+    if (
+      regex.lastIndex ===
+      match.index
+    ) {
+      regex.lastIndex += 1;
+    }
   }
 
   return spans;
@@ -591,12 +607,18 @@ function inferValueFilters(
         }
       } else if (
         normalizedValue
-          .length >= 2 &&
-        normalizedQuestion
-          .includes(
-            normalizedValue
-          )
+          .length >= 2
       ) {
+        const spans =
+          findTextOccurrences(
+            normalizedQuestion,
+            normalizedValue
+          );
+
+        if (!spans.length) {
+          continue;
+        }
+
         matches.push({
           column,
           operator:
@@ -612,11 +634,7 @@ function inferValueFilters(
             normalizedValue
               .length,
 
-          spans:
-            findTextOccurrences(
-              normalizedQuestion,
-              normalizedValue
-            ),
+          spans,
         });
       }
     }
@@ -755,6 +773,143 @@ function inferValueFilters(
   }
 
   return selected;
+}
+
+
+/**
+ * ==========================================================
+ * INFER ONE COHERENT FILTER SET
+ * ==========================================================
+ *
+ * Keep only values that can all belong to the SAME real row.
+ * This prevents unrelated columns from being mixed into one entity.
+ */
+function inferCoherentFilters(
+  rows,
+  question,
+  excludedColumns = []
+) {
+  if (
+    !Array.isArray(rows) ||
+    !rows.length
+  ) {
+    return [];
+  }
+
+  const inferred =
+    inferValueFilters(
+      rows,
+      question,
+      excludedColumns
+    );
+
+  const candidates = [];
+
+  for (const filter of inferred) {
+    const values =
+      Array.isArray(filter?.value)
+        ? filter.value
+        : [filter?.value];
+
+    for (const value of values) {
+      if (
+        value === null ||
+        value === undefined ||
+        String(value).trim() === ""
+      ) {
+        continue;
+      }
+
+      candidates.push({
+        column:
+          filter.column,
+        operator:
+          "equals",
+        value,
+        specificity:
+          normalizeText(value).length,
+      });
+    }
+  }
+
+  if (!candidates.length) {
+    return [];
+  }
+
+  let best = null;
+
+  for (
+    let rowIndex = 0;
+    rowIndex < rows.length;
+    rowIndex += 1
+  ) {
+    const row =
+      rows[rowIndex];
+
+    const matching =
+      candidates.filter(
+        (candidate) =>
+          compare(
+            row?.[candidate.column],
+            candidate.value,
+            "equals"
+          )
+      );
+
+    if (!matching.length) {
+      continue;
+    }
+
+    const byColumn =
+      new Map();
+
+    for (const candidate of matching) {
+      const current =
+        byColumn.get(candidate.column);
+
+      if (
+        !current ||
+        candidate.specificity >
+          current.specificity
+      ) {
+        byColumn.set(
+          candidate.column,
+          candidate
+        );
+      }
+    }
+
+    const coherent =
+      [...byColumn.values()];
+
+    const score =
+      coherent.length * 10000 +
+      coherent.reduce(
+        (sum, item) =>
+          sum + item.specificity,
+        0
+      );
+
+    if (
+      !best ||
+      score > best.score
+    ) {
+      best = {
+        score,
+        filters:
+          coherent,
+      };
+    }
+  }
+
+  if (!best) {
+    return [];
+  }
+
+  return best.filters.map(
+    ({ specificity, ...filter }) =>
+      filter
+  );
 }
 
 /**
@@ -957,6 +1112,7 @@ module.exports = {
   removeControlNumbers,
   resolveFilters,
   inferValueFilters,
+  inferCoherentFilters,
   inferDatasetValueFilters,
   mergeFilters,
   applyFilters,

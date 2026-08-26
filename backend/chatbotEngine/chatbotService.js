@@ -57,6 +57,7 @@ const {
 
 const {
   inferValueFilters,
+  inferCoherentFilters,
 } = require("./filterEngine");
 
 const {
@@ -79,6 +80,381 @@ function compactExplicitColumnText(value) {
   return normalizeExplicitColumnText(value)
     .replace(/\s+/g, "")
     .trim();
+}
+
+
+/**
+ * Return every real schema column explicitly named in the question.
+ *
+ * Longer overlapping column names win:
+ * "POSITION TITLE" suppresses a shorter "POSITION" match that occupies
+ * the same phrase.
+ */
+function findExplicitSchemaColumns({
+  schema,
+  question,
+  preferredDataset = null,
+}) {
+  const normalizedQuestion =
+    normalizeExplicitColumnText(
+      question
+    );
+
+  if (!normalizedQuestion) {
+    return [];
+  }
+
+  const matches = [];
+
+  for (const dataset of schema || []) {
+    if (
+      preferredDataset &&
+      String(dataset?.name || "") !==
+        String(preferredDataset)
+    ) {
+      continue;
+    }
+
+    for (const column of dataset?.columns || []) {
+      const name =
+        column?.name;
+
+      if (!name) {
+        continue;
+      }
+
+      const normalizedColumn =
+        normalizeExplicitColumnText(
+          name
+        );
+
+      if (!normalizedColumn) {
+        continue;
+      }
+
+      const escaped =
+        normalizedColumn.replace(
+          /[.*+?^${}()|[\]\\]/g,
+          "\\$&"
+        );
+
+      const regex =
+        new RegExp(
+          `(^|[^\\p{L}\\p{N}])(${escaped})(?=$|[^\\p{L}\\p{N}])`,
+          "gu"
+        );
+
+      let match;
+
+      while (
+        (match =
+          regex.exec(
+            normalizedQuestion
+          )) !== null
+      ) {
+        const prefixLength =
+          match[1]?.length || 0;
+
+        const start =
+          match.index +
+          prefixLength;
+
+        matches.push({
+          dataset:
+            dataset.name,
+          column:
+            name,
+          start,
+          end:
+            start +
+            match[2].length,
+          length:
+            match[2].length,
+        });
+
+        if (
+          regex.lastIndex ===
+          match.index
+        ) {
+          regex.lastIndex += 1;
+        }
+      }
+    }
+  }
+
+  matches.sort(
+    (a, b) =>
+      b.length -
+        a.length ||
+      a.start -
+        b.start
+  );
+
+  const accepted = [];
+
+  for (const candidate of matches) {
+    const covered =
+      accepted.some(
+        (stronger) =>
+          stronger.dataset ===
+            candidate.dataset &&
+          stronger.start <=
+            candidate.start &&
+          stronger.end >=
+            candidate.end &&
+          stronger.length >
+            candidate.length
+      );
+
+    if (!covered) {
+      accepted.push(
+        candidate
+      );
+    }
+  }
+
+  const seen = new Set();
+
+  return accepted.filter(
+    (item) => {
+      const key =
+        `${item.dataset}::${item.column}`;
+
+      if (seen.has(key)) {
+        return false;
+      }
+
+      seen.add(key);
+      return true;
+    }
+  );
+}
+
+function splitExplicitEntitySegments(
+  question
+) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  const tailMatch =
+    text.match(
+      /\b(?:of|for)\b\s+(.+)$/
+    );
+
+  if (!tailMatch?.[1]) {
+    return [];
+  }
+
+  const segments =
+    tailMatch[1]
+      .replace(/[?.!]+$/g, "")
+      .split(
+        /\s+(?:and|vs\.?|versus)\s+/i
+      )
+      .map(
+        (value) =>
+          value.trim()
+      )
+      .filter(Boolean);
+
+  return segments.length >= 2
+    ? segments
+    : [];
+}
+
+/**
+ * Normalize both Groq and local plans into the SAME execution shape.
+ *
+ * 1. Preserve every explicitly requested output column.
+ * 2. Rebuild explicit multi-entity requests as OR-ed filter groups.
+ * 3. Each entity group is a coherent AND-filter set from one real row.
+ */
+function normalizePlannerPlan({
+  datasets,
+  schema,
+  plan,
+  question,
+}) {
+  if (
+    !plan ||
+    typeof plan !== "object" ||
+    plan.route !== "dataset"
+  ) {
+    return plan;
+  }
+
+  const normalized = {
+    ...plan,
+
+    filters:
+      Array.isArray(plan.filters)
+        ? plan.filters.map(
+            (filter) => ({
+              ...filter,
+
+              value:
+                Array.isArray(
+                  filter?.value
+                )
+                  ? [...filter.value]
+                  : filter?.value,
+            })
+          )
+        : [],
+
+    selectColumns:
+      Array.isArray(
+        plan.selectColumns
+      )
+        ? [...plan.selectColumns]
+        : [],
+  };
+
+  const explicitColumns =
+    findExplicitSchemaColumns({
+      schema,
+      question,
+
+      preferredDataset:
+        normalized.dataset ||
+        null,
+    });
+
+  if (
+    explicitColumns.length >= 2
+  ) {
+    normalized.operation =
+      "lookup";
+
+    normalized.column =
+      null;
+
+    normalized.selectColumns =
+      explicitColumns.map(
+        (item) =>
+          item.column
+      );
+
+    normalized.outputRequested =
+      true;
+
+    normalized.transform =
+      null;
+
+    normalized.showAll =
+      true;
+  }
+
+  const rows =
+    datasets?.[
+      normalized.dataset
+    ];
+
+  const segments =
+    splitExplicitEntitySegments(
+      question
+    );
+
+  if (
+    Array.isArray(rows) &&
+    rows.length &&
+    segments.length >= 2
+  ) {
+    const groups =
+      segments.map(
+        (segment) =>
+          inferCoherentFilters(
+            rows,
+            segment
+          )
+      );
+
+    if (
+      groups.every(
+        (filters) =>
+          filters.length > 0
+      )
+    ) {
+      normalized.filters =
+        [];
+
+      normalized.filterGroups =
+        groups.map(
+          (filters) => ({
+            logic:
+              "and",
+            filters,
+          })
+        );
+
+      normalized.filterGroupLogic =
+        "or";
+
+      normalized.operation =
+        "lookup";
+
+      normalized.showAll =
+        true;
+    }
+  }
+
+  if (
+    Array.isArray(
+      normalized.filterGroups
+    )
+  ) {
+    normalized.filterGroups =
+      normalized.filterGroups
+        .map(
+          (group) => ({
+            logic:
+              String(
+                group?.logic ||
+                "and"
+              )
+                .trim()
+                .toLowerCase(),
+
+            filters:
+              Array.isArray(
+                group?.filters
+              )
+                ? group.filters
+                    .filter(Boolean)
+                    .map(
+                      (filter) => ({
+                        ...filter,
+
+                        operator:
+                          String(
+                            filter?.operator ||
+                            "equals"
+                          )
+                            .trim()
+                            .toLowerCase(),
+
+                        value:
+                          Array.isArray(
+                            filter?.value
+                          )
+                            ? [
+                                ...filter.value,
+                              ]
+                            : filter?.value,
+                      })
+                    )
+                : [],
+          })
+        )
+        .filter(
+          (group) =>
+            group.filters.length
+        );
+  }
+
+  return normalized;
 }
 
 /**
@@ -1359,6 +1735,19 @@ function repairMultiEntityFilters({
     return plan;
   }
 
+  /**
+   * Structured entity groups already preserve identity correctly.
+   * Do not flatten or expand them back into same-column IN filters.
+   */
+  if (
+    Array.isArray(
+      plan.filterGroups
+    ) &&
+    plan.filterGroups.length
+  ) {
+    return plan;
+  }
+
   const rows =
     datasets?.[plan.dataset];
 
@@ -1949,6 +2338,228 @@ async function answerQuestion(
   }
 
   // ========================================================
+  // EXECUTE STRUCTURED MULTI-ENTITY FILTER GROUPS
+  // ========================================================
+  //
+  // Each group is executed independently so:
+  //
+  //   (FIRST NAME = ROBERTO AND LAST NAME = PERALES)
+  //   OR
+  //   (FIRST NAME = DORIS JOY AND LAST NAME = GARCIA)
+  //
+  // never becomes invalid cross-combinations.
+  //
+  const executeFilterGroupPlan =
+    async (plan) => {
+      const groups =
+        Array.isArray(
+          plan?.filterGroups
+        )
+          ? plan.filterGroups
+          : [];
+
+      const groupResults = [];
+      const combinedResults = [];
+      const allChanges = [];
+
+      for (
+        let index = 0;
+        index < groups.length;
+        index += 1
+      ) {
+        const group =
+          groups[index];
+
+        let childPlan = {
+          ...plan,
+
+          operation:
+            "lookup",
+
+          filters:
+            Array.isArray(
+              group?.filters
+            )
+              ? group.filters
+              : [],
+
+          filterGroups:
+            undefined,
+
+          filterGroupLogic:
+            undefined,
+        };
+
+        const validation =
+          validateQueryPlan({
+            datasets,
+            schema,
+            plan:
+              childPlan,
+          });
+
+        if (
+          !validation.valid
+        ) {
+          throw new Error(
+            validation.message
+          );
+        }
+
+        childPlan =
+          validation.plan;
+
+        const entityResolution =
+          resolvePlanEntities({
+            datasets,
+            plan:
+              childPlan,
+          });
+
+        childPlan =
+          entityResolution.plan;
+
+        if (
+          Array.isArray(
+            entityResolution
+              .changes
+          )
+        ) {
+          allChanges.push(
+            ...entityResolution
+              .changes
+          );
+        }
+
+        const rawResult =
+          await executePlan({
+            datasets,
+            schema,
+            plan:
+              childPlan,
+
+            question:
+              cleanQuestion,
+          });
+
+        const resultValidation =
+          validateResult({
+            plan:
+              childPlan,
+            result:
+              rawResult,
+          });
+
+        if (
+          !resultValidation.valid
+        ) {
+          throw new Error(
+            resultValidation.message
+          );
+        }
+
+        const verified =
+          resultValidation.result;
+
+        const rows =
+          Array.isArray(
+            verified?.results
+          )
+            ? verified.results
+            : [];
+
+        combinedResults.push(
+          ...rows
+        );
+
+        groupResults.push({
+          index:
+            index + 1,
+
+          filters:
+            childPlan.filters,
+
+          count:
+            Number(
+              verified?.count ||
+              rows.length ||
+              0
+            ),
+
+          results:
+            rows,
+        });
+      }
+
+      const result = {
+        success:
+          true,
+
+        source:
+          "dataset",
+
+        dataset:
+          plan.dataset,
+
+        operation:
+          "lookup",
+
+        count:
+          combinedResults.length,
+
+        results:
+          combinedResults,
+
+        filters:
+          [],
+
+        filterGroups:
+          groupResults,
+
+        filterGroupLogic:
+          "or",
+      };
+
+      updateConversation(
+        sessionId,
+        {
+          question:
+            cleanQuestion,
+
+          plan,
+
+          result,
+        }
+      );
+
+      const naturalAnswer =
+        await generateNaturalResponse({
+          question:
+            cleanQuestion,
+
+          plan,
+
+          result,
+        });
+
+      return {
+        ...result,
+
+        answer:
+          naturalAnswer,
+
+        responseStyle:
+          "natural",
+
+        debugPlan:
+          plan,
+
+        debugEntityChanges:
+          allChanges,
+      };
+    };
+
+  // ========================================================
   // EXECUTE A RESOLVED QUERY PLAN
   // ========================================================
 
@@ -1961,6 +2572,19 @@ async function answerQuestion(
       ) {
         throw new Error(
           "The query planner returned an invalid plan."
+        );
+      }
+
+      if (
+        plan.route ===
+          "dataset" &&
+        Array.isArray(
+          plan.filterGroups
+        ) &&
+        plan.filterGroups.length
+      ) {
+        return executeFilterGroupPlan(
+          plan
         );
       }
 
@@ -2292,6 +2916,18 @@ async function answerQuestion(
       );
 
     groqPlan =
+      normalizePlannerPlan({
+        datasets,
+        schema,
+
+        plan:
+          groqPlan,
+
+        question:
+          cleanQuestion,
+      });
+
+    groqPlan =
       repairMultiEntityFilters({
         datasets,
 
@@ -2402,6 +3038,18 @@ async function answerQuestion(
             cleanQuestion,
         }
       );
+
+    localPlan =
+      normalizePlannerPlan({
+        datasets,
+        schema,
+
+        plan:
+          localPlan,
+
+        question:
+          cleanQuestion,
+      });
 
     localPlan =
       repairMultiEntityFilters({
