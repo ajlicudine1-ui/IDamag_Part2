@@ -6,6 +6,7 @@ const User = require("./User");
 const ActivityLog = require("./ActivityLog");
 const DashboardFeedback = require("./DashboardFeedback");
 const WebsiteFeedback = require("./WebsiteFeedback");
+const ChatbotConversation = require("./ChatbotConversation");
 
 const sequelize = require("../config/database");
 
@@ -122,4 +123,5 @@ module.exports = {
   ActivityLog,
   DashboardFeedback,
   WebsiteFeedback,
+  ChatbotConversation,
 };

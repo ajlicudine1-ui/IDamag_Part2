@@ -5,6 +5,7 @@ const {
   Division,
   Office,
   DashboardWorksheet,
+  ChatbotConversation,
 } = require("../models/index");
 
 const {
@@ -14,6 +15,11 @@ const {
 const {
   answerQuestion,
 } = require("../chatbotEngine/chatbotService");
+
+const {
+  getConversation,
+  clearConversation,
+} = require("../chatbotEngine/conversationManager");
 
 const router = express.Router();
 
@@ -698,6 +704,185 @@ router.get(
   }
 );
 
+/**
+ * ============================================================
+ * PERSISTENT CHATBOT CONVERSATION STATE
+ * ============================================================
+ *
+ * The chatbot engine may still use its fast in-memory Map during
+ * one request, but PostgreSQL is the source of truth between
+ * requests/containers.
+ */
+
+function getConversationTtlHours() {
+  const configured =
+    Number(
+      process.env
+        .CHATBOT_SESSION_TTL_HOURS
+    );
+
+  return (
+    Number.isFinite(
+      configured
+    ) &&
+    configured > 0
+  )
+    ? configured
+    : 24;
+}
+
+
+function buildConversationKey(
+  sessionId,
+  reportId
+) {
+  return (
+    `${String(sessionId).trim()}` +
+    `::report:${Number(reportId)}`
+  );
+}
+
+
+function cloneSerializableState(
+  value
+) {
+  return JSON.parse(
+    JSON.stringify(
+      value || {}
+    )
+  );
+}
+
+
+async function hydrateConversationState({
+  sessionId,
+  reportId,
+}) {
+  const conversationKey =
+    buildConversationKey(
+      sessionId,
+      reportId
+    );
+
+  const stored =
+    await ChatbotConversation.findOne({
+      where: {
+        sessionKey:
+          conversationKey,
+      },
+    });
+
+  if (
+    stored?.expiresAt &&
+    new Date(
+      stored.expiresAt
+    ).getTime() <=
+      Date.now()
+  ) {
+    await stored.destroy();
+
+    clearConversation(
+      conversationKey
+    );
+
+    return {
+      conversationKey,
+      restored:
+        false,
+    };
+  }
+
+  if (
+    stored?.state &&
+    typeof stored.state ===
+      "object"
+  ) {
+    const context =
+      getConversation(
+        conversationKey
+      );
+
+    /**
+     * Replace the process-local copy with the persisted state.
+     * This prevents stale context from another request from winning.
+     */
+    for (
+      const key of
+      Object.keys(context)
+    ) {
+      delete context[key];
+    }
+
+    Object.assign(
+      context,
+      cloneSerializableState(
+        stored.state
+      )
+    );
+
+    return {
+      conversationKey,
+      restored:
+        true,
+    };
+  }
+
+  return {
+    conversationKey,
+    restored:
+      false,
+  };
+}
+
+
+async function persistConversationState({
+  sessionId,
+  reportId,
+  conversationKey,
+}) {
+  const context =
+    getConversation(
+      conversationKey
+    );
+
+  const ttlHours =
+    getConversationTtlHours();
+
+  const expiresAt =
+    new Date(
+      Date.now() +
+      ttlHours *
+        60 *
+        60 *
+        1000
+    );
+
+  const state =
+    cloneSerializableState(
+      context
+    );
+
+  await ChatbotConversation.upsert({
+    sessionKey:
+      conversationKey,
+
+    sessionId:
+      String(
+        sessionId
+      ).trim(),
+
+    reportId:
+      Number(
+        reportId
+      ),
+
+    state,
+
+    expiresAt,
+  });
+}
+
+
 // ============================================================
 // CHAT
 // ============================================================
@@ -1007,12 +1192,42 @@ router.post("/chat", async (req, res) => {
     );
 
 
+    /**
+     * Restore chatbot memory from PostgreSQL before answering.
+     *
+     * The internal conversation key also includes reportId so one
+     * dashboard's follow-up context cannot leak into another dashboard.
+     */
+    const {
+      conversationKey,
+      restored:
+        conversationRestored,
+    } =
+      await hydrateConversationState({
+        sessionId,
+        reportId,
+      });
+
+    console.log(
+      "Conversation state restored:",
+      conversationRestored
+    );
+
     const result =
       await answerQuestion(
         reportData,
         question,
-        sessionId
+        conversationKey
       );
+
+    /**
+     * Save VERIFIED post-execution conversation state.
+     */
+    await persistConversationState({
+      sessionId,
+      reportId,
+      conversationKey,
+    });
 
 
     console.log(

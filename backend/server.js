@@ -133,6 +133,11 @@ const WebsiteFeedback = unwrapModel(
   require("./models/WebsiteFeedback")
 );
 
+const ChatbotConversation = unwrapModel(
+  modelsModule.ChatbotConversation ||
+  require("./models/ChatbotConversation")
+);
+
 const {
   sendWelcomeEmail,
   generateSecurePassword,
@@ -2267,6 +2272,19 @@ const initializeDatabase =
   async () => {
     try {
       await sequelize.authenticate();
+
+      /**
+       * Create the chatbot conversation-state table if it does
+       * not exist yet.
+       *
+       * We sync ONLY this model. Existing application tables are
+       * not altered.
+       */
+      await ChatbotConversation.sync();
+
+      console.log(
+        "Chatbot conversation storage ready."
+      );
 
       console.log(
         "Database connected successfully."
