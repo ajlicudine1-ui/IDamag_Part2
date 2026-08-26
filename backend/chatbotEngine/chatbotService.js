@@ -1314,6 +1314,38 @@ function collectQuestionMatchesForColumn({
  * of that column and recover any additional values explicitly
  * present in the user's question.
  */
+
+/**
+ * Return true only when the user's wording clearly asks about
+ * MORE THAN ONE entity.
+ *
+ * This prevents a single person's multi-word name, such as
+ * "Doris Joy Garcia", from being split into multiple matches
+ * merely because another row contains one of those words.
+ */
+function hasExplicitMultiEntityRequest(
+  question
+) {
+  const text =
+    String(question || "")
+      .trim()
+      .toLowerCase();
+
+  if (!text) {
+    return false;
+  }
+
+  return (
+    /\bboth\b/.test(text) ||
+    /\b(?:vs\.?|versus)\b/.test(text) ||
+    /\bcompare\b.*\b(?:with|and|to)\b/.test(text) ||
+    /\bbetween\b.+\band\b.+/.test(text) ||
+    /,\s*\S+/.test(text) ||
+    /\b(?:and|or)\b/.test(text)
+  );
+}
+
+
 function repairMultiEntityFilters({
   datasets,
   plan,
@@ -1333,6 +1365,28 @@ function repairMultiEntityFilters({
   if (
     !Array.isArray(rows) ||
     !rows.length
+  ) {
+    return plan;
+  }
+
+  /**
+   * CRITICAL SINGLE-ENTITY SAFETY RULE
+   * ----------------------------------
+   *
+   * Do not scan the question for additional row values unless
+   * the user clearly requested multiple entities.
+   *
+   * Example:
+   * "What is the position title of Doris Joy Garcia?"
+   *
+   * must remain a single-person lookup and must not be expanded
+   * to another employee just because that employee also contains
+   * the word "Joy".
+   */
+  if (
+    !hasExplicitMultiEntityRequest(
+      question
+    )
   ) {
     return plan;
   }
