@@ -258,6 +258,49 @@ function extractMetric(
   return null;
 }
 
+
+/**
+ * Clone nested planner filter groups.
+ *
+ * Multi-row conversational follow-ups reuse these filters, so
+ * conversation memory must not retain mutable references to a plan
+ * that may later be normalized or entity-resolved in place.
+ */
+function cloneFilterGroups(
+  filterGroups
+) {
+  return Array.isArray(
+    filterGroups
+  )
+    ? filterGroups.map(
+        (group) => ({
+          ...group,
+
+          filters:
+            Array.isArray(
+              group?.filters
+            )
+              ? group.filters.map(
+                  (filter) => ({
+                    ...filter,
+
+                    value:
+                      Array.isArray(
+                        filter?.value
+                      )
+                        ? [
+                            ...filter.value,
+                          ]
+                        : filter?.value,
+                  })
+                )
+              : [],
+        })
+      )
+    : [];
+}
+
+
 /**
  * Save a compact VERIFIED result for
  * future comparison questions.
@@ -351,6 +394,11 @@ function addRecentResult(
               ...plan.selectColumns,
             ]
           : [],
+
+      filterGroups:
+        cloneFilterGroups(
+          plan.filterGroups
+        ),
     },
 
     /**
@@ -449,6 +497,40 @@ function updateConversation(
 
     context.lastPlan = {
       ...plan,
+
+      filters:
+        Array.isArray(
+          plan.filters
+        )
+          ? plan.filters.map(
+              (filter) => ({
+                ...filter,
+
+                value:
+                  Array.isArray(
+                    filter?.value
+                  )
+                    ? [
+                        ...filter.value,
+                      ]
+                    : filter?.value,
+              })
+            )
+          : [],
+
+      selectColumns:
+        Array.isArray(
+          plan.selectColumns
+        )
+          ? [
+              ...plan.selectColumns,
+            ]
+          : [],
+
+      filterGroups:
+        cloneFilterGroups(
+          plan.filterGroups
+        ),
     };
   }
 

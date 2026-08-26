@@ -2827,6 +2827,222 @@ function repairMultiEntityFilters({
   };
 }
 
+
+/**
+ * ==========================================================
+ * CHAINED MULTI-ROW FOLLOW-UPS
+ * ==========================================================
+ *
+ * Examples:
+ *
+ *   "Who are those persons?"
+ *   -> [two verified rows]
+ *
+ *   "What are their position titles?"
+ *   "What are their stations?"
+ *
+ * The same filter groups are preserved and only the requested
+ * output field changes.
+ *
+ * This is schema-driven and dataset-agnostic.
+ */
+
+function hasPluralSelectionReference(
+  question
+) {
+  const text =
+    normalizeText(question);
+
+  if (!text) {
+    return false;
+  }
+
+  return (
+    /\b(their|them|those|these|the two|both)\b/i.test(
+      text
+    )
+  );
+}
+
+
+function buildMultiRowFieldFollowUpPlan({
+  schema,
+  context,
+  question,
+}) {
+  if (
+    !context?.isFollowUp ||
+    !hasPluralSelectionReference(
+      question
+    )
+  ) {
+    return null;
+  }
+
+  const previousPlan =
+    context.lastPlan;
+
+  if (
+    !previousPlan ||
+    previousPlan.route !==
+      "dataset" ||
+    !previousPlan.dataset ||
+    !Array.isArray(
+      previousPlan.filterGroups
+    ) ||
+    previousPlan.filterGroups.length <
+      2
+  ) {
+    return null;
+  }
+
+  /**
+   * The new follow-up must explicitly resolve to a real field.
+   * Otherwise questions such as "compare them" should continue to
+   * the existing comparison follow-up logic.
+   */
+  const requested =
+    inferRequestedColumnFromQuestion({
+      schema,
+      question,
+
+      preferredDataset:
+        previousPlan.dataset,
+
+      excludedColumns:
+        [],
+    });
+
+  if (!requested?.column) {
+    return null;
+  }
+
+  const requestedColumn =
+    requested.column;
+
+  /**
+   * Preserve the previous identity/label column when available.
+   * That lets the natural response pair each requested value with
+   * the same person/project/municipality/etc. from the prior turn.
+   */
+  const previousIdentityColumn =
+    previousPlan.labelColumn ||
+    (
+      Array.isArray(
+        previousPlan.selectColumns
+      )
+        ? previousPlan.selectColumns.find(
+            (column) =>
+              column &&
+              normalizeText(
+                column
+              ) !==
+                normalizeText(
+                  previousPlan.column ||
+                  ""
+                )
+          )
+        : null
+    ) ||
+    null;
+
+  const selectColumns = [];
+
+  if (
+    previousIdentityColumn &&
+    normalizeText(
+      previousIdentityColumn
+    ) !==
+      normalizeText(
+        requestedColumn
+      )
+  ) {
+    selectColumns.push(
+      previousIdentityColumn
+    );
+  }
+
+  selectColumns.push(
+    requestedColumn
+  );
+
+  return {
+    route:
+      "dataset",
+
+    dataset:
+      previousPlan.dataset,
+
+    operation:
+      "lookup",
+
+    column:
+      requestedColumn,
+
+    labelColumn:
+      previousIdentityColumn ||
+      null,
+
+    groupBy:
+      null,
+
+    aggregation:
+      null,
+
+    direction:
+      null,
+
+    filters:
+      [],
+
+    filterGroups:
+      previousPlan.filterGroups.map(
+        (group) => ({
+          ...group,
+
+          filters:
+            Array.isArray(
+              group?.filters
+            )
+              ? group.filters.map(
+                  (filter) => ({
+                    ...filter,
+
+                    value:
+                      Array.isArray(
+                        filter?.value
+                      )
+                        ? [
+                            ...filter.value,
+                          ]
+                        : filter?.value,
+                  })
+                )
+              : [],
+        })
+      ),
+
+    filterGroupLogic:
+      previousPlan.filterGroupLogic ||
+      "or",
+
+    selectColumns,
+
+    outputRequested:
+      true,
+
+    transform:
+      null,
+
+    limit:
+      100,
+
+    showAll:
+      true,
+  };
+}
+
+
 /**
  * ==========================================================
  * PREVIOUS-RESULT IDENTITY FOLLOW-UPS
@@ -4262,6 +4478,61 @@ async function answerQuestion(
           entityResolution.changes || [],
       };
     };
+
+  // ========================================================
+  // CHAINED MULTI-ROW FIELD FOLLOW-UP
+  // ========================================================
+  //
+  // Example:
+  // "Who are those persons?"
+  // "What are their position titles?"
+  // "What are their stations?"
+  //
+  // Reuse the exact same verified row-selection filter groups.
+  //
+  if (
+    conversationContext
+      .isFollowUp === true
+  ) {
+    const multiRowFollowUpPlan =
+      buildMultiRowFieldFollowUpPlan({
+        schema,
+
+        context:
+          conversationContext,
+
+        question:
+          cleanQuestion,
+      });
+
+    if (multiRowFollowUpPlan) {
+      if (
+        process.env.NODE_ENV !==
+        "production"
+      ) {
+        console.log(
+          "Chatbot chained multi-row follow-up plan:",
+          JSON.stringify(
+            multiRowFollowUpPlan,
+            null,
+            2
+          )
+        );
+      }
+
+      const multiRowFollowUpResult =
+        await executeResolvedPlan(
+          multiRowFollowUpPlan
+        );
+
+      return {
+        ...multiRowFollowUpResult,
+
+        plannerSource:
+          "conversation",
+      };
+    }
+  }
 
   // ========================================================
   // PREVIOUS VERIFIED GROUP-RESULT FOLLOW-UP
