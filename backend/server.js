@@ -171,17 +171,25 @@ console.log(
 
 const allowedOrigins = [
   "http://localhost:5173",
+  "http://192.168.56.1:5173",
+  "https://i-damag-part2.vercel.app",
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
 app.use(
   cors({
     origin(origin, callback) {
+      console.log("Request origin:", origin);
+
       if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
 
-      return callback(new Error("Not allowed by CORS"));
+      console.warn("Blocked CORS origin:", origin);
+
+      return callback(
+        new Error(`Not allowed by CORS: ${origin}`)
+      );
     },
 
     methods: [
