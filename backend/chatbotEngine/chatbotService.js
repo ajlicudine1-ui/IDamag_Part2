@@ -264,6 +264,453 @@ function splitExplicitEntitySegments(
     : [];
 }
 
+
+function detectRankingDirectionFromQuestion(
+  question
+) {
+  const text =
+    normalizeText(question);
+
+  if (
+    /\b(lowest|smallest|least|minimum|min|bottom)\b/.test(
+      text
+    )
+  ) {
+    return "asc";
+  }
+
+  if (
+    /\b(highest|largest|biggest|greatest|most|maximum|max|top)\b/.test(
+      text
+    )
+  ) {
+    return "desc";
+  }
+
+  return null;
+}
+
+
+function detectRankingLimitFromQuestion(
+  question
+) {
+  const text =
+    normalizeText(question);
+
+  const match =
+    text.match(
+      /\b(?:top|bottom|first|last)\s+(\d{1,3})\b/
+    ) ||
+    text.match(
+      /\b(\d{1,3})\s+(?:highest|lowest|largest|smallest)\b/
+    );
+
+  if (match?.[1]) {
+    const value =
+      Number(match[1]);
+
+    if (Number.isInteger(value)) {
+      return Math.min(
+        Math.max(value, 1),
+        100
+      );
+    }
+  }
+
+  return 1;
+}
+
+
+function getDatasetSchemaEntry(
+  schema,
+  datasetName
+) {
+  return (
+    (schema || []).find(
+      (item) =>
+        String(item?.name || "") ===
+        String(datasetName || "")
+    ) ||
+    null
+  );
+}
+
+
+function inferRankingMetricColumn({
+  schema,
+  plan,
+  question,
+}) {
+  const dataset =
+    getDatasetSchemaEntry(
+      schema,
+      plan?.dataset
+    );
+
+  if (!dataset) {
+    return null;
+  }
+
+  const columns =
+    Array.isArray(dataset.columns)
+      ? dataset.columns
+      : [];
+
+  const byName =
+    new Map(
+      columns.map(
+        (column) => [
+          String(column?.name || ""),
+          column,
+        ]
+      )
+    );
+
+  const candidates = [
+    plan?.column,
+    ...(Array.isArray(plan?.selectColumns)
+      ? plan.selectColumns
+      : []),
+  ].filter(Boolean);
+
+  for (const name of candidates) {
+    const column =
+      byName.get(String(name));
+
+    if (
+      column &&
+      column.type === "number"
+    ) {
+      return column.name;
+    }
+  }
+
+  const explicit =
+    findExplicitSchemaColumns({
+      schema,
+      question,
+      preferredDataset:
+        plan?.dataset || null,
+    });
+
+  for (const match of explicit) {
+    const column =
+      byName.get(
+        String(match.column)
+      );
+
+    if (
+      column &&
+      column.type === "number"
+    ) {
+      return column.name;
+    }
+  }
+
+  return null;
+}
+
+
+function inferRankingLabelColumns({
+  schema,
+  plan,
+  question,
+  metricColumn,
+}) {
+  const dataset =
+    getDatasetSchemaEntry(
+      schema,
+      plan?.dataset
+    );
+
+  if (!dataset) {
+    return [];
+  }
+
+  const text =
+    normalizeText(question);
+
+  const filterColumns =
+    new Set(
+      (plan?.filters || [])
+        .map(
+          (filter) =>
+            String(
+              filter?.column || ""
+            )
+        )
+        .filter(Boolean)
+    );
+
+  const columns =
+    (dataset.columns || [])
+      .filter(
+        (column) =>
+          column?.name &&
+          column.type !== "number" &&
+          column.name !== metricColumn &&
+          !filterColumns.has(
+            column.name
+          )
+      );
+
+  let target = "";
+
+  const whichMatch =
+    text.match(
+      /\b(?:which|what)\s+(.+?)\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\b/
+    );
+
+  if (whichMatch?.[1]) {
+    target =
+      normalizeText(
+        whichMatch[1]
+      );
+  } else if (/\bwho\b/.test(text)) {
+    target =
+      "person name employee";
+  }
+
+  const scored =
+    columns.map((column, index) => {
+      const name =
+        normalizeText(column.name);
+
+      let score =
+        target
+          ? similarity(
+              target,
+              name
+            )
+          : 0;
+
+      if (
+        target &&
+        (
+          target.includes(name) ||
+          name.includes(target)
+        )
+      ) {
+        score += 0.8;
+      }
+
+      if (/\bwho\b/.test(text)) {
+        if (
+          /\b(full name|name|first name|last name|surname|employee|staff|person|respondent|beneficiary|owner|operator|applicant|client|customer|student|teacher|member)\b/.test(
+            name
+          )
+        ) {
+          score += 1.25;
+        }
+
+        const examples =
+          Array.isArray(
+            column.examples
+          )
+            ? column.examples
+            : [];
+
+        if (
+          examples.some(
+            (value) =>
+              /^[\p{L}.'-]+(?:\s+[\p{L}.'-]+)+$/u.test(
+                String(value).trim()
+              )
+          )
+        ) {
+          score += 0.35;
+        }
+      }
+
+      return {
+        name: column.name,
+        score,
+        index,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        a.index - b.index
+    );
+
+  if (!scored.length) {
+    return [];
+  }
+
+  const best =
+    scored[0];
+
+  if (
+    target &&
+    best.score < 0.55
+  ) {
+    return [];
+  }
+
+  const selected = [
+    best.name,
+  ];
+
+  /**
+   * If "who" maps to split identity fields such as FIRST NAME
+   * and LAST NAME, preserve closely related identity columns too.
+   * This remains schema-driven; nothing is hardcoded to one dashboard.
+   */
+  if (/\bwho\b/.test(text)) {
+    for (const item of scored.slice(1)) {
+      const normalized =
+        normalizeText(item.name);
+
+      if (
+        /\b(first name|last name|surname|middle name|middle initial|full name|name)\b/.test(
+          normalized
+        ) &&
+        !selected.includes(
+          item.name
+        )
+      ) {
+        selected.push(
+          item.name
+        );
+      }
+
+      if (
+        selected.length >= 3
+      ) {
+        break;
+      }
+    }
+  }
+
+  return selected;
+}
+
+
+function repairRankingPlan({
+  schema,
+  plan,
+  question,
+}) {
+  if (
+    !plan ||
+    plan.route !== "dataset"
+  ) {
+    return plan;
+  }
+
+  const direction =
+    detectRankingDirectionFromQuestion(
+      question
+    );
+
+  const asksIdentity =
+    /\bwho\b/.test(
+      normalizeText(question)
+    ) ||
+    /\b(?:which|what)\s+.+?\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\b/.test(
+      normalizeText(question)
+    );
+
+  if (
+    !direction ||
+    !asksIdentity
+  ) {
+    return plan;
+  }
+
+  const metricColumn =
+    inferRankingMetricColumn({
+      schema,
+      plan,
+      question,
+    });
+
+  if (!metricColumn) {
+    return plan;
+  }
+
+  const labelColumns =
+    inferRankingLabelColumns({
+      schema,
+      plan,
+      question,
+      metricColumn,
+    });
+
+  if (!labelColumns.length) {
+    return plan;
+  }
+
+  const existingSelect =
+    Array.isArray(
+      plan.selectColumns
+    )
+      ? plan.selectColumns
+      : [];
+
+  const selectColumns =
+    [
+      ...labelColumns,
+      metricColumn,
+      ...existingSelect.filter(
+        (column) =>
+          column !== metricColumn &&
+          !labelColumns.includes(
+            column
+          )
+      ),
+    ].filter(
+      (value, index, array) =>
+        value &&
+        array.indexOf(value) ===
+          index
+    );
+
+  return {
+    ...plan,
+
+    operation:
+      String(plan.operation || "")
+        .toLowerCase() ===
+        "rank_groups"
+        ? "rank_groups"
+        : "rank_rows",
+
+    column:
+      metricColumn,
+
+    labelColumn:
+      labelColumns[0],
+
+    groupBy:
+      String(plan.operation || "")
+        .toLowerCase() ===
+        "rank_groups"
+        ? (
+            plan.groupBy ||
+            labelColumns[0]
+          )
+        : null,
+
+    direction,
+
+    limit:
+      detectRankingLimitFromQuestion(
+        question
+      ),
+
+    selectColumns,
+
+    outputRequested:
+      true,
+
+    showAll:
+      false,
+  };
+}
+
+
 /**
  * Normalize both Groq and local plans into the SAME execution shape.
  *
@@ -454,7 +901,12 @@ function normalizePlannerPlan({
         );
   }
 
-  return normalized;
+  return repairRankingPlan({
+    schema,
+    plan:
+      normalized,
+    question,
+  });
 }
 
 /**

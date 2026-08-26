@@ -721,20 +721,65 @@ function extractRankingRequest(
     return null;
   }
 
-  const limit = detectLimit(question, 10);
+  const explicitTopN =
+    /\b(?:top|bottom|first|last)\s+\d{1,3}\b/.test(
+      text
+    );
+
+  const limit = detectLimit(
+    question,
+    explicitTopN ? 10 : 1
+  );
 
   let labelTarget = null;
   let metricTarget = null;
   let aggregation = null;
 
+  /**
+   * Generic identity-ranking language.
+   *
+   * Examples:
+   * - "who has the highest actual salary in PMED division"
+   * - "which municipality has the highest production"
+   * - "what position title has the highest actual salary"
+   *
+   * "who" intentionally maps to a semantic identity target rather
+   * than a hardcoded schema column. rankColumns() will choose from
+   * the CURRENT worksheet schema.
+   */
+  let match = text.match(
+    /\bwho\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least)\s+(.+?)(?:\s+\b(?:in|within|among|for)\b\s+.+)?$/
+  );
+
+  if (match?.[1]) {
+    labelTarget = "person name employee";
+    metricTarget = normalizeTarget(match[1]);
+  }
+
+  if (!labelTarget || !metricTarget) {
+    match = text.match(
+      /\b(?:which|what)\s+(.+?)\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least)\s+(.+?)(?:\s+\b(?:in|within|among|for)\b\s+.+)?$/
+    );
+
+    if (match?.[1] && match?.[2]) {
+      labelTarget = normalizeTarget(match[1]);
+      metricTarget = normalizeTarget(match[2]);
+    }
+  }
+
   // Examples:
   // top 10 farmers by area
   // bottom 5 municipalities by production
-  let match = text.match(
-    /\b(?:top|bottom|first|last)\s+\d{1,3}\s+(.+?)\s+(?:by|based on|according to)\s+(.+)$/
-  );
+  if (!labelTarget || !metricTarget) {
+    match = text.match(
+      /\b(?:top|bottom|first|last)\s+\d{1,3}\s+(.+?)\s+(?:by|based on|according to)\s+(.+)$/
+    );
+  }
 
-  if (match) {
+  if (
+    (!labelTarget || !metricTarget) &&
+    match
+  ) {
     labelTarget = normalizeTarget(match[1]);
     metricTarget = normalizeTarget(match[2]);
   }
@@ -785,12 +830,52 @@ function extractRankingRequest(
     .replace(/\s+/g, " ")
     .trim();
 
+  const asksWho =
+    /\bwho\b/.test(text);
+
   const labelCandidates = rankColumns(
     labelTarget,
     schema,
     datasetName
   )
     .filter((item) => item.type !== "number")
+    .map((item) => {
+      let score = item.score;
+
+      if (asksWho) {
+        const name =
+          normalizeText(item.name);
+
+        const examples =
+          Array.isArray(item.examples)
+            ? item.examples
+            : [];
+
+        if (
+          /\b(full name|name|first name|last name|surname|employee|staff|person|respondent|beneficiary|owner|operator|applicant|client|customer|student|teacher|member)\b/.test(
+            name
+          )
+        ) {
+          score += 1.25;
+        }
+
+        if (
+          examples.some(
+            (value) =>
+              /^[\p{L}.'-]+(?:\s+[\p{L}.'-]+)+$/u.test(
+                String(value).trim()
+              )
+          )
+        ) {
+          score += 0.35;
+        }
+      }
+
+      return {
+        ...item,
+        score,
+      };
+    })
     .sort((a, b) => b.score - a.score);
 
   const metricCandidates = rankColumns(
