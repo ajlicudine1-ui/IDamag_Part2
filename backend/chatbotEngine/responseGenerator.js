@@ -16,6 +16,96 @@ const {
  * It NEVER changes result.value.
  * It only changes how the verified answer is presented.
  */
+
+function hasStructuredRows(result) {
+  return Array.isArray(result?.results) && result.results.length > 0;
+}
+
+function hasStructuredFilterGroups(result) {
+  return Array.isArray(result?.filterGroups) && result.filterGroups.some(
+    (group) => Array.isArray(group?.results) && group.results.length > 0
+  );
+}
+
+function getFilterDisplayValues(filters = []) {
+  const values = [];
+  const seen = new Set();
+  for (const filter of filters || []) {
+    const rawValues = Array.isArray(filter?.value) ? filter.value : [filter?.value];
+    for (const raw of rawValues) {
+      if (raw === null || raw === undefined || String(raw).trim() === "") continue;
+      const display = String(raw).trim();
+      const key = display.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        values.push(display);
+      }
+    }
+  }
+  return values;
+}
+
+function buildFilterGroupLabel(filters = [], question = "") {
+  const values = getFilterDisplayValues(filters);
+  if (!values.length) return "";
+  const q = String(question || "").toLowerCase();
+  return values
+    .map((value, index) => ({ value, index, pos: q.indexOf(String(value).toLowerCase()) }))
+    .sort((a, b) => (a.pos < 0 ? 1e12 : a.pos) - (b.pos < 0 ? 1e12 : b.pos) || a.index - b.index)
+    .map((x) => x.value)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function formatStructuredObject(row) {
+  if (!row || typeof row !== "object" || Array.isArray(row)) {
+    return String(row ?? "").trim();
+  }
+  return Object.entries(row)
+    .filter(([, value]) => value !== null && value !== undefined && String(value).trim() !== "")
+    .map(([key, value]) => `${humanizeColumnName(key)}: ${formatVerifiedValue(value)}`)
+    .join("; ");
+}
+
+function buildStructuredLookupAnswer({ question, plan, result }) {
+  if (!hasStructuredRows(result)) return "";
+  const rows = result.results;
+  const entityLabel = buildFilterGroupLabel(plan?.filters || result?.filters || [], question);
+  if (rows.length === 1 && rows[0] && typeof rows[0] === "object" && !Array.isArray(rows[0])) {
+    const content = formatStructuredObject(rows[0]);
+    if (!content) return "";
+    return entityLabel ? `${entityLabel} — ${content}.` : `${content}.`;
+  }
+  const items = rows.map((row, index) => {
+    const content = formatStructuredObject(row);
+    return content ? `${index + 1}. ${content}` : "";
+  }).filter(Boolean);
+  if (!items.length) return "";
+  return entityLabel ? `${entityLabel}:\n${items.join("\n")}` : items.join("\n");
+}
+
+function buildStructuredGroupedAnswer({ question, result }) {
+  if (!hasStructuredFilterGroups(result)) return "";
+  const sections = [];
+  for (const group of result.filterGroups) {
+    const rows = Array.isArray(group?.results) ? group.results : [];
+    if (!rows.length) continue;
+    const label = buildFilterGroupLabel(group?.filters || [], question) || `Group ${group?.index || sections.length + 1}`;
+    if (rows.length === 1 && rows[0] && typeof rows[0] === "object" && !Array.isArray(rows[0])) {
+      const content = formatStructuredObject(rows[0]);
+      if (content) sections.push(`${label} — ${content}.`);
+      continue;
+    }
+    const items = rows.map((row, index) => {
+      const content = formatStructuredObject(row);
+      return content ? `${index + 1}. ${content}` : "";
+    }).filter(Boolean);
+    if (items.length) sections.push(`${label}:\n${items.join("\n")}`);
+  }
+  return sections.join("\n");
+}
+
 function buildLocalNaturalAnswer({
   question,
   plan,
@@ -24,6 +114,12 @@ function buildLocalNaturalAnswer({
   const originalAnswer = String(
     result?.answer || ""
   ).trim();
+
+  const groupedAnswer = buildStructuredGroupedAnswer({ question, result });
+  if (groupedAnswer) return groupedAnswer;
+
+  const structuredLookupAnswer = buildStructuredLookupAnswer({ question, plan, result });
+  if (structuredLookupAnswer) return structuredLookupAnswer;
 
   if (!originalAnswer) {
     return "";
@@ -410,11 +506,10 @@ function shouldNaturalize(
     return false;
   }
 
-  if (
-    !result.answer ||
-    typeof result.answer !==
-      "string"
-  ) {
+  const hasTextAnswer = typeof result.answer === "string" && result.answer.trim() !== "";
+  const hasStructuredAnswer = hasStructuredRows(result) || hasStructuredFilterGroups(result);
+
+  if (!hasTextAnswer && !hasStructuredAnswer) {
     return false;
   }
 
@@ -666,6 +761,18 @@ Say:
 Never change the verified numeric value.
 
 ============================================================
+MULTI-ENTITY / FILTER-GROUP RESULTS
+============================================================
+
+The VERIFIED RESULT may contain "filterGroups". Each group is an independently verified entity or filter combination. Preserve each group and never mix values between groups. Preserve every requested field. If the user asks to compare groups, present the verified values clearly. Do not calculate differences, winners, or percentages unless those calculations already exist in VERIFIED RESULT. These rules apply generically to people, places, programs, projects, commodities, years, offices, and other entities.
+
+============================================================
+MULTI-FIELD LOOKUPS
+============================================================
+
+If one verified row contains several requested fields, include every requested field and preserve every verified value.
+
+============================================================
 LISTS
 ============================================================
 
@@ -737,6 +844,7 @@ Return ONLY the final user-facing answer.
               `OPERATION:\n${String(
                 plan?.operation || ""
               )}\n\n` +
+              `LOCAL VERIFIED RENDERING:\n${fallback}\n\n` +
               `VERIFIED RESULT:\n${JSON.stringify(
                 result
               )}`,
