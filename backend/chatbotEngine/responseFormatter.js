@@ -53,16 +53,22 @@ function lowerLabel(
     return "";
   }
 
-  // Preserve abbreviations / code-like labels.
-  if (
-    /^[A-Z0-9\s/().&%-]+$/.test(
-      label
-    ) &&
-    label.length <= 12
-  ) {
-    return label;
-  }
-
+  /**
+   * FIELD LABELS should read naturally in sentences:
+   *
+   * ACTUAL SALARY
+   * -> actual salary
+   *
+   * POSITION TITLE
+   * -> position title
+   *
+   * UNIT/SECTION/STATION
+   * -> unit/section/station
+   *
+   * This function is used for schema/metric labels only.
+   * Entity VALUES such as ORED, PMED, DIRECTOR IV, names, etc.
+   * are never passed through this lowercasing helper.
+   */
   return label
     .toLowerCase();
 }
@@ -1127,9 +1133,14 @@ function formatRankingAnswer({
     const item =
       results[0];
 
+    const aggregatePhrase =
+      aggregation
+        ? `${aggregation} ${metric}`
+        : metric;
+
     return (
       `${item.label} has the ${rankWord} ` +
-      `${aggregationText}${metric} at ` +
+      `${aggregatePhrase} at ` +
       `${formatVerifiedValue(
         item.value
       )}.`

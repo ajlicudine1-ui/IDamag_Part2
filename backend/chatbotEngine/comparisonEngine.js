@@ -671,6 +671,19 @@ function formatPercent(
 }
 
 
+function humanizeMetricLabel(
+  value
+) {
+  return String(
+    value || "value"
+  )
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+
 /**
  * Compare the most relevant VERIFIED values from conversation history.
  *
@@ -739,6 +752,11 @@ function compareRecentVerifiedResults({
       .trim()
       .toLowerCase();
 
+  const metricLabel =
+    humanizeMetricLabel(
+      left.metric
+    );
+
   const difference =
     Math.abs(
       left.value -
@@ -768,7 +786,7 @@ function compareRecentVerifiedResults({
         operation:
           "clarify",
         answer:
-          `I can't calculate a percentage relative to ${right.label} because its ${left.metric} is zero.`,
+          `I can't calculate a percentage relative to ${right.label} because its ${metricLabel} is zero.`,
       };
     }
 
@@ -838,7 +856,7 @@ function compareRecentVerifiedResults({
             Math.abs(
               percentChange
             )
-          )}% ${opposite} than ${right.label} for ${left.metric}.`,
+          )}% ${opposite} than ${right.label} for ${metricLabel}.`,
       };
     }
 
@@ -872,7 +890,7 @@ function compareRecentVerifiedResults({
       answer:
         `${left.label} is ${formatPercent(
           percentChange
-        )}% ${relation} than ${right.label} for ${left.metric}.`,
+        )}% ${relation} than ${right.label} for ${metricLabel}.`,
     };
   }
 
@@ -917,12 +935,12 @@ function compareRecentVerifiedResults({
 
       answer:
         signedDifference === 0
-          ? `${left.label} and ${right.label} have the same ${left.metric}: ${formatNumber(
+          ? `${left.label} and ${right.label} have the same ${metricLabel}: ${formatNumber(
               left.value
             )}.`
           : `${left.label} is ${formatNumber(
               difference
-            )} ${relationship} ${right.label} for ${left.metric}.`,
+            )} ${relationship} ${right.label} for ${metricLabel}.`,
     };
   }
 
@@ -960,7 +978,7 @@ function compareRecentVerifiedResults({
         right.value,
       difference: 0,
       answer:
-        `${left.label} and ${right.label} have the same ${left.metric}: ${formatNumber(
+        `${left.label} and ${right.label} have the same ${metricLabel}: ${formatNumber(
           left.value
         )}.`,
     };
@@ -990,7 +1008,7 @@ function compareRecentVerifiedResults({
       winner:
         lower.label,
       answer:
-        `${lower.label} has the lower ${left.metric} at ${formatNumber(
+        `${lower.label} has the lower ${metricLabel} at ${formatNumber(
           lower.value
         )}.`,
     };
@@ -1016,7 +1034,7 @@ function compareRecentVerifiedResults({
     winner:
       higher.label,
     answer:
-      `${higher.label} has the higher ${left.metric} at ${formatNumber(
+      `${higher.label} has the higher ${metricLabel} at ${formatNumber(
         higher.value
       )}.`,
   };
