@@ -98,6 +98,62 @@ function normalizeTarget(value) {
     .trim();
 }
 
+
+/**
+ * Preserve every independent identifier field from the same
+ * worksheet instead of collapsing record identity to the first
+ * match only.
+ *
+ * Example:
+ *   FIRST NAME = DORIS JOY
+ *   LAST NAME  = GARCIA
+ *
+ * Both filters execute with AND.
+ */
+function getDatasetIdentifierFilters(
+  identifierMatches,
+  datasetName
+) {
+  const selected = [];
+  const seen = new Set();
+
+  for (const match of identifierMatches || []) {
+    if (
+      match?.dataset !==
+      datasetName ||
+      !match?.column
+    ) {
+      continue;
+    }
+
+    const key =
+      normalizeText(
+        match.column
+      );
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+
+    selected.push({
+      column:
+        match.column,
+
+      operator:
+        match.operator ||
+        "equals",
+
+      value:
+        match.value,
+    });
+  }
+
+  return selected;
+}
+
+
 function extractTargetPhrase(question) {
   const text = normalizeText(question);
 
@@ -828,19 +884,32 @@ function detectCrossDatasetLookup(question, schema, datasets) {
     }
 
     if (identifier.dataset === output.dataset) {
+      const identifierFilters =
+        getDatasetIdentifierFilters(
+          identifierMatches,
+          output.dataset
+        );
+
       return {
         route: "dataset",
         dataset: output.dataset,
         operation: "lookup",
         column: output.column,
         groupBy: null,
-        filters: [
-          {
-            column: identifier.column,
-            operator: identifier.operator || "equals",
-            value: identifier.value,
-          },
-        ],
+        filters:
+          identifierFilters.length
+            ? identifierFilters
+            : [
+                {
+                  column:
+                    identifier.column,
+                  operator:
+                    identifier.operator ||
+                    "equals",
+                  value:
+                    identifier.value,
+                },
+              ],
         selectColumns: [output.column],
         transform: null,
         outputRequested: true,
@@ -1077,6 +1146,12 @@ function detectFilteredFieldLookup(
      * - the requested output column
      * - the identifying value/filter
      */
+    const sameDatasetIdentifiers =
+      getDatasetIdentifierFilters(
+        identifierMatches,
+        output.dataset
+      );
+
     const sameDatasetIdentifier =
       identifierMatches.find(
         (item) =>
@@ -1084,7 +1159,10 @@ function detectFilteredFieldLookup(
           output.dataset
       );
 
-    if (sameDatasetIdentifier) {
+    if (
+      sameDatasetIdentifiers.length ||
+      sameDatasetIdentifier
+    ) {
       const asksForList =
         /*
          * Generic list intent:
@@ -1109,17 +1187,20 @@ function detectFilteredFieldLookup(
             : "lookup",
         column: output.column,
         groupBy: null,
-        filters: [
-          {
-            column:
-              sameDatasetIdentifier.column,
-            operator:
-              sameDatasetIdentifier.operator ||
-              "equals",
-            value:
-              sameDatasetIdentifier.value,
-          },
-        ],
+        filters:
+          sameDatasetIdentifiers.length
+            ? sameDatasetIdentifiers
+            : [
+                {
+                  column:
+                    sameDatasetIdentifier.column,
+                  operator:
+                    sameDatasetIdentifier.operator ||
+                    "equals",
+                  value:
+                    sameDatasetIdentifier.value,
+                },
+              ],
         selectColumns:
           asksForList
             ? []

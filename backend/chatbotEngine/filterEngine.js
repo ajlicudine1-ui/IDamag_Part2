@@ -337,6 +337,140 @@ function removeControlNumbers(
  *   Vener
  * ]
  */
+
+function findTextOccurrences(
+  text,
+  phrase
+) {
+  const haystack =
+    String(text || "");
+
+  const needle =
+    String(phrase || "");
+
+  if (!haystack || !needle) {
+    return [];
+  }
+
+  const spans = [];
+  let start = 0;
+
+  while (start <= haystack.length - needle.length) {
+    const index =
+      haystack.indexOf(
+        needle,
+        start
+      );
+
+    if (index < 0) {
+      break;
+    }
+
+    spans.push({
+      start: index,
+      end:
+        index +
+        needle.length,
+    });
+
+    start = index + 1;
+  }
+
+  return spans;
+}
+
+function spanContains(
+  outer,
+  inner
+) {
+  return (
+    outer &&
+    inner &&
+    outer.start <= inner.start &&
+    outer.end >= inner.end
+  );
+}
+
+/**
+ * Keep the most specific live values from the SAME column.
+ *
+ * A shorter value is removed only when every occurrence of it in
+ * the question is already contained inside a longer accepted value.
+ *
+ * This means:
+ *
+ *   "Doris Joy Garcia"
+ *
+ * can safely produce:
+ *   FIRST NAME = DORIS JOY
+ *   LAST NAME  = GARCIA
+ *
+ * instead of:
+ *   FIRST NAME IN [DORIS JOY, JOY]
+ *
+ * while a real multi-entity question such as:
+ *
+ *   "salary of Doris Joy and Joy Montero"
+ *
+ * can still preserve the second, independent JOY occurrence.
+ *
+ * This is dataset-agnostic and works the same way for names,
+ * municipalities, project titles, commodities, offices, IDs,
+ * and other live text values.
+ */
+function suppressContainedMatches(
+  columnMatches
+) {
+  const ordered =
+    [...columnMatches]
+      .sort(
+        (a, b) =>
+          b.normalizedLength -
+            a.normalizedLength ||
+          b.score - a.score
+      );
+
+  const accepted = [];
+
+  for (const candidate of ordered) {
+    const spans =
+      Array.isArray(candidate.spans)
+        ? candidate.spans
+        : [];
+
+    if (!spans.length) {
+      accepted.push(candidate);
+      continue;
+    }
+
+    const fullyCovered =
+      spans.every(
+        (candidateSpan) =>
+          accepted.some(
+            (stronger) =>
+              stronger.normalizedLength >
+                candidate.normalizedLength &&
+              Array.isArray(
+                stronger.spans
+              ) &&
+              stronger.spans.some(
+                (strongerSpan) =>
+                  spanContains(
+                    strongerSpan,
+                    candidateSpan
+                  )
+              )
+          )
+      );
+
+    if (!fullyCovered) {
+      accepted.push(candidate);
+    }
+  }
+
+  return accepted;
+}
+
 function inferValueFilters(
   rows,
   question,
@@ -443,6 +577,16 @@ function inferValueFilters(
               1000 +
               normalizedValue
                 .length,
+
+            normalizedLength:
+              normalizedValue
+                .length,
+
+            spans:
+              findTextOccurrences(
+                normalizedQuestion,
+                normalizedValue
+              ),
           });
         }
       } else if (
@@ -463,6 +607,16 @@ function inferValueFilters(
           score:
             normalizedValue
               .length,
+
+          normalizedLength:
+            normalizedValue
+              .length,
+
+          spans:
+            findTextOccurrences(
+              normalizedQuestion,
+              normalizedValue
+            ),
         });
       }
     }
@@ -549,24 +703,32 @@ function inferValueFilters(
       continue;
     }
 
+    const specificMatches =
+      suppressContainedMatches(
+        columnMatches
+      );
+
+    if (!specificMatches.length) {
+      continue;
+    }
+
     /**
-     * One value:
-     *
-     * DIVISION = PMED
+     * One specific value survives after contained substring
+     * matches are removed.
      */
     if (
-      columnMatches.length ===
+      specificMatches.length ===
       1
     ) {
       selected.push({
         column,
 
         operator:
-          columnMatches[0]
+          specificMatches[0]
             .operator,
 
         value:
-          columnMatches[0]
+          specificMatches[0]
             .value,
       });
 
@@ -574,12 +736,9 @@ function inferValueFilters(
     }
 
     /**
-     * Multiple values:
-     *
-     * NAME IN [
-     *   Roberto,
-     *   Vener
-     * ]
+     * Multiple independent values from the SAME column use IN.
+     * A shorter value only survives when it has an occurrence
+     * outside a longer matched value in the user's question.
      */
     selected.push({
       column,
@@ -588,7 +747,7 @@ function inferValueFilters(
         "in",
 
       value:
-        columnMatches.map(
+        specificMatches.map(
           (item) =>
             item.value
         ),
