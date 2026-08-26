@@ -2280,26 +2280,6 @@ function createLocalPlan({
     return groupedListRequest;
   }
 
-  // Resolve grouped analytical comparisons BEFORE generic
-  // multi-entity lookups.
-  //
-  // Example:
-  // "Compare the average salary of PMED and ORED"
-  //
-  // must become group_average, not raw lookup filterGroups.
-  const groupedAggregateComparison =
-    detectGroupedAggregateComparison(
-      question,
-      schema,
-      datasets
-    );
-
-  if (
-    groupedAggregateComparison
-  ) {
-    return groupedAggregateComparison;
-  }
-
   // Resolve explicit multi-entity lookups before ordinary
   // multi-field/single-entity lookup logic.
   const multiEntityLookup =
@@ -2653,7 +2633,6 @@ module.exports = {
   extractTargetPhrase,
   extractGroupingPhrase,
   detectCrossDatasetLookup,
-  detectGroupedAggregateComparison,
   detectMultiEntityLookup,
   detectMultiFieldLookup,
   detectTextCountWithFilter,
