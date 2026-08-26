@@ -23,6 +23,7 @@ const {
   normalizeDatasets,
   normalizeText,
   similarity,
+  parseNumber,
 } = require("./utils");
 
 const {
@@ -2828,6 +2829,567 @@ function repairMultiEntityFilters({
 
 /**
  * ==========================================================
+ * PREVIOUS-RESULT IDENTITY FOLLOW-UPS
+ * ==========================================================
+ *
+ * Handles:
+ *   "Who are those persons?"
+ *   "Who are those employees?"
+ *   "Show those records."
+ *   "Which municipalities are those?"
+ *
+ * It uses the previous VERIFIED JavaScript result, not Groq prose.
+ * No dashboard, worksheet, person, division, province, municipality,
+ * or business field is hardcoded.
+ */
+
+function detectPreviousResultIdentityRequest(
+  question
+) {
+  const text =
+    normalizeText(question);
+
+  if (!text) {
+    return false;
+  }
+
+  const hasReference =
+    /\b(those|these|them|the two)\b/i.test(
+      text
+    );
+
+  if (!hasReference) {
+    return false;
+  }
+
+  return (
+    /\bwho\b/i.test(text) ||
+    /\bwhich\b/i.test(text) ||
+    /\bwhat\b/i.test(text) ||
+    /\bshow\b/i.test(text) ||
+    /\blist\b/i.test(text) ||
+    /\bgive\b/i.test(text) ||
+    /\bpersons?\b/i.test(text) ||
+    /\bpeople\b/i.test(text) ||
+    /\bemployees?\b/i.test(text) ||
+    /\bincumbents?\b/i.test(text) ||
+    /\bstaff\b/i.test(text) ||
+    /\brecords?\b/i.test(text) ||
+    /\brows?\b/i.test(text)
+  );
+}
+
+
+function getDatasetSchema(
+  schema,
+  datasetName
+) {
+  return (
+    (schema || []).find(
+      (item) =>
+        String(item?.name || "") ===
+        String(datasetName || "")
+    ) ||
+    null
+  );
+}
+
+
+function findPreviousResultIdentityColumn({
+  schema,
+  rows,
+  datasetName,
+  question,
+  excludedColumns = [],
+}) {
+  const datasetSchema =
+    getDatasetSchema(
+      schema,
+      datasetName
+    );
+
+  if (!datasetSchema) {
+    return null;
+  }
+
+  const excluded =
+    new Set(
+      (excludedColumns || [])
+        .filter(Boolean)
+        .map(
+          (column) =>
+            normalizeText(column)
+        )
+    );
+
+  // Honor a real field explicitly requested by the follow-up.
+  const requested =
+    inferRequestedColumnFromQuestion({
+      schema,
+      question,
+      preferredDataset:
+        datasetName,
+      excludedColumns,
+    });
+
+  if (
+    requested?.column &&
+    !excluded.has(
+      normalizeText(
+        requested.column
+      )
+    )
+  ) {
+    return requested.column;
+  }
+
+  const normalizedQuestion =
+    normalizeText(question);
+
+  const asksForPerson =
+    /\b(who|person|persons|people|employee|employees|incumbent|incumbents|staff)\b/i.test(
+      normalizedQuestion
+    );
+
+  const candidates =
+    (datasetSchema.columns || [])
+      .filter(
+        (column) =>
+          column?.name &&
+          !excluded.has(
+            normalizeText(
+              column.name
+            )
+          )
+      )
+      .map(
+        (column, index) => {
+          const name =
+            normalizeText(
+              column.name
+            );
+
+          let score =
+            similarity(
+              normalizedQuestion,
+              name
+            );
+
+          const questionTokens =
+            new Set(
+              normalizedQuestion
+                .split(/\s+/)
+                .filter(Boolean)
+            );
+
+          const columnTokens =
+            name
+              .split(/\s+/)
+              .filter(Boolean);
+
+          if (
+            columnTokens.length
+          ) {
+            const overlap =
+              columnTokens.filter(
+                (token) =>
+                  questionTokens.has(token)
+              ).length;
+
+            score +=
+              overlap /
+              columnTokens.length;
+          }
+
+          if (asksForPerson) {
+            if (
+              /\b(full name|name of incumbent|employee name|person name)\b/.test(
+                name
+              )
+            ) {
+              score += 3;
+            } else if (
+              /\b(name|incumbent|employee|person|staff)\b/.test(
+                name
+              )
+            ) {
+              score += 2;
+            } else if (
+              /\b(first name|last name|surname)\b/.test(
+                name
+              )
+            ) {
+              score += 1;
+            }
+          }
+
+          const samples =
+            (rows || [])
+              .slice(0, 40)
+              .map(
+                (row) =>
+                  row?.[
+                    column.name
+                  ]
+              )
+              .filter(
+                (value) =>
+                  value !== null &&
+                  value !== undefined &&
+                  String(value).trim() !== ""
+              );
+
+          if (
+            samples.some(
+              (value) =>
+                /[\p{L}]/u.test(
+                  String(value)
+                )
+            )
+          ) {
+            score += 0.25;
+          }
+
+          if (
+            samples.some(
+              (value) =>
+                /^[\p{L}.'-]+(?:\s+[\p{L}.'-]+)+$/u.test(
+                  String(value).trim()
+                )
+            )
+          ) {
+            score += 0.25;
+          }
+
+          return {
+            column:
+              column.name,
+            score,
+            index,
+          };
+        })
+      .sort(
+        (a, b) =>
+          b.score -
+            a.score ||
+          a.index -
+            b.index
+      );
+
+  return (
+    candidates[0]?.column ||
+    null
+  );
+}
+
+
+function valuesMatchForPreviousResult(
+  actual,
+  expected
+) {
+  if (
+    actual === null ||
+    actual === undefined ||
+    expected === null ||
+    expected === undefined
+  ) {
+    return false;
+  }
+
+  const actualNumber =
+    parseNumber(actual);
+
+  const expectedNumber =
+    parseNumber(expected);
+
+  if (
+    actualNumber !== null &&
+    expectedNumber !== null
+  ) {
+    const tolerance =
+      Math.max(
+        1e-9,
+        Math.abs(
+          expectedNumber
+        ) * 1e-9
+      );
+
+    return (
+      Math.abs(
+        actualNumber -
+        expectedNumber
+      ) <= tolerance
+    );
+  }
+
+  return (
+    normalizeText(actual) ===
+    normalizeText(expected)
+  );
+}
+
+
+function buildPreviousResultIdentityPlan({
+  datasets,
+  schema,
+  context,
+  question,
+}) {
+  const previousPlan =
+    context?.lastPlan;
+
+  const previousResult =
+    context?.lastResult;
+
+  if (
+    !previousPlan ||
+    !previousResult ||
+    previousPlan.route !==
+      "dataset"
+  ) {
+    return null;
+  }
+
+  const datasetName =
+    previousPlan.dataset;
+
+  const groupColumn =
+    previousPlan.groupBy;
+
+  const metricColumn =
+    previousPlan.column;
+
+  const rows =
+    datasets?.[
+      datasetName
+    ];
+
+  if (
+    !datasetName ||
+    !groupColumn ||
+    !metricColumn ||
+    !Array.isArray(rows) ||
+    !rows.length
+  ) {
+    return null;
+  }
+
+  const verifiedRows =
+    Array.isArray(
+      previousResult.results
+    )
+      ? previousResult.results
+      : [];
+
+  if (!verifiedRows.length) {
+    return null;
+  }
+
+  const identityColumn =
+    findPreviousResultIdentityColumn({
+      schema,
+      rows,
+      datasetName,
+      question,
+      excludedColumns: [
+        groupColumn,
+        metricColumn,
+      ],
+    });
+
+  if (!identityColumn) {
+    return null;
+  }
+
+  const filterGroups = [];
+  const seen =
+    new Set();
+
+  for (
+    const resultRow of
+    verifiedRows
+  ) {
+    if (
+      !resultRow ||
+      typeof resultRow !==
+        "object"
+    ) {
+      continue;
+    }
+
+    let groupValue =
+      resultRow[
+        groupColumn
+      ];
+
+    let metricValue =
+      resultRow[
+        metricColumn
+      ];
+
+    if (
+      groupValue === undefined
+    ) {
+      groupValue =
+        resultRow.label ??
+        resultRow.group ??
+        resultRow.groupValue;
+    }
+
+    if (
+      metricValue === undefined
+    ) {
+      metricValue =
+        resultRow.value ??
+        resultRow.result ??
+        resultRow.maximum ??
+        resultRow.minimum ??
+        resultRow.average ??
+        resultRow.sum;
+    }
+
+    if (
+      groupValue === undefined ||
+      groupValue === null ||
+      metricValue === undefined ||
+      metricValue === null
+    ) {
+      continue;
+    }
+
+    // Resolve calculated values back to a real worksheet row.
+    const matchingRow =
+      rows.find(
+        (row) =>
+          valuesMatchForPreviousResult(
+            row?.[
+              groupColumn
+            ],
+            groupValue
+          ) &&
+          valuesMatchForPreviousResult(
+            row?.[
+              metricColumn
+            ],
+            metricValue
+          )
+      );
+
+    if (!matchingRow) {
+      continue;
+    }
+
+    const realGroupValue =
+      matchingRow[
+        groupColumn
+      ];
+
+    const realMetricValue =
+      matchingRow[
+        metricColumn
+      ];
+
+    const key = [
+      normalizeText(
+        realGroupValue
+      ),
+      normalizeText(
+        realMetricValue
+      ),
+    ].join("::");
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+
+    filterGroups.push({
+      logic:
+        "and",
+
+      filters: [
+        {
+          column:
+            groupColumn,
+          operator:
+            "equals",
+          value:
+            realGroupValue,
+        },
+
+        {
+          column:
+            metricColumn,
+          operator:
+            "equals",
+          value:
+            realMetricValue,
+        },
+      ],
+    });
+  }
+
+  if (!filterGroups.length) {
+    return null;
+  }
+
+  return {
+    route:
+      "dataset",
+
+    dataset:
+      datasetName,
+
+    operation:
+      "lookup",
+
+    column:
+      identityColumn,
+
+    labelColumn:
+      identityColumn,
+
+    groupBy:
+      null,
+
+    aggregation:
+      null,
+
+    direction:
+      null,
+
+    filters:
+      [],
+
+    filterGroups,
+
+    filterGroupLogic:
+      "or",
+
+    selectColumns: [
+      identityColumn,
+      groupColumn,
+      metricColumn,
+    ],
+
+    outputRequested:
+      true,
+
+    transform:
+      null,
+
+    limit:
+      100,
+
+    showAll:
+      true,
+  };
+}
+
+
+/**
+ * ==========================================================
  * STEP 10 — DETECT ANALYTICAL COMPARISONS
  * ==========================================================
  *
@@ -3700,6 +4262,62 @@ async function answerQuestion(
           entityResolution.changes || [],
       };
     };
+
+  // ========================================================
+  // PREVIOUS VERIFIED GROUP-RESULT FOLLOW-UP
+  // ========================================================
+  //
+  // Example:
+  // "Compare the highest actual salary of A and B"
+  // "Who are those persons?"
+  //
+  // This is resolved from the previous VERIFIED JavaScript result
+  // before Groq planning.
+  //
+  if (
+    conversationContext
+      .isFollowUp === true &&
+    detectPreviousResultIdentityRequest(
+      cleanQuestion
+    )
+  ) {
+    const previousIdentityPlan =
+      buildPreviousResultIdentityPlan({
+        datasets,
+        schema,
+        context:
+          conversationContext,
+        question:
+          cleanQuestion,
+      });
+
+    if (previousIdentityPlan) {
+      if (
+        process.env.NODE_ENV !==
+        "production"
+      ) {
+        console.log(
+          "Chatbot previous-result identity plan:",
+          JSON.stringify(
+            previousIdentityPlan,
+            null,
+            2
+          )
+        );
+      }
+
+      const previousIdentityResult =
+        await executeResolvedPlan(
+          previousIdentityPlan
+        );
+
+      return {
+        ...previousIdentityResult,
+        plannerSource:
+          "conversation",
+      };
+    }
+  }
 
   // ========================================================
   // 1. GROQ FIRST

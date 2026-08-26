@@ -77,6 +77,24 @@ function isFollowUpQuestion(
     /\bhim\b/i,
     /\bthem\b/i,
 
+    // Plural references to previously returned results.
+    /\bthose\b/i,
+    /\bthese\b/i,
+    /\bthe two\b/i,
+
+    /\bthose persons?\b/i,
+    /\bthose employees?\b/i,
+    /\bthose people\b/i,
+    /\bthose records?\b/i,
+    /\bthose rows?\b/i,
+    /\bthose municipalities\b/i,
+    /\bthose provinces\b/i,
+    /\bthose projects?\b/i,
+    /\bthose offices?\b/i,
+    /\bthose divisions?\b/i,
+    /\bthose associations?\b/i,
+    /\bthose farmers?\b/i,
+
     /\bthat person\b/i,
     /\bthat farmer\b/i,
     /\bthat association\b/i,
