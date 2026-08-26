@@ -811,6 +811,65 @@ function repairRankingIdentityPlan({
  * 2. Rebuild explicit multi-entity requests as OR-ed filter groups.
  * 3. Each entity group is a coherent AND-filter set from one real row.
  */
+
+function detectGroupedComparisonOperation(
+  question
+) {
+  const text =
+    normalizeText(question);
+
+  // Only repair explicit comparisons.
+  if (
+    !/\b(compare|comparison|versus|vs\.?)\b/.test(
+      text
+    )
+  ) {
+    return null;
+  }
+
+  if (
+    /\b(average|avg|mean)\b/.test(
+      text
+    )
+  ) {
+    return "group_average";
+  }
+
+  if (
+    /\b(total|sum|combined|overall|altogether)\b/.test(
+      text
+    )
+  ) {
+    return "group_sum";
+  }
+
+  if (
+    /\b(minimum|min|lowest|smallest|least)\b/.test(
+      text
+    )
+  ) {
+    return "group_minimum";
+  }
+
+  if (
+    /\b(maximum|max|highest|largest|greatest)\b/.test(
+      text
+    )
+  ) {
+    return "group_maximum";
+  }
+
+  if (
+    /\b(count|how many|number of)\b/.test(
+      text
+    )
+  ) {
+    return "group_count";
+  }
+
+  return null;
+}
+
 function normalizePlannerPlan({
   datasets,
   schema,
@@ -905,30 +964,169 @@ function normalizePlannerPlan({
     ];
 
   const segments =
-    splitExplicitEntitySegments(
-      question
+  splitExplicitEntitySegments(
+    question
+  );
+
+if (
+  Array.isArray(rows) &&
+  rows.length &&
+  segments.length >= 2
+) {
+  const groups =
+    segments.map(
+      (segment) =>
+        inferCoherentFilters(
+          rows,
+          segment
+        )
     );
 
   if (
-    Array.isArray(rows) &&
-    rows.length &&
-    segments.length >= 2
+    groups.every(
+      (filters) =>
+        filters.length > 0
+    )
   ) {
-    const groups =
-      segments.map(
-        (segment) =>
-          inferCoherentFilters(
-            rows,
-            segment
-          )
+    const groupedOperation =
+      detectGroupedComparisonOperation(
+        question
       );
 
-    if (
-      groups.every(
-        (filters) =>
-          filters.length > 0
-      )
-    ) {
+    // ========================================================
+    // ANALYTICAL COMPARISON
+    // ========================================================
+    if (groupedOperation) {
+      const groupMaps =
+        groups.map(
+          (filters) =>
+            new Map(
+              filters.map(
+                (filter) => [
+                  normalizeText(
+                    filter.column
+                  ),
+                  filter,
+                ]
+              )
+            )
+        );
+
+      // Find columns common to BOTH entities.
+      const commonColumns =
+        [
+          ...groupMaps[0].keys(),
+        ].filter(
+          (column) =>
+            groupMaps.every(
+              (map) =>
+                map.has(column)
+            )
+        );
+
+      const preferredGroup =
+        normalizeText(
+          normalized.groupBy ||
+          ""
+        );
+
+      let selectedGroupKey =
+        null;
+
+      // Prefer the groupBy already chosen by Groq/local planner.
+      if (
+        preferredGroup &&
+        commonColumns.includes(
+          preferredGroup
+        )
+      ) {
+        selectedGroupKey =
+          preferredGroup;
+      } else {
+        selectedGroupKey =
+          commonColumns[0] ||
+          null;
+      }
+
+      if (selectedGroupKey) {
+        const actualGroupColumn =
+          groupMaps[0]
+            .get(
+              selectedGroupKey
+            )
+            ?.column;
+
+        const groupValues = [
+        ...new Set(
+          groupMaps
+            .map(
+              (map) =>
+                map.get(
+                  selectedGroupKey
+                )
+                ?.value
+            )
+            .filter(
+              (value) =>
+                value !== null &&
+                value !== undefined &&
+                String(value).trim() !== ""
+            )
+        ),
+      ];
+
+        if (
+          actualGroupColumn &&
+          groupValues.length >= 2
+        ) {
+          normalized.operation =
+            groupedOperation;
+
+          normalized.groupBy =
+            actualGroupColumn;
+
+          normalized.filters = [
+            {
+              column:
+                actualGroupColumn,
+
+              operator:
+                "in",
+
+              value:
+                groupValues,
+            },
+          ];
+
+          // Remove the raw entity groups.
+          delete normalized.filterGroups;
+          delete normalized.filterGroupLogic;
+
+          normalized.selectColumns = [
+            actualGroupColumn,
+            ...(normalized.column
+              ? [
+                  normalized.column,
+                ]
+              : []),
+          ];
+
+          normalized.outputRequested =
+            true;
+
+          normalized.showAll =
+            true;
+
+          normalized.limit =
+            100;
+        }
+      }
+    }
+
+    // ========================================================
+    // NORMAL MULTI-ENTITY LOOKUP / COMPARISON
+    // ========================================================
+    else {
       normalized.filters =
         [];
 
@@ -937,6 +1135,7 @@ function normalizePlannerPlan({
           (filters) => ({
             logic:
               "and",
+
             filters,
           })
         );
@@ -951,6 +1150,7 @@ function normalizePlannerPlan({
         true;
     }
   }
+}
 
   if (
     Array.isArray(
