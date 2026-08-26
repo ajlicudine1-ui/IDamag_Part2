@@ -1079,11 +1079,65 @@ if (
           actualGroupColumn &&
           groupValues.length >= 2
         ) {
+          // ========================================================
+          // RESOLVE THE METRIC COLUMN
+          // ========================================================
+
+          const selectedMetricColumns =
+            (
+              Array.isArray(
+                normalized.selectColumns
+              )
+                ? normalized.selectColumns
+                : []
+            ).filter(
+              (column) =>
+                normalizeText(
+                  column
+                ) !==
+                normalizeText(
+                  actualGroupColumn
+                )
+            );
+
+          let metricColumn =
+            normalized.column ||
+            null;
+
+          /**
+           * If exactly one selected column is NOT the group column,
+           * use that as the metric.
+           *
+           * Example:
+           *
+           * groupBy:
+           *   DIVISION
+           *
+           * selectColumns:
+           *   DIVISION
+           *   ACTUAL SALARY
+           *
+           * metric:
+           *   ACTUAL SALARY
+           */
+          if (
+            selectedMetricColumns.length ===
+            1
+          ) {
+            metricColumn =
+              selectedMetricColumns[0];
+          }
+
           normalized.operation =
             groupedOperation;
 
           normalized.groupBy =
             actualGroupColumn;
+
+          // IMPORTANT:
+          // overwrite the potentially wrong Groq metric.
+          normalized.column =
+            metricColumn;
 
           normalized.filters = [
             {
@@ -1098,15 +1152,16 @@ if (
             },
           ];
 
-          // Remove the raw entity groups.
+          // Remove raw entity groups because
+          // grouped calculation uses one shared IN filter.
           delete normalized.filterGroups;
           delete normalized.filterGroupLogic;
 
           normalized.selectColumns = [
             actualGroupColumn,
-            ...(normalized.column
+            ...(metricColumn
               ? [
-                  normalized.column,
+                  metricColumn,
                 ]
               : []),
           ];
