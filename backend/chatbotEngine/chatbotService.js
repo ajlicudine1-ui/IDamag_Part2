@@ -54,6 +54,7 @@ const {
 
 const {
   compareVerifiedResults,
+  compareRecentVerifiedResults,
 } = require("./comparisonEngine");
 
 const {
@@ -3635,7 +3636,39 @@ function detectComparisonRequest(
   }
 
   // ========================================================
-  // DIFFERENCE
+  // PERCENTAGE DIFFERENCE
+  // ========================================================
+
+  if (
+    /\b(?:what|how much)\s+(?:percent|percentage)\s+higher\b/i.test(
+      text
+    ) ||
+    /\bhow many percent higher\b/i.test(
+      text
+    ) ||
+    /\bpercentage increase\b/i.test(
+      text
+    )
+  ) {
+    return "percent_higher";
+  }
+
+  if (
+    /\b(?:what|how much)\s+(?:percent|percentage)\s+lower\b/i.test(
+      text
+    ) ||
+    /\bhow many percent lower\b/i.test(
+      text
+    ) ||
+    /\bpercentage decrease\b/i.test(
+      text
+    )
+  ) {
+    return "percent_lower";
+  }
+
+  // ========================================================
+  // DIFFERENCE / HOW MUCH HIGHER OR LOWER
   // ========================================================
 
   if (
@@ -3844,22 +3877,19 @@ async function answerQuestion(
   // STEP 10 — ANALYTICAL COMPARISON FOLLOW-UPS
   // ========================================================
   //
-  // These questions should NOT be sent through the normal
-  // dataset planner because they refer to already verified
-  // previous results.
+  // Handles both:
   //
-  // Example:
+  // 1. Two standalone verified numeric results.
+  // 2. One grouped verified result containing two labels/values.
   //
-  // User:
-  // "What is Roberto's salary?"
+  // Examples:
   //
-  // User:
-  // "What is Vener's salary?"
-  //
-  // User:
   // "Who has the higher salary?"
+  // "What is the difference between them?"
+  // "How much higher is A than B?"
+  // "What percent higher is A than B?"
   //
-  // We compare the previous VERIFIED JavaScript results.
+  // All arithmetic stays in JavaScript.
   //
 
   const comparisonMode =
@@ -3887,46 +3917,15 @@ async function answerQuestion(
       );
     }
 
-    // ======================================================
-    // REQUIRE TWO VERIFIED RESULTS
-    // ======================================================
-
-    if (
-      recentResults.length <
-      2
-    ) {
-      return {
-        success: false,
-        source:
-          "comparison",
-        operation:
-          "clarify",
-        answer:
-          "I need two previous results before I can compare them.",
-      };
-    }
-
-    /**
-     * Compare the two most recent verified results.
-     */
-    const left =
-      recentResults[
-        recentResults.length -
-          2
-      ];
-
-    const right =
-      recentResults[
-        recentResults.length -
-          1
-      ];
-
     const comparisonResult =
-      compareVerifiedResults({
-        left,
-        right,
+      compareRecentVerifiedResults({
+        recentResults,
+
         mode:
           comparisonMode,
+
+        question:
+          cleanQuestion,
       });
 
     if (
@@ -3945,7 +3944,6 @@ async function answerQuestion(
 
     /**
      * Comparison Engine performs all arithmetic.
-     *
      * Do NOT ask Groq to recalculate this result.
      */
     return comparisonResult;
