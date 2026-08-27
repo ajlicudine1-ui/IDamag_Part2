@@ -5148,6 +5148,90 @@ function buildAnalyticalFollowUpPlan({
     null;
 
   /**
+   * CONVERSATIONAL ANALYTICS SAFEGUARD
+   * ==================================
+   *
+   * "number of <numeric metric>" describes the metric itself.
+   * It must NOT become aggregation = "count".
+   *
+   * Example:
+   *
+   *   Show me the top 5 associations by number of members.
+   *
+   * If the live schema resolves "number of members" to a real numeric
+   * field such as "No. of members", rank that numeric value directly.
+   *
+   * This also repairs stale conversation state from an earlier bad plan
+   * where previous.aggregation was already "count".
+   */
+  const questionText =
+    normalizeText(
+      question
+    );
+
+  const metricDatasetSchema =
+    (schema || []).find(
+      (item) =>
+        String(
+          item?.name || ""
+        ) ===
+        String(
+          previous.dataset || ""
+        )
+    );
+
+  const metricDatasetRows =
+    datasets?.[
+      previous.dataset
+    ];
+
+  const metricSchemaColumn =
+    metricDatasetSchema
+      ?.columns
+      ?.find(
+        (column) =>
+          String(
+            column?.name || ""
+          ) ===
+          String(
+            metricColumn || ""
+          )
+      ) ||
+    null;
+
+  const metricIsNumeric =
+    metricSchemaColumn &&
+    Array.isArray(
+      metricDatasetRows
+    ) &&
+    isNumericLikeColumn({
+      column:
+        metricSchemaColumn,
+
+      rows:
+        metricDatasetRows,
+    });
+
+  const numberOfPhrase =
+    /\bnumber\s+of\b/.test(
+      questionText
+    );
+
+  const explicitCountPhrase =
+    /\b(?:count|how many)\b/.test(
+      questionText
+    );
+
+  if (
+    metricIsNumeric &&
+    numberOfPhrase &&
+    !explicitCountPhrase
+  ) {
+    aggregation =
+      null;
+  }
+
+  /**
    * Rank operations express highest/lowest through direction.
    * Words like "highest" should not accidentally replace an existing
    * aggregate such as average with maximum.
@@ -5155,9 +5239,7 @@ function buildAnalyticalFollowUpPlan({
   if (
     wasRanking &&
     !/\b(?:average|avg|mean|total|sum|combined|count|how many|number of)\b/.test(
-      normalizeText(
-        question
-      )
+      questionText
     )
   ) {
     aggregation =
@@ -5165,12 +5247,27 @@ function buildAnalyticalFollowUpPlan({
       aggregation;
   }
 
+  /**
+   * Re-apply the numeric "number of" safeguard AFTER the ranking
+   * inheritance block so a stale previous aggregation="count" cannot
+   * leak back into the new plan.
+   */
+  if (
+    metricIsNumeric &&
+    numberOfPhrase &&
+    !explicitCountPhrase
+  ) {
+    aggregation =
+      null;
+  }
+
   let operation =
     previousOperation;
 
   if (wasRanking) {
     operation =
-      hasGrouping
+      hasGrouping &&
+      aggregation
         ? "rank_groups"
         : "rank_rows";
   } else if (
@@ -5212,13 +5309,19 @@ function buildAnalyticalFollowUpPlan({
     hasGrouping
   ) {
     operation =
-      "rank_groups";
+      aggregation
+        ? "rank_groups"
+        : "rank_rows";
   }
 
   const groupBy =
-    previous.groupBy ||
-    previous.labelColumn ||
-    null;
+    operation === "rank_rows"
+      ? null
+      : (
+          previous.groupBy ||
+          previous.labelColumn ||
+          null
+        );
 
   const excludedValues =
     detectAnalyticalExclusions({
