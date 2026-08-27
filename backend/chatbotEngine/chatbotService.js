@@ -521,47 +521,6 @@ function splitExplicitEntitySegments(
 }
 
 
-
-function detectQuestionAggregation(
-  question
-) {
-  const text =
-    normalizeText(
-      question
-    );
-
-  if (!text) {
-    return null;
-  }
-
-  if (
-    /\b(average|avg|mean)\b/.test(
-      text
-    )
-  ) {
-    return "average";
-  }
-
-  if (
-    /\b(total|sum|combined|overall|altogether|in all)\b/.test(
-      text
-    )
-  ) {
-    return "sum";
-  }
-
-  if (
-    /\b(count|how many|number of)\b/.test(
-      text
-    )
-  ) {
-    return "count";
-  }
-
-  return null;
-}
-
-
 function detectRankingDirection(
   question
 ) {
@@ -1293,57 +1252,6 @@ function normalizePlannerPlan({
     detectRankingDirection(
       question
     );
-
-  /**
-   * ========================================================
-   * QUESTION-LEVEL AGGREGATION REPAIR
-   * ========================================================
-   *
-   * Groq can occasionally return a syntactically valid ranking plan
-   * while omitting aggregation, for example:
-   *
-   *   operation: "rank_rows"
-   *   column: "ACTUAL SALARY"
-   *   labelColumn: "DIVISION"
-   *   aggregation: null
-   *
-   * for:
-   *
-   *   "Which division has the highest average actual salary?"
-   *
-   * The word "average" is explicit in the user's question, so recover
-   * that intent deterministically before deciding between rank_rows and
-   * rank_groups.
-   *
-   * This is generic and schema/dataset agnostic.
-   */
-  const questionAggregation =
-    detectQuestionAggregation(
-      question
-    );
-
-  const normalizedOperationName =
-    String(
-      normalized.operation ||
-      ""
-    )
-      .trim()
-      .toLowerCase();
-
-  const isRankingOperation =
-    normalizedOperationName ===
-      "rank_rows" ||
-    normalizedOperationName ===
-      "rank_groups";
-
-  if (
-    isRankingOperation &&
-    !normalized.aggregation &&
-    questionAggregation
-  ) {
-    normalized.aggregation =
-      questionAggregation;
-  }
 
   /**
    * ========================================================
@@ -7205,245 +7113,43 @@ async function answerQuestion(
         true,
     };
 
-    /**
-     * Execute the opposite extreme and keep the returned VERIFIED result
-     * directly.
-     *
-     * IMPORTANT:
-     * Do not rediscover this value by reading "the last two" history
-     * entries after execution. A conversation can contain other verified
-     * analytical entries, derived comparison entries, or repeated
-     * follow-ups, which can make history position an unsafe way to pair
-     * the two operands.
-     */
-    const extremeExecutionResult =
-      await executeResolvedPlan(
-        extremePlan
+    await executeResolvedPlan(
+      extremePlan
+    );
+
+    const latestComparisonResults =
+      getRecentResults(
+        sessionId
       );
 
-    /**
-     * The LEFT operand is the verified analytical result that existed
-     * BEFORE this follow-up. The RIGHT operand is the result returned by
-     * the opposite-extreme execution above.
-     */
-    const originalAnalyticalResult =
-      conversationContext
-        ?.lastResult ||
-      latestVerifiedAnalyticalResult ||
-      null;
-
-    const leftRanked =
-      Array.isArray(
-        originalAnalyticalResult
-          ?.results
-      )
-        ? originalAnalyticalResult.results[0]
-        : null;
-
-    const rightRanked =
-      Array.isArray(
-        extremeExecutionResult
-          ?.results
-      )
-        ? extremeExecutionResult.results[0]
-        : null;
-
     if (
-      leftRanked &&
-      rightRanked
+      latestComparisonResults.length >=
+        2
     ) {
+      const comparisonResult =
+        compareVerifiedResults({
+          left:
+            latestComparisonResults[
+              latestComparisonResults.length -
+                2
+            ],
 
-      const leftValue =
-        Number(
-          leftRanked?.value
-        );
+          right:
+            latestComparisonResults[
+              latestComparisonResults.length -
+                1
+            ],
 
-      const rightValue =
-        Number(
-          rightRanked?.value
-        );
+          mode:
+            "higher",
+        });
 
-      if (
-        leftRanked?.label !==
-          null &&
-        leftRanked?.label !==
-          undefined &&
-        rightRanked?.label !==
-          null &&
-        rightRanked?.label !==
-          undefined &&
-        Number.isFinite(
-          leftValue
-        ) &&
-        Number.isFinite(
-          rightValue
-        )
-      ) {
-        const leftLabel =
-          String(
-            leftRanked.label
-          );
-
-        const rightLabel =
-          String(
-            rightRanked.label
-          );
-
-        /**
-         * "Compare it with the lowest/highest" should normally resolve to
-         * two different labels when more than one group exists.
-         *
-         * If the same label is returned for both ends, do NOT fabricate a
-         * comparison. Surface the freshly executed result with debug
-         * context so the underlying ranking plan can be inspected.
-         */
-        if (
-          normalizeText(
-            leftLabel
-          ) ===
-          normalizeText(
-            rightLabel
-          )
-        ) {
-          return {
-            ...extremeExecutionResult,
-
-            plannerSource:
-              "conversation-analytics",
-
-            multiStepWarning:
-              "SAME_LABEL_FOR_OPPOSITE_EXTREMES",
-
-            previousExtreme: {
-              label:
-                leftLabel,
-              value:
-                leftValue,
-            },
-
-            requestedExtreme: {
-              label:
-                rightLabel,
-              value:
-                rightValue,
-            },
-
-            extremeDebugPlan:
-              extremeExecutionResult
-                ?.debugPlan ||
-              extremePlan,
-          };
-        }
-
-        const higher =
-          leftValue >= rightValue
-            ? {
-                label:
-                  leftLabel,
-                value:
-                  leftValue,
-              }
-            : {
-                label:
-                  rightLabel,
-                value:
-                  rightValue,
-              };
-
-        const lower =
-          leftValue <= rightValue
-            ? {
-                label:
-                  leftLabel,
-                value:
-                  leftValue,
-              }
-            : {
-                label:
-                  rightLabel,
-                value:
-                  rightValue,
-              };
-
-        const metric =
-          originalAnalyticalResult
-            ?.column ||
-          latestVerifiedAnalyticalPlan
-            ?.column ||
-          extremeExecutionResult
-            ?.column ||
-          extremePlan.column ||
-          "value";
-
-        const difference =
-          Math.abs(
-            leftValue -
-            rightValue
-          );
-
+      if (comparisonResult) {
         return {
-          success:
-            true,
-
-          source:
-            "conversation-analytics",
-
-          operation:
-            "compare",
-
-          metric,
-
-          leftLabel,
-          rightLabel,
-
-          leftValue,
-          rightValue,
-
-          winner:
-            higher.label,
-
-          difference,
-
-          results: [
-            {
-              label:
-                leftLabel,
-              value:
-                leftValue,
-            },
-            {
-              label:
-                rightLabel,
-              value:
-                rightValue,
-            },
-          ],
-
-          answer:
-            `${higher.label} has the higher ${String(
-              metric
-            )
-              .replace(
-                /[\r\n]+/g,
-                " "
-              )
-              .replace(
-                /\s+/g,
-                " "
-              )
-              .trim()} at ${formatAnalyticalNumber(
-                higher.value
-              )}, compared with ${lower.label} at ${formatAnalyticalNumber(
-                lower.value
-              )}.`,
+          ...comparisonResult,
 
           plannerSource:
             "conversation-analytics",
-
-          extremeDebugPlan:
-            extremeExecutionResult
-              ?.debugPlan ||
-            extremePlan,
         };
       }
     }
