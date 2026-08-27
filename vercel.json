@@ -15,8 +15,8 @@
 
     "backend": {
       "root": "backend/",
-      "runtime": "container",
-      "entrypoint": "Dockerfile.vercel"
+      "framework": "express",
+      "entrypoint": "server.js"
     }
   },
 

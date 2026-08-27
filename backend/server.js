@@ -2330,6 +2330,22 @@ const startServer = async () => {
   }
 };
 
-startServer();
+/**
+ * ============================================================
+ * RUNTIME BOOTSTRAP
+ * ============================================================
+ *
+ * Local / traditional Node hosting:
+ *   - Start the HTTP server ourselves with app.listen().
+ *
+ * Vercel Functions / Vercel Services:
+ *   - DO NOT call app.listen().
+ *   - Vercel imports and invokes the exported Express app.
+ *
+ * VERCEL is automatically provided by Vercel during deployment.
+ */
+if (!process.env.VERCEL) {
+  startServer();
+}
 
 module.exports = app;
