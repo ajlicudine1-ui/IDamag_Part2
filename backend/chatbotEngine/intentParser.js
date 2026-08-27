@@ -1491,11 +1491,96 @@ function detectFilteredFieldLookup(
     return null;
   }
 
-  const outputCandidates =
+  /**
+   * First try the existing exact/live-data column matcher.
+   */
+  const exactOutputCandidates =
     findDatasetsContainingColumn(
       datasets,
       requestedText
     );
+
+  /**
+   * Generic fuzzy schema fallback.
+   *
+   * This matters for natural wording that does not exactly match a
+   * punctuation-heavy header.
+   *
+   * Example:
+   *   user:   "climate related risks"
+   *   schema: "Climate-related Risks/Hazards"
+   *
+   * The worksheet should be selected from the requested FIELD plus the
+   * identifying value, not from the worksheet name alone.
+   */
+  const fuzzyOutputCandidates =
+    getAllColumns(
+      schema
+    )
+      .map(
+        (item) => ({
+          dataset:
+            item.dataset,
+
+          column:
+            item.name,
+
+          score:
+            scoreColumnTarget(
+              requestedText,
+              item.name
+            ),
+        })
+      )
+      .filter(
+        (item) =>
+          item.score >= 0.5
+      )
+      .sort(
+        (a, b) =>
+          b.score -
+          a.score
+      );
+
+  const outputCandidates = [];
+
+  const seenOutputCandidates =
+    new Set();
+
+  for (
+    const candidate
+    of [
+      ...exactOutputCandidates.map(
+        (item) => ({
+          ...item,
+          score:
+            Number(
+              item.score
+            ) || 2,
+        })
+      ),
+      ...fuzzyOutputCandidates,
+    ]
+  ) {
+    const key =
+      `${candidate.dataset}::${candidate.column}`;
+
+    if (
+      seenOutputCandidates.has(
+        key
+      )
+    ) {
+      continue;
+    }
+
+    seenOutputCandidates.add(
+      key
+    );
+
+    outputCandidates.push(
+      candidate
+    );
+  }
 
   if (!outputCandidates.length) {
     return null;
@@ -1510,6 +1595,20 @@ function detectFilteredFieldLookup(
   if (!identifierMatches.length) {
     return null;
   }
+
+  outputCandidates.sort(
+    (a, b) =>
+      (
+        Number(
+          b.score
+        ) || 0
+      ) -
+      (
+        Number(
+          a.score
+        ) || 0
+      )
+  );
 
   for (const output of outputCandidates) {
     /*
@@ -1584,10 +1683,9 @@ function detectFilteredFieldLookup(
                       },
                     ]
               ),
-        selectColumns:
-          asksForList
-            ? []
-            : [output.column],
+        selectColumns: [
+          output.column,
+        ],
         transform: null,
         outputRequested: true,
         limit: detectLimit(question),

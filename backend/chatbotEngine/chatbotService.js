@@ -9594,18 +9594,76 @@ async function answerQuestion(
             result?.rankPosition
           );
 
+        /**
+         * Generic verified-list formatter.
+         *
+         * calculationEngine can legitimately return:
+         *   results: ["Risk A", "Risk B", ...]
+         *
+         * Some prose formatters expect object rows and can turn these
+         * into blank numbered items. When the verified result is a list
+         * of primitive values, format it deterministically here.
+         */
+        const isPrimitiveListResult =
+          String(
+            plan?.operation ||
+            result?.operation ||
+            ""
+          )
+            .trim()
+            .toLowerCase() ===
+            "list" &&
+          Array.isArray(
+            result?.results
+          ) &&
+          result.results.length > 0 &&
+          result.results.every(
+            (item) =>
+              item === null ||
+              item === undefined ||
+              typeof item !==
+                "object"
+          );
+
+        const primitiveListAnswer =
+          isPrimitiveListResult
+            ? result.results
+                .filter(
+                  (item) =>
+                    item !== null &&
+                    item !==
+                      undefined &&
+                    String(
+                      item
+                    ).trim() !==
+                      ""
+                )
+                .map(
+                  (item, index) =>
+                    `${index + 1}. ${String(
+                      item
+                    ).trim()}`
+                )
+                .join(
+                  "\n"
+                )
+            : null;
+
         const naturalAnswer =
           isOrdinalAnalyticalResult &&
           result?.answer
             ? result.answer
-            : await generateNaturalResponse({
-                question:
-                  cleanQuestion,
+            : (
+                primitiveListAnswer ||
+                await generateNaturalResponse({
+                  question:
+                    cleanQuestion,
 
-                plan,
+                  plan,
 
-                result,
-              });
+                  result,
+                })
+              );
 
         return {
           ...result,
