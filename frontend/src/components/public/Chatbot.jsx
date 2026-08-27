@@ -21,6 +21,49 @@ async function readJsonResponse(response) {
   return response.json();
 }
 
+
+/**
+ * Safely render the small Markdown subset used by chatbot answers.
+ *
+ * Supported:
+ *   **bold**
+ *   line breaks / numbered lists / bullets are preserved by
+ *   the existing whitespace-pre-wrap class.
+ *
+ * This deliberately avoids dangerouslySetInnerHTML and does not require
+ * an additional frontend package.
+ */
+function renderChatMessage(text) {
+  const value = String(text ?? "");
+
+  if (!value) {
+    return "";
+  }
+
+  const parts = value.split(/(\*\*[^*]+\*\*)/g);
+
+  return parts.map((part, index) => {
+    const boldMatch = part.match(/^\*\*(.+)\*\*$/s);
+
+    if (boldMatch) {
+      return (
+        <strong
+          key={`chat-bold-${index}`}
+          className="font-bold"
+        >
+          {boldMatch[1]}
+        </strong>
+      );
+    }
+
+    return (
+      <React.Fragment key={`chat-text-${index}`}>
+        {part}
+      </React.Fragment>
+    );
+  });
+}
+
 const Chatbot = () => {
   const [divisions, setDivisions] = useState([]);
   const [offices, setOffices] = useState([]);
@@ -800,7 +843,7 @@ const Chatbot = () => {
                 }
               `}
             >
-              {message.text}
+              {renderChatMessage(message.text)}
             </div>
           </div>
         ))}
