@@ -124,7 +124,7 @@ function expandExplicitColumnWords(
   ]);
 
   return text
-    .split(/\\s+/)
+    .split(/\s+/)
     .filter(Boolean)
     .map(
       (token) =>
@@ -167,7 +167,7 @@ function buildExplicitColumnAliases(
   ) {
     const compact =
       alias
-        .replace(/\\s+/g, "")
+        .replace(/\s+/g, "")
         .trim();
 
     if (compact) {
