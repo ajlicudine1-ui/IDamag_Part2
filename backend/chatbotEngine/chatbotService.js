@@ -2531,6 +2531,143 @@ function inferRememberedSubjectColumn({
 }
 
 
+
+function buildVerifiedListAnswer({
+  result,
+  subjectColumn = null,
+}) {
+  const items =
+    Array.isArray(
+      result?.results
+    )
+      ? result.results
+          .map(
+            (item) => {
+              if (
+                item === null ||
+                item === undefined
+              ) {
+                return "";
+              }
+
+              if (
+                typeof item !==
+                  "object"
+              ) {
+                return String(
+                  item
+                ).trim();
+              }
+
+              if (
+                subjectColumn &&
+                item?.[
+                  subjectColumn
+                ] !== null &&
+                item?.[
+                  subjectColumn
+                ] !== undefined &&
+                String(
+                  item[
+                    subjectColumn
+                  ]
+                ).trim() !== ""
+              ) {
+                return String(
+                  item[
+                    subjectColumn
+                  ]
+                ).trim();
+              }
+
+              if (
+                item.label !== null &&
+                item.label !==
+                  undefined &&
+                String(
+                  item.label
+                ).trim() !== ""
+              ) {
+                if (
+                  item.value !== null &&
+                  item.value !==
+                    undefined &&
+                  String(
+                    item.value
+                  ).trim() !== ""
+                ) {
+                  return `${String(
+                    item.label
+                  ).trim()} — ${String(
+                    item.value
+                  ).trim()}`;
+                }
+
+                return String(
+                  item.label
+                ).trim();
+              }
+
+              if (
+                item.value !== null &&
+                item.value !==
+                  undefined &&
+                String(
+                  item.value
+                ).trim() !== ""
+              ) {
+                return String(
+                  item.value
+                ).trim();
+              }
+
+              const values =
+                Object.values(
+                  item
+                )
+                  .filter(
+                    (value) =>
+                      value !== null &&
+                      value !==
+                        undefined &&
+                      String(
+                        value
+                      ).trim() !==
+                        ""
+                  )
+                  .map(
+                    (value) =>
+                      String(
+                        value
+                      ).trim()
+                  );
+
+              return values.join(
+                " — "
+              );
+            }
+          )
+          .filter(Boolean)
+      : [];
+
+  if (!items.length) {
+    return (
+      result?.answer ||
+      "No matching results were found."
+    );
+  }
+
+  return items
+    .map(
+      (value, index) =>
+        `${index + 1}. ${value}`
+    )
+    .join(
+      "\n"
+    );
+}
+
+
 function repairConversationalListPlan({
   plan,
   context,
@@ -9033,6 +9170,304 @@ async function answerQuestion(
 
 
 
+
+  // ========================================================
+  // SAME QUERY — NEW FILTER VALUE FOLLOW-UP
+  // ========================================================
+  //
+  // Examples:
+  //
+  //   "How many associations are in Pangasinan?"
+  //   "What are those?"
+  //   "What about La Union?"
+  //
+  //   "How many employees are in ORED?"
+  //   "Who are they?"
+  //   "What about PMED?"
+  //
+  // Reuse:
+  //   - verified dataset
+  //   - verified operation
+  //   - verified subject/output field
+  //
+  // Replace only the filter column(s) explicitly identified by the
+  // new follow-up question.
+  //
+  const sameQueryFilterText =
+    normalizeText(
+      cleanQuestion
+    );
+
+  const looksLikeSameQueryNewFilter =
+    conversationContext
+      .isFollowUp === true &&
+    /^(?:what|how)\s+about\b|^and\b|^for\b/.test(
+      sameQueryFilterText
+    ) &&
+    conversationContext
+      .lastDataset;
+
+  if (
+    looksLikeSameQueryNewFilter
+  ) {
+    const previousDataset =
+      conversationContext
+        .lastDataset;
+
+    const previousRows =
+      Array.isArray(
+        datasets?.[
+          previousDataset
+        ]
+      )
+        ? datasets[
+            previousDataset
+          ]
+        : [];
+
+    if (
+      previousRows.length
+    ) {
+      /**
+       * Discover only values explicitly present in the follow-up.
+       * inferCoherentFilters is schema/data driven and therefore works
+       * for provinces, divisions, municipalities, statuses, categories,
+       * phases, etc. without hardcoding their names.
+       */
+      const newlyMentionedFilters =
+        inferCoherentFilters(
+          previousRows,
+          cleanQuestion
+        );
+
+      if (
+        Array.isArray(
+          newlyMentionedFilters
+        ) &&
+        newlyMentionedFilters.length
+      ) {
+        const previousPlan =
+          conversationContext
+            .lastPlan ||
+          {};
+
+        const rememberedSubject =
+          inferRememberedSubjectColumn({
+            schema,
+
+            datasetName:
+              previousDataset,
+
+            previousQuestion:
+              conversationContext
+                .lastSubjectQuestion ||
+              conversationContext
+                .lastQuestion,
+
+            context:
+              conversationContext,
+          }) ||
+          previousPlan.column ||
+          (
+            Array.isArray(
+              previousPlan
+                .selectColumns
+            ) &&
+            previousPlan
+              .selectColumns
+              .length === 1
+              ? previousPlan
+                  .selectColumns[0]
+              : null
+          ) ||
+          null;
+
+        /**
+         * Start with the previous verified filters.
+         * A newly mentioned value replaces the previous filter on the
+         * same column, while unrelated filters are preserved.
+         */
+        const replacementColumns =
+          new Set(
+            newlyMentionedFilters
+              .map(
+                (filter) =>
+                  filter?.column
+              )
+              .filter(Boolean)
+          );
+
+        const inheritedFilters =
+          Array.isArray(
+            conversationContext
+              .lastFilters
+          )
+            ? conversationContext
+                .lastFilters
+                .filter(
+                  (filter) =>
+                    !replacementColumns.has(
+                      filter?.column
+                    )
+                )
+                .map(
+                  (filter) => ({
+                    ...filter,
+
+                    value:
+                      Array.isArray(
+                        filter?.value
+                      )
+                        ? [
+                            ...filter.value,
+                          ]
+                        : filter?.value,
+                  })
+                )
+            : [];
+
+        const finalFilters = [
+          ...inheritedFilters,
+
+          ...newlyMentionedFilters.map(
+            (filter) => ({
+              ...filter,
+
+              value:
+                Array.isArray(
+                  filter?.value
+                )
+                  ? [
+                      ...filter.value,
+                    ]
+                  : filter?.value,
+            })
+          ),
+        ];
+
+        const previousOperation =
+          String(
+            previousPlan
+              .operation ||
+            conversationContext
+              .lastIntent ||
+            ""
+          )
+            .trim()
+            .toLowerCase();
+
+        /**
+         * Preserve the last meaningful operation.
+         * The immediately previous turn may have been a conversational
+         * entity list, so "what about X?" should continue listing the
+         * same kind of entity.
+         */
+        const operation =
+          previousOperation ||
+          (
+            rememberedSubject
+              ? "list"
+              : "lookup"
+          );
+
+        const sameQueryPlan = {
+          ...previousPlan,
+
+          route:
+            "dataset",
+
+          dataset:
+            previousDataset,
+
+          operation,
+
+          filters:
+            finalFilters,
+
+          filterGroups:
+            [],
+
+          filterGroupLogic:
+            null,
+
+          outputRequested:
+            true,
+
+          conversationalFilterSwitch:
+            true,
+        };
+
+        if (
+          operation === "list"
+        ) {
+          if (
+            rememberedSubject
+          ) {
+            sameQueryPlan.column =
+              rememberedSubject;
+
+            sameQueryPlan.labelColumn =
+              rememberedSubject;
+
+            sameQueryPlan.selectColumns = [
+              rememberedSubject,
+            ];
+          }
+
+          sameQueryPlan.showAll =
+            true;
+
+          sameQueryPlan.limit =
+            Math.max(
+              Number(
+                previousPlan.limit
+              ) || 10,
+              100
+            );
+        }
+
+        if (
+          process.env.NODE_ENV !==
+            "production"
+        ) {
+          console.log(
+            "Chatbot same-query filter-switch plan:",
+            JSON.stringify(
+              sameQueryPlan,
+              null,
+              2
+            )
+          );
+        }
+
+        const sameQueryResult =
+          await executeResolvedPlan(
+            sameQueryPlan
+          );
+
+        return {
+          ...sameQueryResult,
+
+          answer:
+            operation === "list"
+              ? buildVerifiedListAnswer({
+                  result:
+                    sameQueryResult,
+
+                  subjectColumn:
+                    rememberedSubject,
+                })
+              : sameQueryResult
+                  .answer,
+
+          plannerSource:
+            "conversation",
+        };
+      }
+    }
+  }
+
+
   // ========================================================
   // GENERIC REFERENTIAL LIST FOLLOW-UP
   // ========================================================
@@ -9199,149 +9634,17 @@ async function answerQuestion(
        * execution result so primitive-string lists and object lists both
        * render correctly.
        */
-      const verifiedListItems =
-        Array.isArray(
-          referentialListResult
-            ?.results
-        )
-          ? referentialListResult.results
-              .map(
-                (item) => {
-                  if (
-                    item === null ||
-                    item === undefined
-                  ) {
-                    return "";
-                  }
-
-                  if (
-                    typeof item !==
-                      "object"
-                  ) {
-                    return String(
-                      item
-                    ).trim();
-                  }
-
-                  /**
-                   * Prefer the exact selected subject field.
-                   */
-                  const directValue =
-                    item?.[
-                      rememberedSubject
-                    ];
-
-                  if (
-                    directValue !== null &&
-                    directValue !==
-                      undefined &&
-                    String(
-                      directValue
-                    ).trim() !== ""
-                  ) {
-                    return String(
-                      directValue
-                    ).trim();
-                  }
-
-                  /**
-                   * Common normalized result shapes.
-                   */
-                  if (
-                    item.label !== null &&
-                    item.label !==
-                      undefined &&
-                    String(
-                      item.label
-                    ).trim() !== ""
-                  ) {
-                    if (
-                      item.value !== null &&
-                      item.value !==
-                        undefined &&
-                      String(
-                        item.value
-                      ).trim() !== ""
-                    ) {
-                      return `${String(
-                        item.label
-                      ).trim()} — ${String(
-                        item.value
-                      ).trim()}`;
-                    }
-
-                    return String(
-                      item.label
-                    ).trim();
-                  }
-
-                  if (
-                    item.value !== null &&
-                    item.value !==
-                      undefined &&
-                    String(
-                      item.value
-                    ).trim() !== ""
-                  ) {
-                    return String(
-                      item.value
-                    ).trim();
-                  }
-
-                  /**
-                   * Generic fallback for an object containing one or more
-                   * displayable fields.
-                   */
-                  const displayValues =
-                    Object.values(
-                      item
-                    )
-                      .filter(
-                        (value) =>
-                          value !== null &&
-                          value !==
-                            undefined &&
-                          String(
-                            value
-                          ).trim() !==
-                            ""
-                      )
-                      .map(
-                        (value) =>
-                          String(
-                            value
-                          ).trim()
-                      );
-
-                  return displayValues.join(
-                    " — "
-                  );
-                }
-              )
-              .filter(Boolean)
-          : [];
-
-      const referentialListAnswer =
-        verifiedListItems.length
-          ? verifiedListItems
-              .map(
-                (value, index) =>
-                  `${index + 1}. ${value}`
-              )
-              .join(
-                "\n"
-              )
-          : (
-              referentialListResult
-                ?.answer ||
-              "No matching results were found."
-            );
-
       return {
         ...referentialListResult,
 
         answer:
-          referentialListAnswer,
+          buildVerifiedListAnswer({
+            result:
+              referentialListResult,
+
+            subjectColumn:
+              rememberedSubject,
+          }),
 
         plannerSource:
           "conversation",
