@@ -1,4 +1,5 @@
 const { Sequelize } = require("sequelize");
+const pg = require("pg");
 
 require("dotenv").config();
 
@@ -6,6 +7,8 @@ let sequelize;
 
 const commonOptions = {
   dialect: "postgres",
+
+  dialectModule: pg,
 
   logging: false,
 

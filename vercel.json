@@ -16,11 +16,7 @@
     "backend": {
       "root": "backend/",
       "framework": "express",
-      "entrypoint": "server.js",
-      "includeFiles": [
-        "node_modules/pg/**",
-        "node_modules/pg-hstore/**"
-      ]
+      "entrypoint": "server.js"
     }
   },
 
