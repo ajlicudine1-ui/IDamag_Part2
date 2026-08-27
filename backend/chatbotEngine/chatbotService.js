@@ -7218,25 +7218,217 @@ async function answerQuestion(
       latestComparisonResults.length >=
         2
     ) {
+      const leftEntry =
+        latestComparisonResults[
+          latestComparisonResults.length -
+            2
+        ];
+
+      const rightEntry =
+        latestComparisonResults[
+          latestComparisonResults.length -
+            1
+        ];
+
+      /**
+       * The previous and newly calculated extreme are usually grouped
+       * ranking results:
+       *
+       *   result.results[0] = { label, value }
+       *
+       * compareVerifiedResults() is designed primarily for scalar result
+       * objects, so passing rank_groups wrappers can produce
+       * NON_NUMERIC_RESULTS even though both ranked values are numeric.
+       *
+       * Extract the VERIFIED ranked values directly first.
+       */
+      const leftRanked =
+        Array.isArray(
+          leftEntry?.result?.results
+        )
+          ? leftEntry.result.results[0]
+          : null;
+
+      const rightRanked =
+        Array.isArray(
+          rightEntry?.result?.results
+        )
+          ? rightEntry.result.results[0]
+          : null;
+
+      const leftValue =
+        Number(
+          leftRanked?.value
+        );
+
+      const rightValue =
+        Number(
+          rightRanked?.value
+        );
+
+      if (
+        leftRanked?.label !==
+          null &&
+        leftRanked?.label !==
+          undefined &&
+        rightRanked?.label !==
+          null &&
+        rightRanked?.label !==
+          undefined &&
+        Number.isFinite(
+          leftValue
+        ) &&
+        Number.isFinite(
+          rightValue
+        )
+      ) {
+        const higher =
+          leftValue >= rightValue
+            ? {
+                label:
+                  String(
+                    leftRanked.label
+                  ),
+                value:
+                  leftValue,
+              }
+            : {
+                label:
+                  String(
+                    rightRanked.label
+                  ),
+                value:
+                  rightValue,
+              };
+
+        const lower =
+          leftValue <= rightValue
+            ? {
+                label:
+                  String(
+                    leftRanked.label
+                  ),
+                value:
+                  leftValue,
+              }
+            : {
+                label:
+                  String(
+                    rightRanked.label
+                  ),
+                value:
+                  rightValue,
+              };
+
+        const metric =
+          leftEntry?.result?.column ||
+          leftEntry?.plan?.column ||
+          rightEntry?.result?.column ||
+          rightEntry?.plan?.column ||
+          "value";
+
+        const difference =
+          Math.abs(
+            leftValue -
+            rightValue
+          );
+
+        return {
+          success:
+            true,
+
+          source:
+            "conversation-analytics",
+
+          operation:
+            "compare",
+
+          metric,
+
+          leftLabel:
+            String(
+              leftRanked.label
+            ),
+
+          rightLabel:
+            String(
+              rightRanked.label
+            ),
+
+          leftValue,
+          rightValue,
+
+          winner:
+            higher.label,
+
+          difference,
+
+          /**
+           * Preserve both verified values so subsequent derived
+           * comparison follow-ups can reuse them.
+           */
+          results: [
+            {
+              label:
+                String(
+                  leftRanked.label
+                ),
+              value:
+                leftValue,
+            },
+            {
+              label:
+                String(
+                  rightRanked.label
+                ),
+              value:
+                rightValue,
+            },
+          ],
+
+          answer:
+            `${higher.label} has the higher ${String(
+              metric
+            )
+              .replace(
+                /[\r\n]+/g,
+                " "
+              )
+              .replace(
+                /\s+/g,
+                " "
+              )
+              .trim()} at ${formatAnalyticalNumber(
+                higher.value
+              )}, compared with ${lower.label} at ${formatAnalyticalNumber(
+                lower.value
+              )}.`,
+
+          plannerSource:
+            "conversation-analytics",
+        };
+      }
+
+      /**
+       * Fallback for non-ranked scalar result wrappers.
+       */
       const comparisonResult =
         compareVerifiedResults({
           left:
-            latestComparisonResults[
-              latestComparisonResults.length -
-                2
-            ],
+            leftEntry,
 
           right:
-            latestComparisonResults[
-              latestComparisonResults.length -
-                1
-            ],
+            rightEntry,
 
           mode:
             "higher",
         });
 
-      if (comparisonResult) {
+      if (
+        comparisonResult &&
+        comparisonResult.success !==
+          false
+      ) {
         return {
           ...comparisonResult,
 
