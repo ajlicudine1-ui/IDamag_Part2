@@ -3488,6 +3488,15 @@ function isAnalyticalTransformQuestion(
     ) ||
     /\binstead\b/.test(
       text
+    ) ||
+    /\b(?:exclude|excluding|without|except|remove|omit|leave out)\b/.test(
+      text
+    ) ||
+    /\b(?:recalculate|recompute|run again|calculate again)\b/.test(
+      text
+    ) ||
+    /\bcompare\s+(?:it|that|this|the result)\s+with\s+(?:the\s+)?(?:highest|lowest|largest|smallest)\b/.test(
+      text
     )
   );
 }
@@ -3526,8 +3535,305 @@ function aggregationToGroupedOperation(
 }
 
 
+
+function detectAnalyticalExtremeComparison(
+  question
+) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (!text) {
+    return null;
+  }
+
+  if (
+    /\bcompare\s+(?:it|that|this|the result)\s+with\s+(?:the\s+)?(?:lowest|smallest|least|minimum|min)\b/.test(
+      text
+    )
+  ) {
+    return "asc";
+  }
+
+  if (
+    /\bcompare\s+(?:it|that|this|the result)\s+with\s+(?:the\s+)?(?:highest|largest|greatest|maximum|max)\b/.test(
+      text
+    )
+  ) {
+    return "desc";
+  }
+
+  return null;
+}
+
+
+function getLastVerifiedAnalyticalLabel(
+  context
+) {
+  const result =
+    context?.lastResult;
+
+  if (
+    !result ||
+    !Array.isArray(
+      result.results
+    ) ||
+    result.results.length !== 1
+  ) {
+    return null;
+  }
+
+  const label =
+    result.results[0]
+      ?.label;
+
+  if (
+    label === null ||
+    label === undefined ||
+    String(label).trim() === ""
+  ) {
+    return null;
+  }
+
+  return String(label).trim();
+}
+
+
+function detectAnalyticalExclusions({
+  datasets,
+  context,
+  question,
+}) {
+  const previous =
+    context?.analyticalContext;
+
+  if (
+    !previous ||
+    !previous.dataset
+  ) {
+    return [];
+  }
+
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (
+    !/\b(?:exclude|excluding|without|except|remove|omit|leave out)\b/.test(
+      text
+    )
+  ) {
+    return [];
+  }
+
+  const groupColumn =
+    previous.groupBy ||
+    previous.labelColumn ||
+    null;
+
+  const rows =
+    datasets?.[
+      previous.dataset
+    ];
+
+  if (
+    !groupColumn ||
+    !Array.isArray(rows) ||
+    !rows.length
+  ) {
+    return [];
+  }
+
+  const uniqueValues =
+    getUniqueColumnValues(
+      rows,
+      groupColumn
+    )
+      .map(
+        (value) => ({
+          value,
+          normalized:
+            normalizeText(
+              value
+            ),
+        })
+      )
+      .filter(
+        (item) =>
+          item.normalized
+      )
+      .sort(
+        (a, b) =>
+          b.normalized.length -
+          a.normalized.length
+      );
+
+  const matched = [];
+
+  for (
+    const item of
+    uniqueValues
+  ) {
+    const escaped =
+      item.normalized.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&"
+      );
+
+    const regex =
+      new RegExp(
+        `(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`,
+        "u"
+      );
+
+    if (
+      regex.test(text)
+    ) {
+      matched.push(
+        item.value
+      );
+    }
+  }
+
+  if (
+    !matched.length &&
+    /\b(?:that|this|it|the same)\s+(?:group|one|result|item)?\b/.test(
+      text
+    )
+  ) {
+    const lastLabel =
+      getLastVerifiedAnalyticalLabel(
+        context
+      );
+
+    if (lastLabel) {
+      matched.push(
+        lastLabel
+      );
+    }
+  }
+
+  return [
+    ...new Set(
+      matched
+    ),
+  ];
+}
+
+
+function mergeAnalyticalExclusionFilter({
+  filters,
+  groupColumn,
+  excludedValues,
+}) {
+  const cloned =
+    Array.isArray(filters)
+      ? filters.map(
+          (filter) => ({
+            ...filter,
+
+            value:
+              Array.isArray(
+                filter?.value
+              )
+                ? [
+                    ...filter.value,
+                  ]
+                : filter?.value,
+          })
+        )
+      : [];
+
+  if (
+    !groupColumn ||
+    !Array.isArray(
+      excludedValues
+    ) ||
+    !excludedValues.length
+  ) {
+    return cloned;
+  }
+
+  const normalizedGroup =
+    normalizeText(
+      groupColumn
+    );
+
+  const existing =
+    cloned.find(
+      (filter) =>
+        normalizeText(
+          filter?.column ||
+          ""
+        ) ===
+          normalizedGroup &&
+        [
+          "not_equals",
+          "not_in",
+        ].includes(
+          String(
+            filter?.operator ||
+            ""
+          )
+            .trim()
+            .toLowerCase()
+        )
+    );
+
+  if (existing) {
+    const oldValues =
+      Array.isArray(
+        existing.value
+      )
+        ? existing.value
+        : [
+            existing.value,
+          ].filter(
+            (value) =>
+              value !== null &&
+              value !== undefined &&
+              String(value).trim() !== ""
+          );
+
+    existing.operator =
+      "not_in";
+
+    existing.value = [
+      ...new Set([
+        ...oldValues,
+        ...excludedValues,
+      ]),
+    ];
+
+    return cloned;
+  }
+
+  cloned.push({
+    column:
+      groupColumn,
+
+    operator:
+      excludedValues.length === 1
+        ? "not_equals"
+        : "not_in",
+
+    value:
+      excludedValues.length === 1
+        ? excludedValues[0]
+        : [
+            ...excludedValues,
+          ],
+  });
+
+  return cloned;
+}
+
+
 function buildAnalyticalFollowUpPlan({
   schema,
+  datasets,
   context,
   question,
 }) {
@@ -3732,6 +4038,13 @@ function buildAnalyticalFollowUpPlan({
     previous.labelColumn ||
     null;
 
+  const excludedValues =
+    detectAnalyticalExclusions({
+      datasets,
+      context,
+      question,
+    });
+
   const labelColumn =
     previous.labelColumn ||
     groupBy ||
@@ -3804,24 +4117,15 @@ function buildAnalyticalFollowUpPlan({
     direction,
 
     filters:
-      Array.isArray(
-        previous.filters
-      )
-        ? previous.filters.map(
-            (filter) => ({
-              ...filter,
+      mergeAnalyticalExclusionFilter({
+        filters:
+          previous.filters,
 
-              value:
-                Array.isArray(
-                  filter?.value
-                )
-                  ? [
-                      ...filter.value,
-                    ]
-                  : filter?.value,
-            })
-          )
-        : [],
+        groupColumn:
+          groupBy,
+
+        excludedValues,
+      }),
 
     filterGroups:
       Array.isArray(
@@ -6535,6 +6839,187 @@ async function answerQuestion(
       };
     };
 
+
+  // ========================================================
+  // MULTI-STEP ANALYTICS — COMPARE CURRENT RESULT WITH
+  // THE OPPOSITE EXTREME
+  // ========================================================
+  //
+  // Example:
+  //   "Which group has the highest average X?"
+  //   "Compare it with the lowest."
+  //
+  const extremeComparisonDirection =
+    detectAnalyticalExtremeComparison(
+      cleanQuestion
+    );
+
+  if (
+    extremeComparisonDirection &&
+    conversationContext
+      .analyticalContext
+  ) {
+    const base =
+      conversationContext
+        .analyticalContext;
+
+    const groupBy =
+      base.groupBy ||
+      base.labelColumn ||
+      null;
+
+    const extremePlan = {
+      route:
+        "dataset",
+
+      dataset:
+        base.dataset,
+
+      operation:
+        groupBy
+          ? "rank_groups"
+          : "rank_rows",
+
+      column:
+        base.column,
+
+      labelColumn:
+        base.labelColumn ||
+        groupBy ||
+        null,
+
+      groupBy,
+
+      aggregation:
+        base.aggregation ||
+        null,
+
+      direction:
+        extremeComparisonDirection,
+
+      filters:
+        Array.isArray(
+          base.filters
+        )
+          ? base.filters.map(
+              (filter) => ({
+                ...filter,
+
+                value:
+                  Array.isArray(
+                    filter?.value
+                  )
+                    ? [
+                        ...filter.value,
+                      ]
+                    : filter?.value,
+              })
+            )
+          : [],
+
+      filterGroups:
+        Array.isArray(
+          base.filterGroups
+        )
+          ? base.filterGroups.map(
+              (group) => ({
+                ...group,
+
+                filters:
+                  Array.isArray(
+                    group?.filters
+                  )
+                    ? group.filters.map(
+                        (filter) => ({
+                          ...filter,
+
+                          value:
+                            Array.isArray(
+                              filter?.value
+                            )
+                              ? [
+                                  ...filter.value,
+                                ]
+                              : filter?.value,
+                        })
+                      )
+                    : [],
+              })
+            )
+          : [],
+
+      filterGroupLogic:
+        base.filterGroupLogic ||
+        null,
+
+      selectColumns: [
+        ...new Set(
+          [
+            groupBy,
+            base.column,
+          ].filter(Boolean)
+        ),
+      ],
+
+      outputRequested:
+        true,
+
+      transform:
+        null,
+
+      limit:
+        1,
+
+      showAll:
+        false,
+
+      conversationalAnalytics:
+        true,
+    };
+
+    await executeResolvedPlan(
+      extremePlan
+    );
+
+    const latestComparisonResults =
+      getRecentResults(
+        sessionId
+      );
+
+    if (
+      latestComparisonResults.length >=
+        2
+    ) {
+      const comparisonResult =
+        compareVerifiedResults({
+          left:
+            latestComparisonResults[
+              latestComparisonResults.length -
+                2
+            ],
+
+          right:
+            latestComparisonResults[
+              latestComparisonResults.length -
+                1
+            ],
+
+          mode:
+            "higher",
+        });
+
+      if (comparisonResult) {
+        return {
+          ...comparisonResult,
+
+          plannerSource:
+            "conversation-analytics",
+        };
+      }
+    }
+  }
+
+
   // ========================================================
   // CONVERSATIONAL ANALYTICS FOLLOW-UP
   // ========================================================
@@ -6552,6 +7037,8 @@ async function answerQuestion(
     const analyticalFollowUpPlan =
       buildAnalyticalFollowUpPlan({
         schema,
+
+        datasets,
 
         context:
           conversationContext,
