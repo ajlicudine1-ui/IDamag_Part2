@@ -2249,6 +2249,144 @@ function inferRequestedColumnFromQuestion({
  * 3. Pronoun follow-ups
  *    "what is his position title?"
  */
+
+function repairConversationalListPlan({
+  plan,
+  context,
+  question,
+}) {
+  if (
+    !plan ||
+    typeof plan !== "object" ||
+    !context ||
+    context.isFollowUp !== true
+  ) {
+    return plan;
+  }
+
+  const operation =
+    String(
+      plan.operation || ""
+    )
+      .trim()
+      .toLowerCase();
+
+  if (
+    plan.route !== "dataset" ||
+    operation !== "list"
+  ) {
+    return plan;
+  }
+
+  const currentColumns =
+    Array.isArray(
+      plan.selectColumns
+    )
+      ? plan.selectColumns.filter(Boolean)
+      : [];
+
+  if (
+    currentColumns.length > 0 ||
+    plan.column
+  ) {
+    return plan;
+  }
+
+  const text =
+    normalizeText(
+      question
+    );
+
+  const isReferentialList =
+    /\b(those|these|them|they|ones)\b/.test(
+      text
+    );
+
+  if (!isReferentialList) {
+    return plan;
+  }
+
+  const rememberedSubject =
+    context.lastSubjectColumn ||
+    (
+      Array.isArray(
+        context.lastMetric
+      )
+        ? (
+            context.lastMetric.length === 1
+              ? context.lastMetric[0]
+              : null
+          )
+        : context.lastMetric
+    ) ||
+    null;
+
+  if (!rememberedSubject) {
+    return plan;
+  }
+
+  return {
+    ...plan,
+
+    dataset:
+      plan.dataset ||
+      context.lastDataset ||
+      null,
+
+    column:
+      rememberedSubject,
+
+    labelColumn:
+      rememberedSubject,
+
+    filters:
+      Array.isArray(
+        context.lastFilters
+      ) &&
+      context.lastFilters.length
+        ? context.lastFilters.map(
+            (filter) => ({
+              ...filter,
+
+              value:
+                Array.isArray(
+                  filter?.value
+                )
+                  ? [
+                      ...filter.value,
+                    ]
+                  : filter?.value,
+            })
+          )
+        : (
+            Array.isArray(
+              plan.filters
+            )
+              ? plan.filters
+              : []
+          ),
+
+    selectColumns: [
+      rememberedSubject,
+    ],
+
+    outputRequested:
+      true,
+
+    showAll:
+      true,
+
+    limit:
+      Math.max(
+        Number(
+          plan.limit
+        ) || 10,
+        100
+      ),
+  };
+}
+
+
 function applyConversationContext(
   plan,
   context,
@@ -2539,6 +2677,123 @@ function applyConversationContext(
     resolvedPlan.outputRequested =
       true;
   }
+
+
+  // ========================================================
+  // 4B. GENERIC "WHAT ARE THOSE?" / "SHOW THEM" REPAIR
+  // ========================================================
+  //
+  // Example:
+  //
+  //   "How many associations are in La Union?"
+  //   -> count subject = <real schema column>
+  //   -> filter = Province = La Union
+  //
+  //   "What are those?"
+  //   -> operation = list
+  //   -> list the SAME remembered subject field
+  //   -> preserve the SAME filters
+  //
+  // Works for associations, employees, projects, farmers, etc.
+  // No business-specific field names are hardcoded.
+  //
+  const normalizedFollowUpQuestion =
+    normalizeText(
+      question
+    );
+
+  const isPronounListFollowUp =
+    resolvedPlan.route ===
+      "dataset" &&
+    resolvedPlan.operation ===
+      "list" &&
+    (
+      /\b(?:what|which)\s+(?:are|were)\s+(?:those|these|they|them)\b/.test(
+        normalizedFollowUpQuestion
+      ) ||
+      /\b(?:show|list|give|display|name)\s+(?:me\s+)?(?:those|these|them|they)\b/.test(
+        normalizedFollowUpQuestion
+      ) ||
+      /\bwho\s+(?:are|were)\s+(?:those|these|they|them)\b/.test(
+        normalizedFollowUpQuestion
+      )
+    );
+
+  if (
+    isPronounListFollowUp &&
+    resolvedPlan.selectColumns.length ===
+      0
+  ) {
+    const rememberedSubject =
+      context.lastSubjectColumn ||
+      (
+        Array.isArray(
+          context.lastMetric
+        )
+          ? (
+              context.lastMetric.length === 1
+                ? context.lastMetric[0]
+                : null
+            )
+          : context.lastMetric
+      ) ||
+      null;
+
+    if (rememberedSubject) {
+      resolvedPlan.column =
+        rememberedSubject;
+
+      resolvedPlan.labelColumn =
+        rememberedSubject;
+
+      resolvedPlan.selectColumns = [
+        rememberedSubject,
+      ];
+
+      resolvedPlan.outputRequested =
+        true;
+
+      resolvedPlan.showAll =
+        true;
+
+      resolvedPlan.limit =
+        Math.max(
+          Number(
+            resolvedPlan.limit
+          ) || 10,
+          100
+        );
+
+      /**
+       * Restore all verified previous filters, not just the primary
+       * entity filter. This makes multi-filter count -> list chains
+       * deterministic.
+       */
+      if (
+        Array.isArray(
+          context.lastFilters
+        ) &&
+        context.lastFilters.length
+      ) {
+        resolvedPlan.filters =
+          context.lastFilters.map(
+            (filter) => ({
+              ...filter,
+
+              value:
+                Array.isArray(
+                  filter?.value
+                )
+                  ? [
+                      ...filter.value,
+                    ]
+                  : filter?.value,
+            })
+          );
+      }
+    }
+  }
+
 
   // ========================================================
   // 5. INHERIT PREVIOUS DATASET WHEN THE CURRENT DATASET IS
@@ -9103,6 +9358,18 @@ async function answerQuestion(
       );
 
     groqPlan =
+      repairConversationalListPlan({
+        plan:
+          groqPlan,
+
+        context:
+          conversationContext,
+
+        question:
+          cleanQuestion,
+      });
+
+    groqPlan =
       normalizePlannerPlan({
         datasets,
         schema,
@@ -9225,6 +9492,18 @@ async function answerQuestion(
             cleanQuestion,
         }
       );
+
+    localPlan =
+      repairConversationalListPlan({
+        plan:
+          localPlan,
+
+        context:
+          conversationContext,
+
+        question:
+          cleanQuestion,
+      });
 
     localPlan =
       normalizePlannerPlan({

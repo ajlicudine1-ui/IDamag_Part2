@@ -12,6 +12,23 @@ function createEmptyContext() {
     lastDataset: null,
     lastIntent: null,
     lastMetric: null,
+
+    /**
+     * Generic entity/output field remembered from the previous
+     * successful dataset question.
+     *
+     * Example:
+     *   "How many associations are in La Union?"
+     *   -> subject column = "Name of Association"
+     *
+     * Then:
+     *   "What are those?"
+     *   -> list that same subject column using the same filters.
+     *
+     * This is schema-driven; no dataset or column name is hardcoded.
+     */
+    lastSubjectColumn: null,
+
     lastFilters: [],
     lastPlan: null,
     lastResult: null,
@@ -700,6 +717,54 @@ function updateConversation(
     }
 
     /**
+     * Remember the concrete subject/output field independently from
+     * the operation. This is especially important for:
+     *
+     *   count -> "what are those?"
+     *   count -> "show them"
+     *   distinct count -> "list those"
+     *
+     * Prefer the real plan.column. Otherwise use a single selected
+     * output column. We intentionally do not guess a field here.
+     */
+    const operation =
+      String(
+        plan.operation ||
+        plan.intent ||
+        ""
+      )
+        .trim()
+        .toLowerCase();
+
+    const singleSelectedColumn =
+      Array.isArray(
+        plan.selectColumns
+      ) &&
+      plan.selectColumns.length === 1
+        ? plan.selectColumns[0]
+        : null;
+
+    const subjectCandidate =
+      plan.column ||
+      singleSelectedColumn ||
+      null;
+
+    if (
+      subjectCandidate &&
+      [
+        "list",
+        "lookup",
+        "non_empty_count",
+        "distinct_count",
+        "count",
+        "group_count",
+      ].includes(operation)
+    ) {
+      context.lastSubjectColumn =
+        subjectCandidate;
+    }
+
+    /**
      * Groq filters are arrays.
      */
     if (
@@ -873,6 +938,9 @@ function getRelevantContext(
 
     lastMetric:
       context.lastMetric,
+
+    lastSubjectColumn:
+      context.lastSubjectColumn,
 
     lastFilters:
       context.lastFilters,
