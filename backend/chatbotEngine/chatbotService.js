@@ -3470,40 +3470,65 @@ function buildAnalyticalFollowUpPlan({
    * If the wording is only "what about the total?" this may resolve
    * nothing, which is correct: keep the previous metric.
    */
-  const requestedMetric =
-    inferRequestedColumnFromQuestion({
+  /**
+   * Resolve a NEW metric only when the user explicitly names a real
+   * schema column.
+   *
+   * IMPORTANT:
+   * Do NOT use fuzzy column inference for aggregation-only follow-ups.
+   *
+   * Example:
+   *
+   *   previous metric: ACTUAL SALARY
+   *   question: "What about the average?"
+   *
+   * The word "average" must change ONLY the aggregation. It must not
+   * fuzzy-match an unrelated column such as AGE.
+   *
+   * But:
+   *
+   *   "What about authorized salary?"
+   *
+   * explicitly names a real schema field, so the metric should change.
+   */
+  const explicitMetricMatches =
+    findExplicitSchemaColumns({
       schema,
       question,
 
       preferredDataset:
         previous.dataset,
+    })
+      .filter(
+        (item) =>
+          normalizeText(
+            item?.column ||
+            ""
+          ) !==
+          normalizeText(
+            previous.groupBy ||
+            ""
+          ) &&
+          normalizeText(
+            item?.column ||
+            ""
+          ) !==
+          normalizeText(
+            previous.labelColumn ||
+            ""
+          )
+      );
 
-      excludedColumns: [
-        previous.groupBy,
-        previous.labelColumn,
-      ].filter(Boolean),
-    });
+  const requestedMetric =
+    explicitMetricMatches[0] ||
+    null;
 
   let metricColumn =
     previous.column ||
     null;
 
-  /**
-   * Only replace the metric when the question contains a sufficiently
-   * strong real-column match and that match is not just the previous
-   * grouping field.
-   */
   if (
-    requestedMetric?.column &&
-    (
-      normalizeText(
-        requestedMetric.column
-      ) !==
-      normalizeText(
-        previous.groupBy ||
-        ""
-      )
-    )
+    requestedMetric?.column
   ) {
     metricColumn =
       requestedMetric.column;
