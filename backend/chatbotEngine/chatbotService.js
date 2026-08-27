@@ -5750,19 +5750,73 @@ async function answerQuestion(
 
   if (comparisonMode) {
     /**
-     * First, check whether the LAST verified result itself contains
-     * exactly two grouped/ranked analytical values.
+     * ======================================================
+     * PERSISTENT COMPARISON CONTEXT
+     * ======================================================
      *
-     * This supports:
+     * Some conversational comparison questions such as:
+     *
+     *   "What is the ratio?"
+     *   "How many times higher is it?"
+     *
+     * may not be classified by conversationManager as a normal
+     * follow-up. In that case getRelevantContext() intentionally
+     * hides lastPlan/lastResult, even though the verified analytical
+     * comparison is still safely stored in recentResults.
+     *
+     * Recover the latest VERIFIED result here instead of requiring
+     * the user to repeat the original comparison.
+     *
+     * No dataset, metric, group, or entity is hardcoded.
+     */
+    const recentResults =
+      getRecentResults(
+        sessionId
+      );
+
+    const latestVerifiedEntry =
+      recentResults.length
+        ? recentResults[
+            recentResults.length -
+              1
+          ]
+        : null;
+
+    const comparisonContext = {
+      ...conversationContext,
+
+      lastPlan:
+        conversationContext
+          ?.lastPlan ||
+        latestVerifiedEntry
+          ?.plan ||
+        null,
+
+      lastResult:
+        conversationContext
+          ?.lastResult ||
+        latestVerifiedEntry
+          ?.result ||
+        null,
+    };
+
+    /**
+     * First, check whether the most recent VERIFIED analytical result
+     * itself contains exactly two grouped/ranked values.
+     *
+     * This supports a full chain such as:
+     *
      *   "Compare average X of A and B"
      *   -> "What is the difference?"
+     *   -> "What is the ratio?"
+     *   -> "What percentage higher?"
      *
-     * without requiring two separate chatbot turns.
+     * Derived answers do NOT replace the original verified operands.
      */
     const analyticalPairComparison =
       compareVerifiedAnalyticalPair({
         context:
-          conversationContext,
+          comparisonContext,
 
         mode:
           comparisonMode,
@@ -5778,11 +5832,6 @@ async function answerQuestion(
           "conversation-analytics",
       };
     }
-
-    const recentResults =
-      getRecentResults(
-        sessionId
-      );
 
     if (
       process.env.NODE_ENV !==
