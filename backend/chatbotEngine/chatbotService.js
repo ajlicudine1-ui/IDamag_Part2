@@ -2250,10 +2250,292 @@ function inferRequestedColumnFromQuestion({
  *    "what is his position title?"
  */
 
+
+function inferRememberedSubjectColumn({
+  schema,
+  datasetName,
+  previousQuestion,
+  context,
+}) {
+  /**
+   * Prefer an already verified remembered subject.
+   */
+  if (
+    context?.lastSubjectColumn
+  ) {
+    return context.lastSubjectColumn;
+  }
+
+  const previousPlan =
+    context?.lastPlan;
+
+  if (
+    previousPlan?.column
+  ) {
+    return previousPlan.column;
+  }
+
+  if (
+    Array.isArray(
+      previousPlan?.selectColumns
+    ) &&
+    previousPlan.selectColumns.length ===
+      1 &&
+    previousPlan.selectColumns[0]
+  ) {
+    return previousPlan.selectColumns[0];
+  }
+
+  const datasetSchema =
+    (schema || []).find(
+      (item) =>
+        String(
+          item?.name || ""
+        ) ===
+        String(
+          datasetName || ""
+        )
+    );
+
+  if (
+    !datasetSchema ||
+    !Array.isArray(
+      datasetSchema.columns
+    ) ||
+    !datasetSchema.columns.length
+  ) {
+    return null;
+  }
+
+  const text =
+    normalizeText(
+      previousQuestion || ""
+    );
+
+  if (!text) {
+    return null;
+  }
+
+  /**
+   * Extract the noun phrase that was counted/listed in the previous
+   * question.
+   *
+   * Examples:
+   *   "How many associations are in La Union?"
+   *       -> associations
+   *   "How many employees are in ORED?"
+   *       -> employees
+   *   "Count completed projects"
+   *       -> completed projects
+   */
+  let target = "";
+
+  const patterns = [
+    /\bhow many\s+(.+?)(?:\s+(?:are|is|were|was|in|from|within|for)\b|$)/i,
+    /\bnumber of\s+(.+?)(?:\s+(?:are|is|were|was|in|from|within|for)\b|$)/i,
+    /\bcount(?: of)?\s+(.+?)(?:\s+(?:are|is|were|was|in|from|within|for)\b|$)/i,
+    /\blist\s+(.+?)(?:\s+(?:in|from|within|for)\b|$)/i,
+    /\bshow\s+(.+?)(?:\s+(?:in|from|within|for)\b|$)/i,
+  ];
+
+  for (
+    const pattern of patterns
+  ) {
+    const match =
+      text.match(
+        pattern
+      );
+
+    if (match?.[1]) {
+      target =
+        normalizeText(
+          match[1]
+        )
+          .replace(
+            /\b(?:the|all|total|unique|distinct|different)\b/g,
+            " "
+          )
+          .replace(
+            /\s+/g,
+            " "
+          )
+          .trim();
+
+      break;
+    }
+  }
+
+  if (!target) {
+    return null;
+  }
+
+  const singularizeLoose = (
+    value
+  ) => {
+    const token =
+      String(
+        value || ""
+      );
+
+    if (
+      token.endsWith(
+        "ies"
+      ) &&
+      token.length > 3
+    ) {
+      return (
+        token.slice(
+          0,
+          -3
+        ) +
+        "y"
+      );
+    }
+
+    if (
+      token.endsWith(
+        "ses"
+      ) &&
+      token.length > 3
+    ) {
+      return token.slice(
+        0,
+        -2
+      );
+    }
+
+    if (
+      token.endsWith(
+        "s"
+      ) &&
+      !token.endsWith(
+        "ss"
+      ) &&
+      token.length > 2
+    ) {
+      return token.slice(
+        0,
+        -1
+      );
+    }
+
+    return token;
+  };
+
+  const targetTokens =
+    target
+      .split(
+        /\s+/
+      )
+      .filter(Boolean)
+      .map(
+        singularizeLoose
+      );
+
+  const candidates =
+    datasetSchema.columns
+      .filter(
+        (column) =>
+          column?.name
+      )
+      .map(
+        (column) => {
+          const name =
+            normalizeText(
+              column.name
+            );
+
+          const nameTokens =
+            name
+              .split(
+                /\s+/
+              )
+              .filter(Boolean)
+              .map(
+                singularizeLoose
+              );
+
+          let score =
+            scoreTargetToColumn(
+              target,
+              column.name
+            );
+
+          const overlap =
+            targetTokens.filter(
+              (token) =>
+                nameTokens.includes(
+                  token
+                )
+            ).length;
+
+          if (
+            targetTokens.length
+          ) {
+            score +=
+              overlap /
+              targetTokens.length;
+          }
+
+          /**
+           * Generic identity/display-field bonus.
+           *
+           * If the target noun occurs in a text field with "name",
+           * that field is usually the natural value to list.
+           *
+           * association -> Name of Association
+           * employee    -> Employee Name
+           * project     -> Project Name
+           */
+          if (
+            column.type !==
+              "number" &&
+            /\bname\b/.test(
+              name
+            ) &&
+            overlap > 0
+          ) {
+            score += 1.25;
+          }
+
+          /**
+           * Avoid choosing a numeric measure when a text identity field
+           * has comparable evidence.
+           */
+          if (
+            column.type ===
+              "number"
+          ) {
+            score -= 0.4;
+          }
+
+          return {
+            name:
+              column.name,
+            score,
+          };
+        }
+      )
+      .sort(
+        (a, b) =>
+          b.score -
+          a.score
+      );
+
+  return (
+    candidates[0]?.score >=
+      0.75
+      ? candidates[0].name
+      : null
+  );
+}
+
+
 function repairConversationalListPlan({
   plan,
   context,
   question,
+  schema,
 }) {
   if (
     !plan ||
@@ -2276,6 +2558,17 @@ function repairConversationalListPlan({
     operation !== "list"
   ) {
     return plan;
+  }
+
+  if (
+    !plan.dataset &&
+    context.lastDataset
+  ) {
+    plan = {
+      ...plan,
+      dataset:
+        context.lastDataset,
+    };
   }
 
   const currentColumns =
@@ -2307,7 +2600,19 @@ function repairConversationalListPlan({
   }
 
   const rememberedSubject =
-    context.lastSubjectColumn ||
+    inferRememberedSubjectColumn({
+      schema,
+
+      datasetName:
+        plan.dataset ||
+        context.lastDataset ||
+        null,
+
+      previousQuestion:
+        context.lastQuestion,
+
+      context,
+    }) ||
     (
       Array.isArray(
         context.lastMetric
@@ -2725,7 +3030,19 @@ function applyConversationContext(
       0
   ) {
     const rememberedSubject =
-      context.lastSubjectColumn ||
+      inferRememberedSubjectColumn({
+        schema,
+
+        datasetName:
+          resolvedPlan.dataset ||
+          context.lastDataset ||
+          null,
+
+        previousQuestion:
+          context.lastQuestion,
+
+        context,
+      }) ||
       (
         Array.isArray(
           context.lastMetric
@@ -7995,6 +8312,8 @@ async function answerQuestion(
 
         question:
           cleanQuestion,
+
+        schema,
       });
 
     if (
@@ -9165,6 +9484,8 @@ async function answerQuestion(
 
         question:
           cleanQuestion,
+
+        schema,
       });
 
     if (analyticalFollowUpPlan) {

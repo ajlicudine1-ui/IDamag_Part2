@@ -11,6 +11,7 @@ function createEmptyContext() {
     lastEntity: null,
     lastDataset: null,
     lastIntent: null,
+    lastQuestion: null,
     lastMetric: null,
 
     /**
@@ -692,6 +693,11 @@ function updateConversation(
       sessionId
     );
 
+  if (question) {
+    context.lastQuestion =
+      question;
+  }
+
   if (plan) {
     if (plan.dataset) {
       context.lastDataset =
@@ -935,6 +941,9 @@ function getRelevantContext(
 
     lastIntent:
       context.lastIntent,
+
+    lastQuestion:
+      context.lastQuestion,
 
     lastMetric:
       context.lastMetric,
