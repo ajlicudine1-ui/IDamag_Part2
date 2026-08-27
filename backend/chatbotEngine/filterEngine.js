@@ -562,8 +562,52 @@ function inferValueFilters(
         normalizedValue
       );
 
+      /**
+       * IMPORTANT:
+       *
+       * A column can be inferred as numeric even when some individual
+       * cells contain short text codes such as:
+       *
+       *   M
+       *   F
+       *   P
+       *   Y
+       *   N
+       *
+       * Those values must NOT enter numeric matching.
+       *
+       * Previously, a one-letter value such as "M" could be treated as
+       * numeric-column data and matched inside an ordinary word like:
+       *
+       *   "bottom"
+       *
+       * because the old numeric boundary used \D around the value.
+       *
+       * Only use numeric matching when THIS SPECIFIC CELL VALUE is
+       * actually numeric-like.
+       */
+      const numericDisplay =
+        String(display)
+          .replace(
+            /[,₱$€£¥%]/g,
+            ""
+          )
+          .replace(
+            /\s+/g,
+            ""
+          );
+
+      const valueIsActuallyNumeric =
+        numericDisplay !== "" &&
+        Number.isFinite(
+          Number(
+            numericDisplay
+          )
+        );
+
       if (
-        type === "number"
+        type === "number" &&
+        valueIsActuallyNumeric
       ) {
         const escaped =
           normalizedValue

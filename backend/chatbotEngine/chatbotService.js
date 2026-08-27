@@ -84,6 +84,105 @@ function compactExplicitColumnText(value) {
 }
 
 
+function expandExplicitColumnWords(
+  value
+) {
+  const text =
+    normalizeExplicitColumnText(
+      value
+    );
+
+  if (!text) {
+    return "";
+  }
+
+  /**
+   * Generic schema-label abbreviation expansion.
+   *
+   * This is NOT tied to one dashboard or one field.
+   *
+   * Examples:
+   *   NO / NO. / NUM / # -> NUMBER
+   *   QTY              -> QUANTITY
+   *   AMT              -> AMOUNT
+   *   DESC             -> DESCRIPTION
+   *   DEPT             -> DEPARTMENT
+   *   DIV              -> DIVISION
+   *
+   * It allows natural user wording to match compact column headers.
+   */
+  const replacements = new Map([
+    ["no", "number"],
+    ["num", "number"],
+    ["nbr", "number"],
+    ["qty", "quantity"],
+    ["amt", "amount"],
+    ["desc", "description"],
+    ["dept", "department"],
+    ["div", "division"],
+    ["pos", "position"],
+  ]);
+
+  return text
+    .split(/\\s+/)
+    .filter(Boolean)
+    .map(
+      (token) =>
+        replacements.get(token) ||
+        token
+    )
+    .join(" ")
+    .trim();
+}
+
+
+function buildExplicitColumnAliases(
+  columnName
+) {
+  const base =
+    normalizeExplicitColumnText(
+      columnName
+    );
+
+  const expanded =
+    expandExplicitColumnWords(
+      columnName
+    );
+
+  const aliases =
+    new Set(
+      [
+        base,
+        expanded,
+      ].filter(Boolean)
+    );
+
+  /**
+   * Also support a compact form for headers that contain spacing
+   * or punctuation differences.
+   */
+  for (
+    const alias of
+    [...aliases]
+  ) {
+    const compact =
+      alias
+        .replace(/\\s+/g, "")
+        .trim();
+
+    if (compact) {
+      aliases.add(
+        compact
+      );
+    }
+  }
+
+  return [
+    ...aliases,
+  ];
+}
+
+
 /**
  * Return every real schema column explicitly named in the question.
  *
@@ -124,60 +223,175 @@ function findExplicitSchemaColumns({
         continue;
       }
 
-      const normalizedColumn =
-        normalizeExplicitColumnText(
+      const aliases =
+        buildExplicitColumnAliases(
           name
         );
 
-      if (!normalizedColumn) {
+      if (!aliases.length) {
         continue;
       }
 
-      const escaped =
-        normalizedColumn.replace(
-          /[.*+?^${}()|[\]\\]/g,
-          "\\$&"
-        );
+      /**
+       * Search both the normalized question and an abbreviation-expanded
+       * version of it.
+       *
+       * Example:
+       * schema:   "PLANTILLA ITEM NO."
+       * question: "plantilla item number"
+       *
+       * Both become:
+       * "plantilla item number"
+       */
+      const searchableQuestions = [
+        {
+          text:
+            normalizedQuestion,
+          compact:
+            false,
+        },
 
-      const regex =
-        new RegExp(
-          `(^|[^\\p{L}\\p{N}])(${escaped})(?=$|[^\\p{L}\\p{N}])`,
-          "gu"
-        );
+        {
+          text:
+            expandExplicitColumnWords(
+              question
+            ),
+          compact:
+            false,
+        },
 
-      let match;
+        {
+          text:
+            compactExplicitColumnText(
+              question
+            ),
+          compact:
+            true,
+        },
 
-      while (
-        (match =
-          regex.exec(
-            normalizedQuestion
-          )) !== null
+        {
+          text:
+            expandExplicitColumnWords(
+              question
+            )
+              .replace(
+                /\s+/g,
+                ""
+              ),
+          compact:
+            true,
+        },
+      ];
+
+      for (
+        const alias of aliases
       ) {
-        const prefixLength =
-          match[1]?.length || 0;
+        const aliasIsCompact =
+          !/\s/.test(alias);
 
-        const start =
-          match.index +
-          prefixLength;
-
-        matches.push({
-          dataset:
-            dataset.name,
-          column:
-            name,
-          start,
-          end:
-            start +
-            match[2].length,
-          length:
-            match[2].length,
-        });
-
-        if (
-          regex.lastIndex ===
-          match.index
+        for (
+          const searchable of
+          searchableQuestions
         ) {
-          regex.lastIndex += 1;
+          if (
+            searchable.compact !==
+            aliasIsCompact
+          ) {
+            continue;
+          }
+
+          const haystack =
+            searchable.text;
+
+          if (
+            !haystack ||
+            !alias
+          ) {
+            continue;
+          }
+
+          if (
+            searchable.compact
+          ) {
+            const start =
+              haystack.indexOf(
+                alias
+              );
+
+            if (start >= 0) {
+              matches.push({
+                dataset:
+                  dataset.name,
+
+                column:
+                  name,
+
+                start,
+
+                end:
+                  start +
+                  alias.length,
+
+                length:
+                  alias.length,
+              });
+            }
+
+            continue;
+          }
+
+          const escaped =
+            alias.replace(
+              /[.*+?^${}()|[\]\\]/g,
+              "\\$&"
+            );
+
+          const regex =
+            new RegExp(
+              `(^|[^\\p{L}\\p{N}])(${escaped})(?=$|[^\\p{L}\\p{N}])`,
+              "gu"
+            );
+
+          let match;
+
+          while (
+            (match =
+              regex.exec(
+                haystack
+              )) !== null
+          ) {
+            const prefixLength =
+              match[1]?.length ||
+              0;
+
+            const start =
+              match.index +
+              prefixLength;
+
+            matches.push({
+              dataset:
+                dataset.name,
+
+              column:
+                name,
+
+              start,
+
+              end:
+                start +
+                match[2].length,
+
+              length:
+                match[2].length,
+            });
+
+            if (
+              regex.lastIndex ===
+              match.index
+            ) {
+              regex.lastIndex += 1;
+            }
+          }
         }
       }
     }
