@@ -16,6 +16,19 @@ function createEmptyContext() {
     lastPlan: null,
     lastResult: null,
 
+    /**
+     * Last VERIFIED analytical state.
+     *
+     * This is intentionally structured rather than prose so later
+     * questions can transform only one part of the prior analysis:
+     *
+     * average -> total
+     * top 1   -> top 5
+     * highest -> lowest
+     * metric A -> metric B
+     */
+    analyticalContext: null,
+
     // Used for comparison follow-ups.
     recentResults: [],
 
@@ -111,6 +124,16 @@ function isFollowUpQuestion(
 
     /^what about the total\b/i,
     /^how about the total\b/i,
+    /^what about the average\b/i,
+    /^how about the average\b/i,
+    /^what about the count\b/i,
+    /^how about the count\b/i,
+
+    /^(?:show|give|list)\s+(?:me\s+)?(?:the\s+)?(?:top|bottom)\s+\d{1,3}\b/i,
+    /\bsecond\s+(?:highest|lowest)\b/i,
+    /\b(?:top|bottom)\s+\d{1,3}\s+instead\b/i,
+    /\bwhat percentage (?:higher|lower)\b/i,
+    /\bwhat percent (?:higher|lower)\b/i,
 
     // ======================================================
     // COMPARISON FOLLOW-UPS
@@ -428,6 +451,207 @@ function addRecentResult(
   }
 }
 
+
+/**
+ * ==========================================================
+ * VERIFIED ANALYTICAL CONTEXT
+ * ==========================================================
+ *
+ * Keep only execution-relevant structured state.
+ * No Groq prose is stored here.
+ */
+
+function cloneFilters(
+  filters
+) {
+  return Array.isArray(filters)
+    ? filters.map(
+        (filter) => ({
+          ...filter,
+
+          value:
+            Array.isArray(
+              filter?.value
+            )
+              ? [
+                  ...filter.value,
+                ]
+              : filter?.value,
+        })
+      )
+    : [];
+}
+
+
+function isAnalyticalOperation(
+  operation
+) {
+  return new Set([
+    "sum",
+    "average",
+    "median",
+    "minimum",
+    "maximum",
+
+    "group_sum",
+    "group_average",
+    "group_minimum",
+    "group_maximum",
+    "group_count",
+
+    "rank_rows",
+    "rank_groups",
+  ]).has(
+    String(
+      operation || ""
+    )
+      .trim()
+      .toLowerCase()
+  );
+}
+
+
+function buildAnalyticalContext({
+  question,
+  plan,
+  result,
+}) {
+  if (
+    !plan ||
+    !result ||
+    result.success === false ||
+    plan.route !== "dataset" ||
+    !isAnalyticalOperation(
+      result.operation ||
+      plan.operation
+    )
+  ) {
+    return null;
+  }
+
+  const compactResults =
+    Array.isArray(
+      result.results
+    )
+      ? result.results
+          .slice(0, 100)
+          .map(
+            (item) => {
+              if (
+                !item ||
+                typeof item !==
+                  "object"
+              ) {
+                return item;
+              }
+
+              return {
+                label:
+                  item.label ??
+                  null,
+
+                value:
+                  item.value ??
+                  null,
+
+                recordsUsed:
+                  item.recordsUsed ??
+                  null,
+              };
+            }
+          )
+      : [];
+
+  return {
+    question:
+      question || null,
+
+    dataset:
+      plan.dataset ||
+      result.dataset ||
+      null,
+
+    operation:
+      result.operation ||
+      plan.operation ||
+      null,
+
+    column:
+      result.column ||
+      plan.column ||
+      null,
+
+    labelColumn:
+      result.labelColumn ||
+      plan.labelColumn ||
+      null,
+
+    groupBy:
+      result.groupBy ||
+      plan.groupBy ||
+      null,
+
+    aggregation:
+      result.aggregation ||
+      plan.aggregation ||
+      null,
+
+    direction:
+      result.direction ||
+      plan.direction ||
+      null,
+
+    filters:
+      cloneFilters(
+        plan.filters ||
+        result.filters
+      ),
+
+    filterGroups:
+      cloneFilterGroups(
+        plan.filterGroups
+      ),
+
+    filterGroupLogic:
+      plan.filterGroupLogic ||
+      null,
+
+    selectColumns:
+      Array.isArray(
+        plan.selectColumns
+      )
+        ? [
+            ...plan.selectColumns,
+          ]
+        : [],
+
+    limit:
+      Number.isInteger(
+        Number(plan.limit)
+      )
+        ? Number(plan.limit)
+        : null,
+
+    showAll:
+      plan.showAll === true,
+
+    results:
+      compactResults,
+
+    value:
+      result.value ??
+      null,
+
+    recordsUsed:
+      result.recordsUsed ??
+      null,
+
+    timestamp:
+      Date.now(),
+  };
+}
+
+
 /**
  * Update conversation after a successfully
  * planned/executed question.
@@ -541,6 +765,29 @@ function updateConversation(
       result;
   }
 
+  /**
+   * Save the latest VERIFIED analytical state independently from
+   * ordinary lookups. A later lookup such as "who are those people?"
+   * must not erase the last analytical calculation.
+   */
+  if (
+    question &&
+    plan &&
+    result
+  ) {
+    const analyticalContext =
+      buildAnalyticalContext({
+        question,
+        plan,
+        result,
+      });
+
+    if (analyticalContext) {
+      context.analyticalContext =
+        analyticalContext;
+    }
+  }
+
   // ========================================================
   // SAVE VERIFIED RESULT FOR FUTURE COMPARISONS
   // ========================================================
@@ -632,6 +879,11 @@ function getRelevantContext(
     lastResult:
       isFollowUp
         ? context.lastResult
+        : null,
+
+    analyticalContext:
+      isFollowUp
+        ? context.analyticalContext
         : null,
 
     /**

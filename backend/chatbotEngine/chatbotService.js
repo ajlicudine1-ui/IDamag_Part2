@@ -3197,6 +3197,545 @@ function repairMultiEntityFilters({
 }
 
 
+
+/**
+ * ==========================================================
+ * CONVERSATIONAL ANALYTICS
+ * ==========================================================
+ *
+ * Transform a previous VERIFIED analytical plan instead of asking
+ * Groq to rediscover the whole question.
+ *
+ * Examples:
+ *
+ *   "Which division has the highest average salary?"
+ *   "Show the top 5 instead."
+ *   "What about the total?"
+ *   "What about actual obligation?"
+ *   "Show the bottom 3."
+ *
+ * No dashboard field or entity is hardcoded.
+ */
+
+function detectAnalyticalAggregationFollowUp(
+  question
+) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (!text) {
+    return null;
+  }
+
+  if (
+    /\b(?:total|sum|combined|altogether)\b/.test(
+      text
+    )
+  ) {
+    return "sum";
+  }
+
+  if (
+    /\b(?:average|avg|mean)\b/.test(
+      text
+    )
+  ) {
+    return "average";
+  }
+
+  if (
+    /\b(?:count|how many|number of)\b/.test(
+      text
+    )
+  ) {
+    return "count";
+  }
+
+  if (
+    /\b(?:minimum|min|lowest|smallest|least)\b/.test(
+      text
+    )
+  ) {
+    return "minimum";
+  }
+
+  if (
+    /\b(?:maximum|max|highest|largest|greatest)\b/.test(
+      text
+    )
+  ) {
+    return "maximum";
+  }
+
+  return null;
+}
+
+
+function detectAnalyticalLimitFollowUp(
+  question
+) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (!text) {
+    return null;
+  }
+
+  const explicit =
+    text.match(
+      /\b(?:top|bottom|first|last)\s+(\d{1,3})\b/
+    );
+
+  if (explicit?.[1]) {
+    const value =
+      Number(
+        explicit[1]
+      );
+
+    if (
+      Number.isInteger(value)
+    ) {
+      return Math.min(
+        Math.max(
+          value,
+          1
+        ),
+        100
+      );
+    }
+  }
+
+  if (
+    /\bsecond\s+(?:highest|lowest)\b/.test(
+      text
+    )
+  ) {
+    return 2;
+  }
+
+  return null;
+}
+
+
+function detectAnalyticalDirectionFollowUp(
+  question
+) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (
+    /\b(bottom|lowest|smallest|least|minimum|min)\b/.test(
+      text
+    )
+  ) {
+    return "asc";
+  }
+
+  if (
+    /\b(top|highest|largest|greatest|maximum|max)\b/.test(
+      text
+    )
+  ) {
+    return "desc";
+  }
+
+  return null;
+}
+
+
+function isAnalyticalTransformQuestion(
+  question
+) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (!text) {
+    return false;
+  }
+
+  return (
+    /^(?:what|how) about\b/.test(
+      text
+    ) ||
+    /\b(?:top|bottom)\s+\d{1,3}\b/.test(
+      text
+    ) ||
+    /\bsecond\s+(?:highest|lowest)\b/.test(
+      text
+    ) ||
+    /\binstead\b/.test(
+      text
+    )
+  );
+}
+
+
+function aggregationToGroupedOperation(
+  aggregation
+) {
+  const map = {
+    sum:
+      "group_sum",
+
+    average:
+      "group_average",
+
+    count:
+      "group_count",
+
+    minimum:
+      "group_minimum",
+
+    maximum:
+      "group_maximum",
+  };
+
+  return (
+    map[
+      String(
+        aggregation || ""
+      )
+        .trim()
+        .toLowerCase()
+    ] ||
+    null
+  );
+}
+
+
+function buildAnalyticalFollowUpPlan({
+  schema,
+  context,
+  question,
+}) {
+  const previous =
+    context?.analyticalContext;
+
+  if (
+    !previous ||
+    !previous.dataset ||
+    !isAnalyticalTransformQuestion(
+      question
+    )
+  ) {
+    return null;
+  }
+
+  const previousOperation =
+    String(
+      previous.operation ||
+      ""
+    )
+      .trim()
+      .toLowerCase();
+
+  const wasRanking =
+    previousOperation ===
+      "rank_groups" ||
+    previousOperation ===
+      "rank_rows";
+
+  const hasGrouping =
+    Boolean(
+      previous.groupBy ||
+      previous.labelColumn
+    );
+
+  const nextAggregation =
+    detectAnalyticalAggregationFollowUp(
+      question
+    );
+
+  const nextDirection =
+    detectAnalyticalDirectionFollowUp(
+      question
+    );
+
+  const nextLimit =
+    detectAnalyticalLimitFollowUp(
+      question
+    );
+
+  /**
+   * Resolve a newly requested REAL schema metric.
+   *
+   * If the wording is only "what about the total?" this may resolve
+   * nothing, which is correct: keep the previous metric.
+   */
+  const requestedMetric =
+    inferRequestedColumnFromQuestion({
+      schema,
+      question,
+
+      preferredDataset:
+        previous.dataset,
+
+      excludedColumns: [
+        previous.groupBy,
+        previous.labelColumn,
+      ].filter(Boolean),
+    });
+
+  let metricColumn =
+    previous.column ||
+    null;
+
+  /**
+   * Only replace the metric when the question contains a sufficiently
+   * strong real-column match and that match is not just the previous
+   * grouping field.
+   */
+  if (
+    requestedMetric?.column &&
+    (
+      normalizeText(
+        requestedMetric.column
+      ) !==
+      normalizeText(
+        previous.groupBy ||
+        ""
+      )
+    )
+  ) {
+    metricColumn =
+      requestedMetric.column;
+  }
+
+  let aggregation =
+    nextAggregation ||
+    previous.aggregation ||
+    null;
+
+  /**
+   * Rank operations express highest/lowest through direction.
+   * Words like "highest" should not accidentally replace an existing
+   * aggregate such as average with maximum.
+   */
+  if (
+    wasRanking &&
+    !/\b(?:average|avg|mean|total|sum|combined|count|how many|number of)\b/.test(
+      normalizeText(
+        question
+      )
+    )
+  ) {
+    aggregation =
+      previous.aggregation ||
+      aggregation;
+  }
+
+  let operation =
+    previousOperation;
+
+  if (wasRanking) {
+    operation =
+      hasGrouping
+        ? "rank_groups"
+        : "rank_rows";
+  } else if (
+    hasGrouping &&
+    aggregation
+  ) {
+    operation =
+      aggregationToGroupedOperation(
+        aggregation
+      ) ||
+      previousOperation;
+  } else if (
+    aggregation === "sum"
+  ) {
+    operation =
+      "sum";
+  } else if (
+    aggregation === "average"
+  ) {
+    operation =
+      "average";
+  } else if (
+    aggregation === "minimum"
+  ) {
+    operation =
+      "minimum";
+  } else if (
+    aggregation === "maximum"
+  ) {
+    operation =
+      "maximum";
+  }
+
+  /**
+   * "Show top/bottom N" turns a grouped calculation into a ranking.
+   */
+  if (
+    nextLimit &&
+    hasGrouping
+  ) {
+    operation =
+      "rank_groups";
+  }
+
+  const groupBy =
+    previous.groupBy ||
+    previous.labelColumn ||
+    null;
+
+  const labelColumn =
+    previous.labelColumn ||
+    groupBy ||
+    null;
+
+  const direction =
+    nextDirection ||
+    previous.direction ||
+    (
+      operation ===
+        "rank_groups" ||
+      operation ===
+        "rank_rows"
+        ? "desc"
+        : null
+    );
+
+  const limit =
+    nextLimit ||
+    previous.limit ||
+    (
+      operation ===
+        "rank_groups" ||
+      operation ===
+        "rank_rows"
+        ? 1
+        : 100
+    );
+
+  const selectColumns =
+    [
+      groupBy,
+      labelColumn,
+      metricColumn,
+    ].filter(
+      (value, index, array) =>
+        value &&
+        array.indexOf(value) ===
+          index
+    );
+
+  return {
+    route:
+      "dataset",
+
+    dataset:
+      previous.dataset,
+
+    operation,
+
+    column:
+      metricColumn,
+
+    labelColumn,
+
+    groupBy,
+
+    aggregation:
+      operation ===
+        "rank_groups"
+        ? aggregation
+        : (
+            operation.startsWith(
+              "group_"
+            )
+              ? null
+              : aggregation
+          ),
+
+    direction,
+
+    filters:
+      Array.isArray(
+        previous.filters
+      )
+        ? previous.filters.map(
+            (filter) => ({
+              ...filter,
+
+              value:
+                Array.isArray(
+                  filter?.value
+                )
+                  ? [
+                      ...filter.value,
+                    ]
+                  : filter?.value,
+            })
+          )
+        : [],
+
+    filterGroups:
+      Array.isArray(
+        previous.filterGroups
+      )
+        ? previous.filterGroups.map(
+            (group) => ({
+              ...group,
+
+              filters:
+                Array.isArray(
+                  group?.filters
+                )
+                  ? group.filters.map(
+                      (filter) => ({
+                        ...filter,
+
+                        value:
+                          Array.isArray(
+                            filter?.value
+                          )
+                            ? [
+                                ...filter.value,
+                              ]
+                            : filter?.value,
+                      })
+                    )
+                  : [],
+            })
+          )
+        : [],
+
+    filterGroupLogic:
+      previous.filterGroupLogic ||
+      null,
+
+    selectColumns,
+
+    outputRequested:
+      true,
+
+    transform:
+      null,
+
+    limit,
+
+    showAll:
+      false,
+
+    /**
+     * This flag is ignored by the calculation engine. It is useful
+     * in debug output to show that the plan came from verified memory.
+     */
+    conversationalAnalytics:
+      true,
+  };
+}
+
+
 /**
  * ==========================================================
  * CHAINED MULTI-ROW FOLLOW-UPS
@@ -4847,6 +5386,60 @@ async function answerQuestion(
           entityResolution.changes || [],
       };
     };
+
+  // ========================================================
+  // CONVERSATIONAL ANALYTICS FOLLOW-UP
+  // ========================================================
+  //
+  // Uses the previous VERIFIED analytical plan/result as the base.
+  // This runs before Groq planning so simple analytical follow-ups
+  // do not spend model tokens and do not lose context.
+  //
+  if (
+    conversationContext
+      .isFollowUp === true &&
+    conversationContext
+      .analyticalContext
+  ) {
+    const analyticalFollowUpPlan =
+      buildAnalyticalFollowUpPlan({
+        schema,
+
+        context:
+          conversationContext,
+
+        question:
+          cleanQuestion,
+      });
+
+    if (analyticalFollowUpPlan) {
+      if (
+        process.env.NODE_ENV !==
+          "production"
+      ) {
+        console.log(
+          "Chatbot conversational analytics plan:",
+          JSON.stringify(
+            analyticalFollowUpPlan,
+            null,
+            2
+          )
+        );
+      }
+
+      const analyticalFollowUpResult =
+        await executeResolvedPlan(
+          analyticalFollowUpPlan
+        );
+
+      return {
+        ...analyticalFollowUpResult,
+
+        plannerSource:
+          "conversation-analytics",
+      };
+    }
+  }
 
   // ========================================================
   // CHAINED MULTI-ROW FIELD FOLLOW-UP
