@@ -5275,6 +5275,216 @@ function compareVerifiedAnalyticalPair({
 }
 
 
+
+/**
+ * ==========================================================
+ * ORDINAL ANALYTICAL RESPONSE HELPERS
+ * ==========================================================
+ *
+ * These helpers are schema/dataset agnostic.
+ *
+ * They only describe a VERIFIED ranked result that has already been
+ * calculated by calculationEngine.js.
+ */
+
+function formatConversationNumber(
+  value
+) {
+  const numeric =
+    Number(value);
+
+  if (
+    !Number.isFinite(
+      numeric
+    )
+  ) {
+    return String(
+      value ?? ""
+    );
+  }
+
+  return numeric.toLocaleString(
+    "en-US",
+    {
+      maximumFractionDigits:
+        2,
+    }
+  );
+}
+
+
+function ordinalLabel(
+  position
+) {
+  const value =
+    Number(position);
+
+  const words = {
+    1: "highest",
+    2: "second highest",
+    3: "third highest",
+    4: "fourth highest",
+    5: "fifth highest",
+    6: "sixth highest",
+    7: "seventh highest",
+    8: "eighth highest",
+    9: "ninth highest",
+    10: "tenth highest",
+  };
+
+  return (
+    words[value] ||
+    `${value}${(
+      value % 100 >= 11 &&
+      value % 100 <= 13
+    )
+      ? "th"
+      : value % 10 === 1
+        ? "st"
+        : value % 10 === 2
+          ? "nd"
+          : value % 10 === 3
+            ? "rd"
+            : "th"} highest`
+  );
+}
+
+
+function ordinalDirectionLabel(
+  position,
+  direction
+) {
+  const base =
+    ordinalLabel(
+      position
+    );
+
+  if (
+    String(
+      direction || ""
+    )
+      .trim()
+      .toLowerCase() ===
+      "asc"
+  ) {
+    return base.replace(
+      /highest$/,
+      "lowest"
+    );
+  }
+
+  return base;
+}
+
+
+function buildOrdinalAnalyticalAnswer({
+  result,
+  plan,
+}) {
+  const item =
+    Array.isArray(
+      result?.results
+    )
+      ? result.results[0]
+      : null;
+
+  if (
+    !item ||
+    item.label ===
+      null ||
+    item.label ===
+      undefined ||
+    !Number.isFinite(
+      Number(
+        item.value
+      )
+    )
+  ) {
+    return null;
+  }
+
+  const position =
+    Number(
+      result?.rankPosition ||
+      (
+        Number.isInteger(
+          plan?.analyticalRankIndex
+        )
+          ? plan.analyticalRankIndex +
+            1
+          : 1
+      )
+    );
+
+  const rankText =
+    ordinalDirectionLabel(
+      position,
+      plan?.direction ||
+      result?.direction
+    );
+
+  const groupLabel =
+    String(
+      result?.labelColumn ||
+      result?.groupBy ||
+      plan?.labelColumn ||
+      plan?.groupBy ||
+      "group"
+    )
+      .replace(
+        /[\r\n]+/g,
+        " "
+      )
+      .replace(
+        /\s+/g,
+        " "
+      )
+      .trim();
+
+  const metricLabel =
+    String(
+      result?.column ||
+      plan?.column ||
+      "value"
+    )
+      .replace(
+        /[\r\n]+/g,
+        " "
+      )
+      .replace(
+        /\s+/g,
+        " "
+      )
+      .trim();
+
+  const aggregation =
+    String(
+      result?.aggregation ||
+      plan?.aggregation ||
+      ""
+    )
+      .trim()
+      .toLowerCase();
+
+  const aggregationText =
+    aggregation === "average"
+      ? "average "
+      : aggregation === "sum"
+        ? "total "
+        : aggregation === "count"
+          ? "count of "
+          : "";
+
+  return (
+    `The ${rankText} ${groupLabel.toLowerCase()} ` +
+    `by ${aggregationText}${metricLabel.toLowerCase()} is ` +
+    `**${item.label}**, at ${formatConversationNumber(
+      item.value
+    )}.`
+  );
+}
+
+
 /**
  * ==========================================================
  * MAIN CHATBOT ENTRY POINT
@@ -6032,6 +6242,30 @@ async function answerQuestion(
               plan.analyticalRankIndex +
               1,
           };
+
+          /**
+           * IMPORTANT:
+           *
+           * At this point result.results intentionally contains only the
+           * requested ordinal item. A general LLM response rewriter can
+           * misread that single-item array as "only one result exists"
+           * and incorrectly say the second/third result is unavailable.
+           *
+           * Build the ordinal wording deterministically from the verified
+           * result instead.
+           */
+          const ordinalAnswer =
+            buildOrdinalAnalyticalAnswer({
+              result,
+              plan,
+            });
+
+          if (
+            ordinalAnswer
+          ) {
+            result.answer =
+              ordinalAnswer;
+          }
         } else {
           result = {
             success: false,
@@ -6089,15 +6323,28 @@ async function answerQuestion(
         plan.route !==
           "clarify"
       ) {
+        const isOrdinalAnalyticalResult =
+          Number.isInteger(
+            plan?.analyticalRankIndex
+          ) &&
+          plan.analyticalRankIndex >=
+            0 &&
+          Number.isInteger(
+            result?.rankPosition
+          );
+
         const naturalAnswer =
-          await generateNaturalResponse({
-            question:
-              cleanQuestion,
+          isOrdinalAnalyticalResult &&
+          result?.answer
+            ? result.answer
+            : await generateNaturalResponse({
+                question:
+                  cleanQuestion,
 
-            plan,
+                plan,
 
-            result,
-          });
+                result,
+              });
 
         return {
           ...result,
