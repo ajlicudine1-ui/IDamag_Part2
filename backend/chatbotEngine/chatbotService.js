@@ -7205,56 +7205,53 @@ async function answerQuestion(
         true,
     };
 
-    await executeResolvedPlan(
-      extremePlan
-    );
-
-    const latestComparisonResults =
-      getRecentResults(
-        sessionId
+    /**
+     * Execute the opposite extreme and keep the returned VERIFIED result
+     * directly.
+     *
+     * IMPORTANT:
+     * Do not rediscover this value by reading "the last two" history
+     * entries after execution. A conversation can contain other verified
+     * analytical entries, derived comparison entries, or repeated
+     * follow-ups, which can make history position an unsafe way to pair
+     * the two operands.
+     */
+    const extremeExecutionResult =
+      await executeResolvedPlan(
+        extremePlan
       );
 
+    /**
+     * The LEFT operand is the verified analytical result that existed
+     * BEFORE this follow-up. The RIGHT operand is the result returned by
+     * the opposite-extreme execution above.
+     */
+    const originalAnalyticalResult =
+      conversationContext
+        ?.lastResult ||
+      latestVerifiedAnalyticalResult ||
+      null;
+
+    const leftRanked =
+      Array.isArray(
+        originalAnalyticalResult
+          ?.results
+      )
+        ? originalAnalyticalResult.results[0]
+        : null;
+
+    const rightRanked =
+      Array.isArray(
+        extremeExecutionResult
+          ?.results
+      )
+        ? extremeExecutionResult.results[0]
+        : null;
+
     if (
-      latestComparisonResults.length >=
-        2
+      leftRanked &&
+      rightRanked
     ) {
-      const leftEntry =
-        latestComparisonResults[
-          latestComparisonResults.length -
-            2
-        ];
-
-      const rightEntry =
-        latestComparisonResults[
-          latestComparisonResults.length -
-            1
-        ];
-
-      /**
-       * The previous and newly calculated extreme are usually grouped
-       * ranking results:
-       *
-       *   result.results[0] = { label, value }
-       *
-       * compareVerifiedResults() is designed primarily for scalar result
-       * objects, so passing rank_groups wrappers can produce
-       * NON_NUMERIC_RESULTS even though both ranked values are numeric.
-       *
-       * Extract the VERIFIED ranked values directly first.
-       */
-      const leftRanked =
-        Array.isArray(
-          leftEntry?.result?.results
-        )
-          ? leftEntry.result.results[0]
-          : null;
-
-      const rightRanked =
-        Array.isArray(
-          rightEntry?.result?.results
-        )
-          ? rightEntry.result.results[0]
-          : null;
 
       const leftValue =
         Number(
@@ -7282,21 +7279,73 @@ async function answerQuestion(
           rightValue
         )
       ) {
+        const leftLabel =
+          String(
+            leftRanked.label
+          );
+
+        const rightLabel =
+          String(
+            rightRanked.label
+          );
+
+        /**
+         * "Compare it with the lowest/highest" should normally resolve to
+         * two different labels when more than one group exists.
+         *
+         * If the same label is returned for both ends, do NOT fabricate a
+         * comparison. Surface the freshly executed result with debug
+         * context so the underlying ranking plan can be inspected.
+         */
+        if (
+          normalizeText(
+            leftLabel
+          ) ===
+          normalizeText(
+            rightLabel
+          )
+        ) {
+          return {
+            ...extremeExecutionResult,
+
+            plannerSource:
+              "conversation-analytics",
+
+            multiStepWarning:
+              "SAME_LABEL_FOR_OPPOSITE_EXTREMES",
+
+            previousExtreme: {
+              label:
+                leftLabel,
+              value:
+                leftValue,
+            },
+
+            requestedExtreme: {
+              label:
+                rightLabel,
+              value:
+                rightValue,
+            },
+
+            extremeDebugPlan:
+              extremeExecutionResult
+                ?.debugPlan ||
+              extremePlan,
+          };
+        }
+
         const higher =
           leftValue >= rightValue
             ? {
                 label:
-                  String(
-                    leftRanked.label
-                  ),
+                  leftLabel,
                 value:
                   leftValue,
               }
             : {
                 label:
-                  String(
-                    rightRanked.label
-                  ),
+                  rightLabel,
                 value:
                   rightValue,
               };
@@ -7305,26 +7354,25 @@ async function answerQuestion(
           leftValue <= rightValue
             ? {
                 label:
-                  String(
-                    leftRanked.label
-                  ),
+                  leftLabel,
                 value:
                   leftValue,
               }
             : {
                 label:
-                  String(
-                    rightRanked.label
-                  ),
+                  rightLabel,
                 value:
                   rightValue,
               };
 
         const metric =
-          leftEntry?.result?.column ||
-          leftEntry?.plan?.column ||
-          rightEntry?.result?.column ||
-          rightEntry?.plan?.column ||
+          originalAnalyticalResult
+            ?.column ||
+          latestVerifiedAnalyticalPlan
+            ?.column ||
+          extremeExecutionResult
+            ?.column ||
+          extremePlan.column ||
           "value";
 
         const difference =
@@ -7345,15 +7393,8 @@ async function answerQuestion(
 
           metric,
 
-          leftLabel:
-            String(
-              leftRanked.label
-            ),
-
-          rightLabel:
-            String(
-              rightRanked.label
-            ),
+          leftLabel,
+          rightLabel,
 
           leftValue,
           rightValue,
@@ -7363,24 +7404,16 @@ async function answerQuestion(
 
           difference,
 
-          /**
-           * Preserve both verified values so subsequent derived
-           * comparison follow-ups can reuse them.
-           */
           results: [
             {
               label:
-                String(
-                  leftRanked.label
-                ),
+                leftLabel,
               value:
                 leftValue,
             },
             {
               label:
-                String(
-                  rightRanked.label
-                ),
+                rightLabel,
               value:
                 rightValue,
             },
@@ -7406,34 +7439,11 @@ async function answerQuestion(
 
           plannerSource:
             "conversation-analytics",
-        };
-      }
 
-      /**
-       * Fallback for non-ranked scalar result wrappers.
-       */
-      const comparisonResult =
-        compareVerifiedResults({
-          left:
-            leftEntry,
-
-          right:
-            rightEntry,
-
-          mode:
-            "higher",
-        });
-
-      if (
-        comparisonResult &&
-        comparisonResult.success !==
-          false
-      ) {
-        return {
-          ...comparisonResult,
-
-          plannerSource:
-            "conversation-analytics",
+          extremeDebugPlan:
+            extremeExecutionResult
+              ?.debugPlan ||
+            extremePlan,
         };
       }
     }
