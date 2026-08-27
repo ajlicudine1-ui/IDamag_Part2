@@ -521,6 +521,47 @@ function splitExplicitEntitySegments(
 }
 
 
+
+function detectQuestionAggregation(
+  question
+) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (!text) {
+    return null;
+  }
+
+  if (
+    /\b(average|avg|mean)\b/.test(
+      text
+    )
+  ) {
+    return "average";
+  }
+
+  if (
+    /\b(total|sum|combined|overall|altogether|in all)\b/.test(
+      text
+    )
+  ) {
+    return "sum";
+  }
+
+  if (
+    /\b(count|how many|number of)\b/.test(
+      text
+    )
+  ) {
+    return "count";
+  }
+
+  return null;
+}
+
+
 function detectRankingDirection(
   question
 ) {
@@ -1252,6 +1293,57 @@ function normalizePlannerPlan({
     detectRankingDirection(
       question
     );
+
+  /**
+   * ========================================================
+   * QUESTION-LEVEL AGGREGATION REPAIR
+   * ========================================================
+   *
+   * Groq can occasionally return a syntactically valid ranking plan
+   * while omitting aggregation, for example:
+   *
+   *   operation: "rank_rows"
+   *   column: "ACTUAL SALARY"
+   *   labelColumn: "DIVISION"
+   *   aggregation: null
+   *
+   * for:
+   *
+   *   "Which division has the highest average actual salary?"
+   *
+   * The word "average" is explicit in the user's question, so recover
+   * that intent deterministically before deciding between rank_rows and
+   * rank_groups.
+   *
+   * This is generic and schema/dataset agnostic.
+   */
+  const questionAggregation =
+    detectQuestionAggregation(
+      question
+    );
+
+  const normalizedOperationName =
+    String(
+      normalized.operation ||
+      ""
+    )
+      .trim()
+      .toLowerCase();
+
+  const isRankingOperation =
+    normalizedOperationName ===
+      "rank_rows" ||
+    normalizedOperationName ===
+      "rank_groups";
+
+  if (
+    isRankingOperation &&
+    !normalized.aggregation &&
+    questionAggregation
+  ) {
+    normalized.aggregation =
+      questionAggregation;
+  }
 
   /**
    * ========================================================
