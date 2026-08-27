@@ -12,6 +12,20 @@ function createEmptyContext() {
     lastDataset: null,
     lastIntent: null,
     lastQuestion: null,
+
+    /**
+     * Last question that explicitly named the subject being counted/listed.
+     *
+     * This survives elliptical follow-ups such as:
+     *   "How many associations are in Pangasinan?"
+     *   "What about La Union?"
+     *   "What are those?"
+     *
+     * lastQuestion becomes "What about La Union?", but
+     * lastSubjectQuestion remains the explicit association question.
+     */
+    lastSubjectQuestion: null,
+
     lastMetric: null,
 
     /**
@@ -742,6 +756,39 @@ function updateConversation(
         .trim()
         .toLowerCase();
 
+    /**
+     * Preserve only EXPLICIT subject-bearing questions.
+     * Do not overwrite this with elliptical turns such as:
+     *   "what about La Union?"
+     */
+    const normalizedQuestion =
+      String(
+        question || ""
+      )
+        .toLowerCase()
+        .trim();
+
+    if (
+      question &&
+      (
+        /\bhow many\b/.test(
+          normalizedQuestion
+        ) ||
+        /\bnumber of\b/.test(
+          normalizedQuestion
+        ) ||
+        /\bcount(?: of)?\b/.test(
+          normalizedQuestion
+        ) ||
+        /^(?:please\s+)?(?:list|show|display|enumerate|name)\b/.test(
+          normalizedQuestion
+        )
+      )
+    ) {
+      context.lastSubjectQuestion =
+        question;
+    }
+
     const singleSelectedColumn =
       Array.isArray(
         plan.selectColumns
@@ -944,6 +991,9 @@ function getRelevantContext(
 
     lastQuestion:
       context.lastQuestion,
+
+    lastSubjectQuestion:
+      context.lastSubjectQuestion,
 
     lastMetric:
       context.lastMetric,

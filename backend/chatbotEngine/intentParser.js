@@ -2328,6 +2328,7 @@ function createLocalPlan({
   question,
   schema,
   datasets = {},
+  context = null,
 }) {
   const schemaPlan =
     detectSchemaPlan(question, schema);
@@ -2449,6 +2450,35 @@ function createLocalPlan({
     datasetName = schema[0].name;
   } else if (bestDataset?.score >= 0.25) {
     datasetName = bestDataset.dataset;
+  }
+
+  /**
+   * Generic conversational dataset inheritance.
+   *
+   * Short referential questions such as:
+   *   "what are those?"
+   * contain no worksheet vocabulary, so rankDatasets() cannot
+   * choose between multiple worksheets.
+   *
+   * When this is a verified follow-up, reuse the previous worksheet
+   * if it still exists in the live schema.
+   */
+  if (
+    !datasetName &&
+    context?.isFollowUp === true &&
+    context?.lastDataset &&
+    schema.some(
+      (item) =>
+        String(
+          item?.name || ""
+        ) ===
+        String(
+          context.lastDataset
+        )
+    )
+  ) {
+    datasetName =
+      context.lastDataset;
   }
 
   const currentRows =
@@ -2707,11 +2737,13 @@ async function createPlan({
   question,
   schema,
   datasets = {},
+  context = null,
 }) {
   return createLocalPlan({
     question,
     schema,
     datasets,
+    context,
   });
 }
 
