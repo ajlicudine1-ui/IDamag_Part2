@@ -232,6 +232,17 @@ function findExplicitSchemaColumns({
         continue;
       }
 
+      const normalizedRealColumn =
+        normalizeExplicitColumnText(
+          name
+        );
+
+      const realColumnWordCount =
+        normalizedRealColumn
+          .split(/\s+/)
+          .filter(Boolean)
+          .length;
+
       /**
        * Search both the normalized question and an abbreviation-expanded
        * version of it.
@@ -313,6 +324,36 @@ function findExplicitSchemaColumns({
           if (
             searchable.compact
           ) {
+            /**
+             * Compact matching exists only to bridge punctuation/spacing
+             * differences in MULTI-WORD schema labels.
+             *
+             * Never compact-match a one-word field name by raw substring.
+             *
+             * Example of the old bug:
+             *
+             *   schema column: AGE
+             *   question:      "What about the average?"
+             *
+             * compact question:
+             *   whatabouttheaverage
+             *
+             * raw substring matching found:
+             *   ...averAGE
+             *
+             * and incorrectly changed the metric to AGE.
+             *
+             * Multi-word fields such as:
+             *   PLANTILLA ITEM NO.
+             *
+             * may still use compact matching safely.
+             */
+            if (
+              realColumnWordCount < 2
+            ) {
+              continue;
+            }
+
             const start =
               haystack.indexOf(
                 alias
