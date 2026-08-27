@@ -844,6 +844,156 @@ function scoreTargetToColumn(
 }
 
 
+
+function sanitizeRankingStructuralFilters({
+  plan,
+  question,
+}) {
+  if (
+    !plan ||
+    !Array.isArray(
+      plan.filters
+    ) ||
+    !plan.filters.length
+  ) {
+    return plan;
+  }
+
+  const text =
+    normalizeText(
+      question
+    );
+
+  /**
+   * Words that often describe the requested calculation itself rather
+   * than a real row filter.
+   *
+   * Examples:
+   *   "most number of members"
+   *   "highest average salary"
+   *   "largest total area"
+   *
+   * A planner must not turn those structural words into:
+   *   Unit = "number"
+   *   Type = "average"
+   *   Category = "total"
+   *
+   * This remains conservative: the filter is removed only when the
+   * value is used in a recognizable analytical phrase in the question.
+   */
+  const structuralPhrasePatterns = [
+    /\bnumber\s+of\b/,
+    /\bcount\s+of\b/,
+    /\baverage\s+(?:of\s+)?/,
+    /\bavg\s+(?:of\s+)?/,
+    /\bmean\s+(?:of\s+)?/,
+    /\btotal\s+(?:of\s+)?/,
+    /\bsum\s+(?:of\s+)?/,
+    /\bhighest\b/,
+    /\blowest\b/,
+    /\bmaximum\b/,
+    /\bminimum\b/,
+    /\bmost\b/,
+    /\bleast\b/,
+  ];
+
+  const hasAnalyticalStructure =
+    structuralPhrasePatterns.some(
+      (pattern) =>
+        pattern.test(
+          text
+        )
+    );
+
+  if (!hasAnalyticalStructure) {
+    return plan;
+  }
+
+  const structuralValues =
+    new Set([
+      "number",
+      "count",
+      "average",
+      "avg",
+      "mean",
+      "total",
+      "sum",
+      "highest",
+      "lowest",
+      "maximum",
+      "minimum",
+      "most",
+      "least",
+    ]);
+
+  const cleanedFilters =
+    plan.filters.filter(
+      (filter) => {
+        const value =
+          normalizeText(
+            Array.isArray(
+              filter?.value
+            )
+              ? filter.value.join(
+                  " "
+                )
+              : filter?.value
+          );
+
+        if (
+          !structuralValues.has(
+            value
+          )
+        ) {
+          return true;
+        }
+
+        /**
+         * Keep a structural-looking value only if the question clearly
+         * uses it as an explicit filter value rather than as part of
+         * the analytical wording.
+         *
+         * Examples kept:
+         *   "where Unit is number"
+         *   "filter Unit by number"
+         *   "only number"
+         *
+         * Example removed:
+         *   "most number of members"
+         */
+        const escaped =
+          value.replace(
+            /[.*+?^${}()|[\]\\]/g,
+            "\\$&"
+          );
+
+        const explicitFilterUse =
+          new RegExp(
+            `\\b(?:where|with|filter(?:ed)?(?:\\s+by)?|only|equals?|equal\\s+to|is)\\s+(?:\\w+\\s+){0,4}${escaped}\\b`
+          ).test(
+            text
+          );
+
+        return explicitFilterUse;
+      }
+    );
+
+  if (
+    cleanedFilters.length ===
+      plan.filters.length
+  ) {
+    return plan;
+  }
+
+  return {
+    ...plan,
+
+    filters:
+      cleanedFilters,
+  };
+}
+
+
 function repairRankingIdentityPlan({
   datasets,
   schema,
@@ -856,6 +1006,12 @@ function repairRankingIdentityPlan({
   ) {
     return plan;
   }
+
+  plan =
+    sanitizeRankingStructuralFilters({
+      plan,
+      question,
+    });
 
   const direction =
     detectRankingDirection(
