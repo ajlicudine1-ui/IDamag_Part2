@@ -54,7 +54,6 @@ const {
 
 const {
   compareVerifiedResults,
-  compareRecentVerifiedResults,
 } = require("./comparisonEngine");
 
 const {
@@ -927,6 +926,90 @@ function normalizePlannerPlan({
     detectRankingDirection(
       question
     );
+
+  /**
+   * ========================================================
+   * RANKED AGGREGATE NORMALIZATION
+   * ========================================================
+   *
+   * A planner may return:
+   *
+   *   operation: "rank_rows"
+   *   aggregation: "average"
+   *   labelColumn: "..."
+   *
+   * for a question such as:
+   *
+   *   "Which division has the highest average salary?"
+   *
+   * That is logically a GROUP ranking, not a row ranking.
+   *
+   * Normalize this deterministically before execution.
+   * This is schema/dataset agnostic and works for any grouping field.
+   */
+  const normalizedAggregation =
+    String(
+      normalized.aggregation ||
+      ""
+    )
+      .trim()
+      .toLowerCase();
+
+  const isGroupedRankingAggregation =
+    [
+      "sum",
+      "average",
+      "avg",
+      "mean",
+      "count",
+    ].includes(
+      normalizedAggregation
+    );
+
+  if (
+    String(
+      normalized.operation ||
+      ""
+    )
+      .trim()
+      .toLowerCase() ===
+      "rank_rows" &&
+    isGroupedRankingAggregation &&
+    (
+      normalized.groupBy ||
+      normalized.labelColumn
+    )
+  ) {
+    normalized.operation =
+      "rank_groups";
+
+    normalized.groupBy =
+      normalized.groupBy ||
+      normalized.labelColumn;
+
+    normalized.labelColumn =
+      normalized.labelColumn ||
+      normalized.groupBy;
+
+    /**
+     * Keep selectColumns aligned with the grouping field + metric.
+     */
+    normalized.selectColumns = [
+      ...new Set(
+        [
+          normalized.groupBy,
+          normalized.column,
+          ...(
+            Array.isArray(
+              normalized.selectColumns
+            )
+              ? normalized.selectColumns
+              : []
+          ),
+        ].filter(Boolean)
+      ),
+    ];
+  }
 
   /**
    * Multiple explicitly named output columns normally mean a
@@ -3636,39 +3719,7 @@ function detectComparisonRequest(
   }
 
   // ========================================================
-  // PERCENTAGE DIFFERENCE
-  // ========================================================
-
-  if (
-    /\b(?:what|how much)\s+(?:percent|percentage)\s+higher\b/i.test(
-      text
-    ) ||
-    /\bhow many percent higher\b/i.test(
-      text
-    ) ||
-    /\bpercentage increase\b/i.test(
-      text
-    )
-  ) {
-    return "percent_higher";
-  }
-
-  if (
-    /\b(?:what|how much)\s+(?:percent|percentage)\s+lower\b/i.test(
-      text
-    ) ||
-    /\bhow many percent lower\b/i.test(
-      text
-    ) ||
-    /\bpercentage decrease\b/i.test(
-      text
-    )
-  ) {
-    return "percent_lower";
-  }
-
-  // ========================================================
-  // DIFFERENCE / HOW MUCH HIGHER OR LOWER
+  // DIFFERENCE
   // ========================================================
 
   if (
@@ -3877,19 +3928,22 @@ async function answerQuestion(
   // STEP 10 — ANALYTICAL COMPARISON FOLLOW-UPS
   // ========================================================
   //
-  // Handles both:
+  // These questions should NOT be sent through the normal
+  // dataset planner because they refer to already verified
+  // previous results.
   //
-  // 1. Two standalone verified numeric results.
-  // 2. One grouped verified result containing two labels/values.
+  // Example:
   //
-  // Examples:
+  // User:
+  // "What is Roberto's salary?"
   //
+  // User:
+  // "What is Vener's salary?"
+  //
+  // User:
   // "Who has the higher salary?"
-  // "What is the difference between them?"
-  // "How much higher is A than B?"
-  // "What percent higher is A than B?"
   //
-  // All arithmetic stays in JavaScript.
+  // We compare the previous VERIFIED JavaScript results.
   //
 
   const comparisonMode =
@@ -3917,15 +3971,46 @@ async function answerQuestion(
       );
     }
 
-    const comparisonResult =
-      compareRecentVerifiedResults({
-        recentResults,
+    // ======================================================
+    // REQUIRE TWO VERIFIED RESULTS
+    // ======================================================
 
+    if (
+      recentResults.length <
+      2
+    ) {
+      return {
+        success: false,
+        source:
+          "comparison",
+        operation:
+          "clarify",
+        answer:
+          "I need two previous results before I can compare them.",
+      };
+    }
+
+    /**
+     * Compare the two most recent verified results.
+     */
+    const left =
+      recentResults[
+        recentResults.length -
+          2
+      ];
+
+    const right =
+      recentResults[
+        recentResults.length -
+          1
+      ];
+
+    const comparisonResult =
+      compareVerifiedResults({
+        left,
+        right,
         mode:
           comparisonMode,
-
-        question:
-          cleanQuestion,
       });
 
     if (
@@ -3944,6 +4029,7 @@ async function answerQuestion(
 
     /**
      * Comparison Engine performs all arithmetic.
+     *
      * Do NOT ask Groq to recalculate this result.
      */
     return comparisonResult;
