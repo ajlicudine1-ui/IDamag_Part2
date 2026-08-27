@@ -874,21 +874,211 @@ function repairRankingIdentityPlan({
     return plan;
   }
 
-  const datasetSchema =
+  /**
+   * Prefer the planner's selected dataset, but verify it against the
+   * requested metric across all live worksheets.
+   *
+   * This prevents:
+   *   "Which association has the most members?"
+   *
+   * from choosing a worksheet merely because it is named "Association"
+   * and then ranking an unrelated numeric field such as QTY.
+   *
+   * We only switch worksheets when:
+   *   - there are no existing filters to invalidate, and
+   *   - another worksheet has a clearly stronger numeric metric match.
+   */
+  let selectedDatasetName =
+    plan.dataset || null;
+
+  let datasetSchema =
     (schema || []).find(
       (item) =>
         String(
           item?.name || ""
         ) ===
         String(
-          plan.dataset || ""
+          selectedDatasetName || ""
         )
     );
 
-  const rows =
+  let rows =
     datasets?.[
-      plan.dataset
+      selectedDatasetName
     ];
+
+  const hasPlanFilters =
+    Array.isArray(
+      plan.filters
+    ) &&
+    plan.filters.length > 0;
+
+  const scoreDatasetForRanking =
+    (candidateSchema) => {
+      const candidateRows =
+        datasets?.[
+          candidateSchema?.name
+        ];
+
+      if (
+        !candidateSchema ||
+        !Array.isArray(
+          candidateRows
+        )
+      ) {
+        return null;
+      }
+
+      const candidateColumns =
+        Array.isArray(
+          candidateSchema.columns
+        )
+          ? candidateSchema.columns
+          : [];
+
+      const numeric =
+        candidateColumns
+          .filter(
+            (column) =>
+              isNumericLikeColumn({
+                column,
+                rows:
+                  candidateRows,
+              })
+          )
+          .map(
+            (column) => ({
+              column,
+
+              score:
+                scoreTargetToColumn(
+                  targets.metricTarget,
+                  column.name
+                ),
+            })
+          )
+          .sort(
+            (a, b) =>
+              b.score -
+              a.score
+          )[0] ||
+        null;
+
+      const label =
+        candidateColumns
+          .filter(
+            (column) =>
+              column?.name &&
+              (
+                !numeric ||
+                column.name !==
+                  numeric.column.name
+              ) &&
+              !isNumericLikeColumn({
+                column,
+                rows:
+                  candidateRows,
+              })
+          )
+          .map(
+            (column) => ({
+              column,
+
+              score:
+                scoreTargetToColumn(
+                  targets.labelTarget,
+                  column.name
+                ),
+            })
+          )
+          .sort(
+            (a, b) =>
+              b.score -
+              a.score
+          )[0] ||
+        null;
+
+      return {
+        datasetName:
+          candidateSchema.name,
+
+        schema:
+          candidateSchema,
+
+        rows:
+          candidateRows,
+
+        numeric,
+
+        label,
+
+        combinedScore:
+          (
+            numeric?.score ||
+            0
+          ) *
+            2 +
+          (
+            label?.score ||
+            0
+          ),
+      };
+    };
+
+  if (!hasPlanFilters) {
+    const rankedDatasets =
+      (schema || [])
+        .map(
+          scoreDatasetForRanking
+        )
+        .filter(Boolean)
+        .sort(
+          (a, b) =>
+            b.combinedScore -
+            a.combinedScore
+        );
+
+    const bestGlobal =
+      rankedDatasets[0] ||
+      null;
+
+    const currentScore =
+      rankedDatasets.find(
+        (item) =>
+          String(
+            item.datasetName
+          ) ===
+          String(
+            selectedDatasetName
+          )
+      ) ||
+      null;
+
+    if (
+      bestGlobal?.numeric?.score >=
+        0.55 &&
+      (
+        !currentScore ||
+        currentScore
+          .numeric?.score <
+          0.55 ||
+        bestGlobal
+          .combinedScore >
+          currentScore
+            .combinedScore +
+            0.35
+      )
+    ) {
+      selectedDatasetName =
+        bestGlobal.datasetName;
+
+      datasetSchema =
+        bestGlobal.schema;
+
+      rows =
+        bestGlobal.rows;
+    }
+  }
 
   if (
     !datasetSchema ||
@@ -1096,16 +1286,50 @@ function repairRankingIdentityPlan({
       .trim()
       .toLowerCase();
 
+  /**
+   * A numeric metric should be ranked by its VALUE even when the
+   * wording contains "number of".
+   *
+   * The planner may encode:
+   *   aggregation = "count"
+   *
+   * for:
+   *   "most number of members"
+   *
+   * But when the metric has already resolved to a numeric field such as
+   * "No. of members", COUNT would count records per group and return 1
+   * for one-row associations. Clear that false count aggregation.
+   */
+  const countActuallyMeansNumericValue =
+    normalizedAggregation ===
+      "count" &&
+    metric?.column &&
+    isNumericLikeColumn({
+      column:
+        metric.column,
+
+      rows,
+    });
+
   const groupedAggregation =
     [
       "sum",
       "average",
       "avg",
       "mean",
-      "count",
     ].includes(
       normalizedAggregation
+    ) ||
+    (
+      normalizedAggregation ===
+        "count" &&
+      !countActuallyMeansNumericValue
     );
+
+  const effectiveAggregation =
+    countActuallyMeansNumericValue
+      ? null
+      : normalizedAggregation;
 
   const finalOperation =
     groupedAggregation
@@ -1117,6 +1341,9 @@ function repairRankingIdentityPlan({
 
   return {
     ...plan,
+
+    dataset:
+      selectedDatasetName,
 
     operation:
       finalOperation,
@@ -1135,17 +1362,14 @@ function repairRankingIdentityPlan({
     aggregation:
       groupedAggregation
         ? (
-            normalizedAggregation ===
+            effectiveAggregation ===
               "avg" ||
-            normalizedAggregation ===
+            effectiveAggregation ===
               "mean"
               ? "average"
-              : normalizedAggregation
+              : effectiveAggregation
           )
-        : (
-            plan?.aggregation ||
-            null
-          ),
+        : null,
 
     direction,
 

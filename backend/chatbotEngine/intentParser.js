@@ -1151,6 +1151,34 @@ function extractRankingRequest(
     return null;
   }
 
+  /**
+   * IMPORTANT:
+   *
+   * "number of X" does not always mean COUNT ROWS.
+   *
+   * If the requested metric resolves to a REAL numeric schema field,
+   * rank the numeric values directly.
+   *
+   * Examples:
+   *   "Which association has the most number of members?"
+   *     -> No. of members (numeric)
+   *     -> rank_rows
+   *     -> NOT count rows per association
+   *
+   *   "Which municipality has the highest number of farmers?"
+   *     -> if a numeric farmer-count field exists, rank that value.
+   *
+   * True entity-count questions such as:
+   *   "Which province has the most associations?"
+   * are still handled as grouped counts when there is no matching
+   * numeric metric field for "associations".
+   */
+  const effectiveAggregation =
+    aggregation === "count" &&
+    metricColumn
+      ? null
+      : aggregation;
+
   return {
     labelColumn:
       labelColumn.name,
@@ -1160,7 +1188,9 @@ function extractRankingRequest(
 
     direction,
     limit,
-    aggregation,
+
+    aggregation:
+      effectiveAggregation,
   };
 }
 
