@@ -802,7 +802,45 @@ function extractRankingRequest(
 
   let labelTarget = null;
   let metricTarget = null;
+
+  /**
+   * Detect aggregate intent from the ORIGINAL normalized question.
+   *
+   * IMPORTANT:
+   * normalizeTarget() intentionally removes operation words such as
+   * "average", "total", and "count". If aggregation is detected only
+   * after metricTarget has been normalized, those words are already
+   * gone and a grouped ranking can incorrectly fall back to rank_rows.
+   *
+   * Example:
+   *   "Which division has the highest average actual salary?"
+   *
+   * Must become:
+   *   operation   = rank_groups
+   *   aggregation = average
+   *   groupBy     = DIVISION
+   */
   let aggregation = null;
+
+  if (
+    /\b(total|sum|combined|overall|altogether|in all)\b/.test(
+      text
+    )
+  ) {
+    aggregation = "sum";
+  } else if (
+    /\b(average|avg|mean)\b/.test(
+      text
+    )
+  ) {
+    aggregation = "average";
+  } else if (
+    /\b(count|how many|number of)\b/.test(
+      text
+    )
+  ) {
+    aggregation = "count";
+  }
 
   /**
    * WHO has the highest/lowest METRIC ...
@@ -934,25 +972,6 @@ function extractRankingRequest(
     return null;
   }
 
-  if (
-    /\b(total|sum|combined|overall)\b/.test(
-      metricTarget
-    )
-  ) {
-    aggregation = "sum";
-  } else if (
-    /\b(average|avg|mean)\b/.test(
-      metricTarget
-    )
-  ) {
-    aggregation = "average";
-  } else if (
-    /\b(count|number)\b/.test(
-      metricTarget
-    )
-  ) {
-    aggregation = "count";
-  }
 
   metricTarget =
     metricTarget
