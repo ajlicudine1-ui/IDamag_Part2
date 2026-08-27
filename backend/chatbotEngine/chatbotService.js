@@ -8213,164 +8213,6 @@ async function answerQuestion(
 
 
   // ========================================================
-  // GENERIC REFERENTIAL LIST FOLLOW-UP
-  // ========================================================
-  //
-  // Resolve these BEFORE Groq/local planning:
-  //
-  //   "What are those?"
-  //   "Which are those?"
-  //   "Show them."
-  //   "List those."
-  //   "Who are those?"
-  //
-  // The previous verified dataset + filters are reused, while the
-  // subject/output column is inferred from verified memory and the
-  // live schema.
-  //
-  const referentialListText =
-    normalizeText(
-      cleanQuestion
-    );
-
-  const isDirectReferentialList =
-    conversationContext
-      .isFollowUp === true &&
-    (
-      /\b(?:what|which)\s+(?:are|were)\s+(?:those|these|they|them|the ones)\b/.test(
-        referentialListText
-      ) ||
-      /\b(?:show|list|display|give|name)\s+(?:me\s+)?(?:those|these|them|the ones)\b/.test(
-        referentialListText
-      ) ||
-      /\bwho\s+(?:are|were)\s+(?:those|these|they|them)\b/.test(
-        referentialListText
-      )
-    );
-
-  if (
-    isDirectReferentialList &&
-    conversationContext
-      .lastDataset
-  ) {
-    const rememberedSubject =
-      inferRememberedSubjectColumn({
-        schema,
-
-        datasetName:
-          conversationContext
-            .lastDataset,
-
-        previousQuestion:
-          conversationContext
-            .lastSubjectQuestion ||
-          conversationContext
-            .lastQuestion,
-
-        context:
-          conversationContext,
-      });
-
-    if (rememberedSubject) {
-      const referentialListPlan = {
-        route:
-          "dataset",
-
-        dataset:
-          conversationContext
-            .lastDataset,
-
-        operation:
-          "list",
-
-        column:
-          rememberedSubject,
-
-        labelColumn:
-          rememberedSubject,
-
-        groupBy:
-          null,
-
-        aggregation:
-          null,
-
-        direction:
-          null,
-
-        filters:
-          Array.isArray(
-            conversationContext
-              .lastFilters
-          )
-            ? conversationContext
-                .lastFilters
-                .map(
-                  (filter) => ({
-                    ...filter,
-
-                    value:
-                      Array.isArray(
-                        filter?.value
-                      )
-                        ? [
-                            ...filter.value,
-                          ]
-                        : filter?.value,
-                  })
-                )
-            : [],
-
-        selectColumns: [
-          rememberedSubject,
-        ],
-
-        outputRequested:
-          true,
-
-        transform:
-          null,
-
-        showAll:
-          true,
-
-        limit:
-          100,
-
-        conversationalEntityList:
-          true,
-      };
-
-      if (
-        process.env.NODE_ENV !==
-          "production"
-      ) {
-        console.log(
-          "Chatbot referential list plan:",
-          JSON.stringify(
-            referentialListPlan,
-            null,
-            2
-          )
-        );
-      }
-
-      const referentialListResult =
-        await executeResolvedPlan(
-          referentialListPlan
-        );
-
-      return {
-        ...referentialListResult,
-
-        plannerSource:
-          "conversation",
-      };
-    }
-  }
-
-
-  // ========================================================
   // STEP 10 — ANALYTICAL COMPARISON FOLLOW-UPS
   // ========================================================
   //
@@ -9188,6 +9030,165 @@ async function answerQuestion(
           entityResolution.changes || [],
       };
     };
+
+
+
+  // ========================================================
+  // GENERIC REFERENTIAL LIST FOLLOW-UP
+  // ========================================================
+  //
+  // Resolve these BEFORE Groq/local planning:
+  //
+  //   "What are those?"
+  //   "Which are those?"
+  //   "Show them."
+  //   "List those."
+  //   "Who are those?"
+  //
+  // The previous verified dataset + filters are reused, while the
+  // subject/output column is inferred from verified memory and the
+  // live schema.
+  //
+  const referentialListText =
+    normalizeText(
+      cleanQuestion
+    );
+
+  const isDirectReferentialList =
+    conversationContext
+      .isFollowUp === true &&
+    (
+      /\b(?:what|which)\s+(?:are|were)\s+(?:those|these|they|them|the ones)\b/.test(
+        referentialListText
+      ) ||
+      /\b(?:show|list|display|give|name)\s+(?:me\s+)?(?:those|these|them|the ones)\b/.test(
+        referentialListText
+      ) ||
+      /\bwho\s+(?:are|were)\s+(?:those|these|they|them)\b/.test(
+        referentialListText
+      )
+    );
+
+  if (
+    isDirectReferentialList &&
+    conversationContext
+      .lastDataset
+  ) {
+    const rememberedSubject =
+      inferRememberedSubjectColumn({
+        schema,
+
+        datasetName:
+          conversationContext
+            .lastDataset,
+
+        previousQuestion:
+          conversationContext
+            .lastSubjectQuestion ||
+          conversationContext
+            .lastQuestion,
+
+        context:
+          conversationContext,
+      });
+
+    if (rememberedSubject) {
+      const referentialListPlan = {
+        route:
+          "dataset",
+
+        dataset:
+          conversationContext
+            .lastDataset,
+
+        operation:
+          "list",
+
+        column:
+          rememberedSubject,
+
+        labelColumn:
+          rememberedSubject,
+
+        groupBy:
+          null,
+
+        aggregation:
+          null,
+
+        direction:
+          null,
+
+        filters:
+          Array.isArray(
+            conversationContext
+              .lastFilters
+          )
+            ? conversationContext
+                .lastFilters
+                .map(
+                  (filter) => ({
+                    ...filter,
+
+                    value:
+                      Array.isArray(
+                        filter?.value
+                      )
+                        ? [
+                            ...filter.value,
+                          ]
+                        : filter?.value,
+                  })
+                )
+            : [],
+
+        selectColumns: [
+          rememberedSubject,
+        ],
+
+        outputRequested:
+          true,
+
+        transform:
+          null,
+
+        showAll:
+          true,
+
+        limit:
+          100,
+
+        conversationalEntityList:
+          true,
+      };
+
+      if (
+        process.env.NODE_ENV !==
+          "production"
+      ) {
+        console.log(
+          "Chatbot referential list plan:",
+          JSON.stringify(
+            referentialListPlan,
+            null,
+            2
+          )
+        );
+      }
+
+      const referentialListResult =
+        await executeResolvedPlan(
+          referentialListPlan
+        );
+
+      return {
+        ...referentialListResult,
+
+        plannerSource:
+          "conversation",
+      };
+    }
+  }
 
 
 
