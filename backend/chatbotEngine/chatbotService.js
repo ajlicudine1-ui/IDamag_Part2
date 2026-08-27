@@ -4739,6 +4739,47 @@ function detectComparisonRequest(
   }
 
   // ========================================================
+  // RATIO / TIMES COMPARISON
+  // ========================================================
+
+  if (
+    /\b(?:what(?:'s| is) )?(?:the )?ratio\b/i.test(
+      text
+    ) ||
+    /\bhow many times\b/i.test(
+      text
+    ) ||
+    /\b(?:times|x) (?:higher|larger|greater|more)\b/i.test(
+      text
+    )
+  ) {
+    return "ratio";
+  }
+
+  // ========================================================
+  // PERCENT HIGHER / LOWER — conversational variants
+  // ========================================================
+
+  if (
+    /\bby what percent(?:age)?\b/i.test(
+      text
+    ) ||
+    /\bwhat percent(?:age)? (?:more|greater)\b/i.test(
+      text
+    )
+  ) {
+    return "percentage_higher";
+  }
+
+  if (
+    /\bwhat percent(?:age)? less\b/i.test(
+      text
+    )
+  ) {
+    return "percentage_lower";
+  }
+
+  // ========================================================
   // DIFFERENCE
   // ========================================================
 
@@ -5016,6 +5057,61 @@ function compareVerifiedAnalyticalPair({
     )
       .trim()
       .toLowerCase();
+
+  if (
+    normalizedMode ===
+      "ratio"
+  ) {
+    const denominator =
+      Math.abs(
+        lower.value
+      );
+
+    if (denominator === 0) {
+      return {
+        success: false,
+        source:
+          "conversation-analytics",
+        operation:
+          "clarify",
+        answer:
+          `I can't calculate the ratio because ${lower.label}'s ${pair.metric} is zero.`,
+      };
+    }
+
+    const ratio =
+      Math.abs(
+        higher.value
+      ) / denominator;
+
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        "ratio",
+
+      metric:
+        pair.metric,
+
+      leftLabel:
+        left.label,
+      rightLabel:
+        right.label,
+
+      leftValue:
+        left.value,
+      rightValue:
+        right.value,
+
+      ratio,
+
+      answer:
+        `${higher.label}'s ${pair.metric} is approximately ${formatAnalyticalNumber(
+          ratio
+        )} times ${lower.label}'s.`,
+    };
+  }
 
   if (
     normalizedMode ===
