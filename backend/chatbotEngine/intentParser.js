@@ -1027,6 +1027,25 @@ function extractRankingRequest(
           b.score - a.score
       );
 
+  /**
+   * Rank numeric metric columns by:
+   *
+   * 1. How completely the REAL column contains the requested
+   *    metric words.
+   * 2. Existing semantic score.
+   * 3. Fewer unrelated/extra column words.
+   * 4. Shorter column name as a final deterministic tie-breaker.
+   *
+   * This is generic and prevents a loosely similar numeric field
+   * from beating a field that actually contains the user's words.
+   */
+  const metricTargetTokens =
+    normalizeTarget(
+      metricTarget
+    )
+      .split(/\s+/)
+      .filter(Boolean);
+
   const metricCandidates =
     rankColumns(
       metricTarget,
@@ -1039,9 +1058,53 @@ function extractRankingRequest(
             item
           )
       )
+      .map(
+        (item) => {
+          const columnTokens =
+            normalizeTarget(
+              item.name
+            )
+              .split(/\s+/)
+              .filter(Boolean);
+
+          const matchedTargetTokens =
+            metricTargetTokens.filter(
+              (token) =>
+                columnTokens.includes(
+                  token
+                )
+            ).length;
+
+          const targetCoverage =
+            metricTargetTokens.length
+              ? matchedTargetTokens /
+                metricTargetTokens.length
+              : 0;
+
+          const extraTokens =
+            Math.max(
+              0,
+              columnTokens.length -
+              matchedTargetTokens
+            );
+
+          return {
+            ...item,
+            targetCoverage,
+            extraTokens,
+          };
+        }
+      )
       .sort(
         (a, b) =>
-          b.score - a.score
+          b.targetCoverage -
+            a.targetCoverage ||
+          b.score -
+            a.score ||
+          a.extraTokens -
+            b.extraTokens ||
+          String(a.name).length -
+            String(b.name).length
       );
 
   const labelColumn =
@@ -1051,8 +1114,14 @@ function extractRankingRequest(
       : null;
 
   const metricColumn =
-    metricCandidates[0]?.score >=
-    0.55
+    metricCandidates[0] &&
+    metricCandidates[0].score >=
+      0.55 &&
+    (
+      metricTargetTokens.length === 0 ||
+      metricCandidates[0]
+        .targetCoverage > 0
+    )
       ? metricCandidates[0]
       : null;
 
