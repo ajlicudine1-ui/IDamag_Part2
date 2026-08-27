@@ -3314,6 +3314,77 @@ function detectAnalyticalAggregationFollowUp(
 }
 
 
+
+function detectAnalyticalRankIndexFollowUp(
+  question
+) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (!text) {
+    return null;
+  }
+
+  const numericOrdinal =
+    text.match(
+      /\b(\d{1,2})(?:st|nd|rd|th)\s+(?:highest|lowest|largest|smallest)\b/
+    );
+
+  if (
+    numericOrdinal?.[1]
+  ) {
+    const position =
+      Number(
+        numericOrdinal[1]
+      );
+
+    if (
+      Number.isInteger(
+        position
+      ) &&
+      position >= 1 &&
+      position <= 100
+    ) {
+      return position - 1;
+    }
+  }
+
+  const wordOrdinals =
+    new Map([
+      ["first", 0],
+      ["second", 1],
+      ["third", 2],
+      ["fourth", 3],
+      ["fifth", 4],
+      ["sixth", 5],
+      ["seventh", 6],
+      ["eighth", 7],
+      ["ninth", 8],
+      ["tenth", 9],
+    ]);
+
+  const wordMatch =
+    text.match(
+      /\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+(?:highest|lowest|largest|smallest)\b/
+    );
+
+  if (
+    wordMatch?.[1] &&
+    wordOrdinals.has(
+      wordMatch[1]
+    )
+  ) {
+    return wordOrdinals.get(
+      wordMatch[1]
+    );
+  }
+
+  return null;
+}
+
+
 function detectAnalyticalLimitFollowUp(
   question
 ) {
@@ -3350,12 +3421,15 @@ function detectAnalyticalLimitFollowUp(
     }
   }
 
+  const rankIndex =
+    detectAnalyticalRankIndexFollowUp(
+      question
+    );
+
   if (
-    /\bsecond\s+(?:highest|lowest)\b/.test(
-      text
-    )
+    rankIndex !== null
   ) {
-    return 2;
+    return rankIndex + 1;
   }
 
   return null;
@@ -3409,7 +3483,7 @@ function isAnalyticalTransformQuestion(
     /\b(?:top|bottom)\s+\d{1,3}\b/.test(
       text
     ) ||
-    /\bsecond\s+(?:highest|lowest)\b/.test(
+    /\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d{1,2}(?:st|nd|rd|th))\s+(?:highest|lowest|largest|smallest)\b/.test(
       text
     ) ||
     /\binstead\b/.test(
@@ -3502,6 +3576,11 @@ function buildAnalyticalFollowUpPlan({
 
   const nextLimit =
     detectAnalyticalLimitFollowUp(
+      question
+    );
+
+  const analyticalRankIndex =
+    detectAnalyticalRankIndexFollowUp(
       question
     );
 
@@ -3798,6 +3877,20 @@ function buildAnalyticalFollowUpPlan({
      */
     conversationalAnalytics:
       true,
+
+    /**
+     * Optional zero-based ordinal selection.
+     *
+     * Example:
+     *   "What is the second highest?"
+     *   -> execute top 2
+     *   -> keep result index 1
+     */
+    analyticalRankIndex:
+      analyticalRankIndex !==
+        null
+        ? analyticalRankIndex
+        : null,
   };
 }
 
@@ -4609,6 +4702,43 @@ function detectComparisonRequest(
   }
 
   // ========================================================
+  // PERCENTAGE COMPARISONS
+  // ========================================================
+
+  if (
+    /\b(?:what|how much|how many)?\s*(?:is\s+the\s+)?percentage\s+difference\b/i.test(
+      text
+    ) ||
+    /\bpercent(?:age)?\s+difference\b/i.test(
+      text
+    )
+  ) {
+    return "percentage_difference";
+  }
+
+  if (
+    /\b(?:what|how much|how many)?\s*(?:percentage|percent)\s+higher\b/i.test(
+      text
+    ) ||
+    /\bhow many percent higher\b/i.test(
+      text
+    )
+  ) {
+    return "percentage_higher";
+  }
+
+  if (
+    /\b(?:what|how much|how many)?\s*(?:percentage|percent)\s+lower\b/i.test(
+      text
+    ) ||
+    /\bhow many percent lower\b/i.test(
+      text
+    )
+  ) {
+    return "percentage_lower";
+  }
+
+  // ========================================================
   // DIFFERENCE
   // ========================================================
 
@@ -4673,6 +4803,477 @@ function detectComparisonRequest(
 
   return null;
 }
+
+
+/**
+ * ==========================================================
+ * CONVERSATIONAL ANALYTICS V2 — RESULT COMPARISONS
+ * ==========================================================
+ *
+ * Compare two values that were returned inside ONE verified grouped/
+ * ranked analytical result.
+ *
+ * Example:
+ *   Compare average X for Group A and Group B
+ *   -> [{ label: A, value: ... }, { label: B, value: ... }]
+ *
+ * Follow-ups:
+ *   "Which one is higher?"
+ *   "What is the difference?"
+ *   "What percentage higher?"
+ *
+ * This is fully schema/dataset agnostic.
+ */
+
+function formatAnalyticalNumber(
+  value
+) {
+  return Number(value)
+    .toLocaleString(
+      "en-US",
+      {
+        maximumFractionDigits:
+          2,
+      }
+    );
+}
+
+
+function getVerifiedAnalyticalPair(
+  context
+) {
+  const lastResult =
+    context?.lastResult;
+
+  const lastPlan =
+    context?.lastPlan;
+
+  if (
+    !lastResult ||
+    !lastPlan ||
+    lastResult.success === false
+  ) {
+    return null;
+  }
+
+  const operation =
+    String(
+      lastResult.operation ||
+      lastPlan.operation ||
+      ""
+    )
+      .trim()
+      .toLowerCase();
+
+  const isAnalytical =
+    operation ===
+      "rank_groups" ||
+    operation ===
+      "group_sum" ||
+    operation ===
+      "group_average" ||
+    operation ===
+      "group_minimum" ||
+    operation ===
+      "group_maximum" ||
+    operation ===
+      "group_count";
+
+  if (!isAnalytical) {
+    return null;
+  }
+
+  const usable =
+    Array.isArray(
+      lastResult.results
+    )
+      ? lastResult.results
+          .map(
+            (item) => ({
+              label:
+                item?.label ??
+                null,
+
+              value:
+                Number(
+                  item?.value
+                ),
+            })
+          )
+          .filter(
+            (item) =>
+              item.label !==
+                null &&
+              item.label !==
+                undefined &&
+              String(
+                item.label
+              ).trim() !==
+                "" &&
+              Number.isFinite(
+                item.value
+              )
+          )
+      : [];
+
+  if (
+    usable.length !== 2
+  ) {
+    return {
+      ambiguous:
+        usable.length > 2,
+
+      count:
+        usable.length,
+
+      items:
+        usable,
+
+      metric:
+        lastResult.column ||
+        lastPlan.column ||
+        "value",
+    };
+  }
+
+  return {
+    ambiguous:
+      false,
+
+    count:
+      2,
+
+    items:
+      usable,
+
+    metric:
+      lastResult.column ||
+      lastPlan.column ||
+      "value",
+  };
+}
+
+
+function compareVerifiedAnalyticalPair({
+  context,
+  mode,
+}) {
+  const pair =
+    getVerifiedAnalyticalPair(
+      context
+    );
+
+  if (!pair) {
+    return null;
+  }
+
+  if (
+    pair.ambiguous
+  ) {
+    return {
+      success: false,
+      source:
+        "conversation-analytics",
+      operation:
+        "clarify",
+      answer:
+        `The previous result contains ${pair.count} values. Please name the two results you want me to compare.`,
+    };
+  }
+
+  if (
+    pair.count !== 2
+  ) {
+    return null;
+  }
+
+  const [
+    left,
+    right,
+  ] = pair.items;
+
+  const difference =
+    Math.abs(
+      left.value -
+      right.value
+    );
+
+  const higher =
+    left.value >=
+    right.value
+      ? left
+      : right;
+
+  const lower =
+    left.value <=
+    right.value
+      ? left
+      : right;
+
+  const normalizedMode =
+    String(
+      mode || "higher"
+    )
+      .trim()
+      .toLowerCase();
+
+  if (
+    normalizedMode ===
+      "difference"
+  ) {
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        "difference",
+
+      metric:
+        pair.metric,
+
+      leftLabel:
+        left.label,
+      rightLabel:
+        right.label,
+
+      leftValue:
+        left.value,
+      rightValue:
+        right.value,
+
+      difference,
+
+      answer:
+        `The difference between ${left.label} and ${right.label} for ${pair.metric} is ${formatAnalyticalNumber(
+          difference
+        )}.`,
+    };
+  }
+
+  if (
+    normalizedMode ===
+      "percentage_higher" ||
+    normalizedMode ===
+      "percentage_lower" ||
+    normalizedMode ===
+      "percentage_difference"
+  ) {
+    let percentage = null;
+    let answer = "";
+
+    if (
+      normalizedMode ===
+        "percentage_higher"
+    ) {
+      const denominator =
+        Math.abs(
+          lower.value
+        );
+
+      if (denominator === 0) {
+        return {
+          success: false,
+          source:
+            "conversation-analytics",
+          operation:
+            "clarify",
+          answer:
+            `I can't calculate how many percent higher ${higher.label} is because the comparison baseline is zero.`,
+        };
+      }
+
+      percentage =
+        difference /
+        denominator *
+        100;
+
+      answer =
+        `${higher.label} is ${formatAnalyticalNumber(
+          percentage
+        )}% higher than ${lower.label} for ${pair.metric}.`;
+    } else if (
+      normalizedMode ===
+        "percentage_lower"
+    ) {
+      const denominator =
+        Math.abs(
+          higher.value
+        );
+
+      if (denominator === 0) {
+        return {
+          success: false,
+          source:
+            "conversation-analytics",
+          operation:
+            "clarify",
+          answer:
+            `I can't calculate how many percent lower ${lower.label} is because the comparison baseline is zero.`,
+        };
+      }
+
+      percentage =
+        difference /
+        denominator *
+        100;
+
+      answer =
+        `${lower.label} is ${formatAnalyticalNumber(
+          percentage
+        )}% lower than ${higher.label} for ${pair.metric}.`;
+    } else {
+      const denominator =
+        (
+          Math.abs(
+            left.value
+          ) +
+          Math.abs(
+            right.value
+          )
+        ) / 2;
+
+      percentage =
+        denominator === 0
+          ? 0
+          : difference /
+            denominator *
+            100;
+
+      answer =
+        `The percentage difference between ${left.label} and ${right.label} for ${pair.metric} is ${formatAnalyticalNumber(
+          percentage
+        )}%.`;
+    }
+
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        normalizedMode,
+
+      metric:
+        pair.metric,
+
+      leftLabel:
+        left.label,
+      rightLabel:
+        right.label,
+
+      leftValue:
+        left.value,
+      rightValue:
+        right.value,
+
+      difference,
+      percentage,
+
+      answer,
+    };
+  }
+
+  if (
+    left.value ===
+    right.value
+  ) {
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        "compare",
+
+      metric:
+        pair.metric,
+
+      leftLabel:
+        left.label,
+      rightLabel:
+        right.label,
+
+      leftValue:
+        left.value,
+      rightValue:
+        right.value,
+
+      difference:
+        0,
+
+      answer:
+        `${left.label} and ${right.label} have the same ${pair.metric}: ${formatAnalyticalNumber(
+          left.value
+        )}.`,
+    };
+  }
+
+  if (
+    normalizedMode ===
+      "lower"
+  ) {
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        "compare",
+
+      metric:
+        pair.metric,
+
+      winner:
+        lower.label,
+
+      leftLabel:
+        left.label,
+      rightLabel:
+        right.label,
+
+      leftValue:
+        left.value,
+      rightValue:
+        right.value,
+
+      difference,
+
+      answer:
+        `${lower.label} has the lower ${pair.metric} at ${formatAnalyticalNumber(
+          lower.value
+        )}.`,
+    };
+  }
+
+  return {
+    success: true,
+    source:
+      "conversation-analytics",
+    operation:
+      "compare",
+
+    metric:
+      pair.metric,
+
+    winner:
+      higher.label,
+
+    leftLabel:
+      left.label,
+    rightLabel:
+      right.label,
+
+    leftValue:
+      left.value,
+    rightValue:
+      right.value,
+
+    difference,
+
+    answer:
+      `${higher.label} has the higher ${pair.metric} at ${formatAnalyticalNumber(
+        higher.value
+      )}.`,
+  };
+}
+
 
 /**
  * ==========================================================
@@ -4842,6 +5443,36 @@ async function answerQuestion(
     );
 
   if (comparisonMode) {
+    /**
+     * First, check whether the LAST verified result itself contains
+     * exactly two grouped/ranked analytical values.
+     *
+     * This supports:
+     *   "Compare average X of A and B"
+     *   -> "What is the difference?"
+     *
+     * without requiring two separate chatbot turns.
+     */
+    const analyticalPairComparison =
+      compareVerifiedAnalyticalPair({
+        context:
+          conversationContext,
+
+        mode:
+          comparisonMode,
+      });
+
+    if (
+      analyticalPairComparison
+    ) {
+      return {
+        ...analyticalPairComparison,
+
+        plannerSource:
+          "conversation-analytics",
+      };
+    }
+
     const recentResults =
       getRecentResults(
         sessionId
@@ -5357,6 +5988,65 @@ async function answerQuestion(
 
       result =
         resultValidation.result;
+
+      // ====================================================
+      // CONVERSATIONAL ANALYTICS ORDINAL SELECTION
+      // ====================================================
+      //
+      // Example:
+      //   "What is the second highest?"
+      //
+      // The calculation engine ranks enough rows/groups to reach the
+      // requested position. Keep only that verified ranked item before
+      // saving conversation state and before generating prose.
+      //
+      if (
+        Number.isInteger(
+          plan?.analyticalRankIndex
+        ) &&
+        plan.analyticalRankIndex >=
+          0 &&
+        Array.isArray(
+          result?.results
+        )
+      ) {
+        const selectedRankedResult =
+          result.results[
+            plan.analyticalRankIndex
+          ];
+
+        if (
+          selectedRankedResult
+        ) {
+          result = {
+            ...result,
+
+            results: [
+              selectedRankedResult,
+            ],
+
+            count:
+              1,
+
+            rankPosition:
+              plan.analyticalRankIndex +
+              1,
+          };
+        } else {
+          result = {
+            success: false,
+            source:
+              "conversation-analytics",
+            operation:
+              "clarify",
+            answer:
+              `There are not enough ranked results to return position ${
+                plan.analyticalRankIndex +
+                1
+              }.`,
+          };
+        }
+      }
 
       // ====================================================
       // SAVE VERIFIED CONVERSATION STATE

@@ -363,684 +363,6 @@ function areComparable(
   };
 }
 
-
-/**
- * ==========================================================
- * EXTRACT MULTIPLE COMPARABLE VALUES FROM ONE VERIFIED RESULT
- * ==========================================================
- *
- * Grouped calculations often store BOTH compared values in one
- * verified result:
- *
- * {
- *   operation: "group_maximum",
- *   results: [
- *     { label: "A", value: 100 },
- *     { label: "B", value: 80 }
- *   ]
- * }
- *
- * This converts them into the same compact operand shape used by
- * ordinary two-result comparisons.
- */
-function extractGroupedOperands(
-  item
-) {
-  const rows =
-    Array.isArray(
-      item?.result?.results
-    )
-      ? item.result.results
-      : [];
-
-  if (rows.length < 2) {
-    return [];
-  }
-
-  const metric =
-    getMetricLabel(item) ||
-    item?.result?.column ||
-    "value";
-
-  const operands = [];
-
-  for (const row of rows) {
-    if (
-      !row ||
-      typeof row !== "object"
-    ) {
-      continue;
-    }
-
-    const label =
-      row.label ??
-      row.group ??
-      row.groupValue ??
-      null;
-
-    const rawValue =
-      row.value ??
-      row.result ??
-      row.maximum ??
-      row.minimum ??
-      row.average ??
-      row.sum ??
-      null;
-
-    const numeric =
-      toNumber(rawValue);
-
-    if (
-      label === null ||
-      label === undefined ||
-      numeric === null
-    ) {
-      continue;
-    }
-
-    operands.push({
-      label:
-        String(label),
-
-      value:
-        numeric,
-
-      metric:
-        String(metric),
-
-      sourceItem:
-        item,
-    });
-  }
-
-  return operands;
-}
-
-
-/**
- * Convert a normal verified history item into one numeric operand.
- */
-function extractSingleOperand(
-  item
-) {
-  if (!item) {
-    return null;
-  }
-
-  const metric =
-    getMetricLabel(item);
-
-  const numeric =
-    extractNumericValue(
-      item.result,
-      metric
-    );
-
-  if (!numeric) {
-    return null;
-  }
-
-  return {
-    label:
-      getEntityLabel(item),
-
-    value:
-      numeric.value,
-
-    metric:
-      metric ||
-      numeric.field ||
-      "value",
-
-    sourceItem:
-      item,
-  };
-}
-
-
-function sameMetric(
-  left,
-  right
-) {
-  return (
-    normalizeMetric(
-      left?.metric
-    ) ===
-    normalizeMetric(
-      right?.metric
-    )
-  );
-}
-
-
-/**
- * Find the most recent pair of VERIFIED numeric operands.
- *
- * Priority:
- * 1. A single grouped result containing 2+ labels/values.
- * 2. Two recent standalone verified results using the same metric.
- *
- * This avoids accidentally comparing later text lookups such as
- * "their stations" or "their position titles".
- */
-function findRecentComparisonOperands(
-  recentResults = []
-) {
-  const items =
-    Array.isArray(
-      recentResults
-    )
-      ? recentResults
-      : [];
-
-  for (
-    let index =
-      items.length - 1;
-    index >= 0;
-    index -= 1
-  ) {
-    const grouped =
-      extractGroupedOperands(
-        items[index]
-      );
-
-    if (grouped.length >= 2) {
-      return grouped.slice(0, 2);
-    }
-  }
-
-  const singles = [];
-
-  for (
-    let index =
-      items.length - 1;
-    index >= 0;
-    index -= 1
-  ) {
-    const operand =
-      extractSingleOperand(
-        items[index]
-      );
-
-    if (!operand) {
-      continue;
-    }
-
-    if (!singles.length) {
-      singles.push(
-        operand
-      );
-      continue;
-    }
-
-    if (
-      sameMetric(
-        singles[0],
-        operand
-      )
-    ) {
-      singles.push(
-        operand
-      );
-      break;
-    }
-  }
-
-  return singles.length >= 2
-    ? [
-        singles[1],
-        singles[0],
-      ]
-    : [];
-}
-
-
-function findLabelOrderInQuestion(
-  question,
-  operands
-) {
-  const text =
-    normalizeText(question);
-
-  if (
-    !text ||
-    !Array.isArray(operands)
-  ) {
-    return operands;
-  }
-
-  const scored =
-    operands.map(
-      (operand, index) => {
-        const label =
-          normalizeText(
-            operand?.label
-          );
-
-        const position =
-          label
-            ? text.indexOf(
-                label
-              )
-            : -1;
-
-        return {
-          operand,
-          index,
-          position,
-        };
-      }
-    );
-
-  const mentioned =
-    scored.filter(
-      (item) =>
-        item.position >= 0
-    );
-
-  if (
-    mentioned.length < 2
-  ) {
-    return operands;
-  }
-
-  mentioned.sort(
-    (a, b) =>
-      a.position -
-      b.position
-  );
-
-  return mentioned.map(
-    (item) =>
-      item.operand
-  );
-}
-
-
-function formatPercent(
-  value
-) {
-  return Number(value)
-    .toLocaleString(
-      "en-US",
-      {
-        maximumFractionDigits:
-          2,
-      }
-    );
-}
-
-
-function humanizeMetricLabel(
-  value
-) {
-  return String(
-    value || "value"
-  )
-    .replace(/_/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
-
-/**
- * Compare the most relevant VERIFIED values from conversation history.
- *
- * Supported modes:
- * - higher
- * - lower
- * - difference
- * - percent_higher
- * - percent_lower
- *
- * JavaScript performs all arithmetic.
- */
-function compareRecentVerifiedResults({
-  recentResults = [],
-  mode = "higher",
-  question = "",
-}) {
-  let operands =
-    findRecentComparisonOperands(
-      recentResults
-    );
-
-  if (operands.length < 2) {
-    return {
-      success: false,
-      source:
-        "comparison",
-      operation:
-        "clarify",
-      answer:
-        "I need two previous numeric results for the same measure before I can compare them.",
-    };
-  }
-
-  operands =
-    findLabelOrderInQuestion(
-      question,
-      operands
-    );
-
-  const left =
-    operands[0];
-
-  const right =
-    operands[1];
-
-  if (
-    !sameMetric(
-      left,
-      right
-    )
-  ) {
-    return {
-      success: false,
-      source:
-        "comparison",
-      operation:
-        "clarify",
-      answer:
-        `Those results use different measures (${left.metric} and ${right.metric}), so I can't compare them directly.`,
-    };
-  }
-
-  const normalizedMode =
-    String(mode || "higher")
-      .trim()
-      .toLowerCase();
-
-  const metricLabel =
-    humanizeMetricLabel(
-      left.metric
-    );
-
-  const difference =
-    Math.abs(
-      left.value -
-      right.value
-    );
-
-  const signedDifference =
-    left.value -
-    right.value;
-
-  if (
-    normalizedMode ===
-      "percent_higher" ||
-    normalizedMode ===
-      "percent_lower"
-  ) {
-    const baseline =
-      Math.abs(
-        right.value
-      );
-
-    if (baseline === 0) {
-      return {
-        success: false,
-        source:
-          "comparison",
-        operation:
-          "clarify",
-        answer:
-          `I can't calculate a percentage relative to ${right.label} because its ${metricLabel} is zero.`,
-      };
-    }
-
-    const percentChange =
-      normalizedMode ===
-        "percent_lower"
-        ? (
-            (right.value -
-              left.value) /
-            baseline
-          ) *
-          100
-        : (
-            (left.value -
-              right.value) /
-            baseline
-          ) *
-          100;
-
-    const relation =
-      normalizedMode ===
-        "percent_lower"
-        ? "lower"
-        : "higher";
-
-    /**
-     * If the requested relationship is opposite to reality, say so
-     * rather than returning a misleading negative percentage.
-     */
-    if (percentChange < 0) {
-      const opposite =
-        relation === "higher"
-          ? "lower"
-          : "higher";
-
-      return {
-        success: true,
-        source:
-          "comparison",
-        operation:
-          "percentage",
-
-        metric:
-          left.metric,
-
-        leftLabel:
-          left.label,
-
-        rightLabel:
-          right.label,
-
-        leftValue:
-          left.value,
-
-        rightValue:
-          right.value,
-
-        difference,
-
-        percentage:
-          Math.abs(
-            percentChange
-          ),
-
-        answer:
-          `${left.label} is actually ${formatPercent(
-            Math.abs(
-              percentChange
-            )
-          )}% ${opposite} than ${right.label} for ${metricLabel}.`,
-      };
-    }
-
-    return {
-      success: true,
-      source:
-        "comparison",
-      operation:
-        "percentage",
-
-      metric:
-        left.metric,
-
-      leftLabel:
-        left.label,
-
-      rightLabel:
-        right.label,
-
-      leftValue:
-        left.value,
-
-      rightValue:
-        right.value,
-
-      difference,
-
-      percentage:
-        percentChange,
-
-      answer:
-        `${left.label} is ${formatPercent(
-          percentChange
-        )}% ${relation} than ${right.label} for ${metricLabel}.`,
-    };
-  }
-
-  if (
-    normalizedMode ===
-      "difference"
-  ) {
-    /**
-     * If the question names A then B, preserve that orientation
-     * while still returning an absolute difference.
-     */
-    const relationship =
-      signedDifference === 0
-        ? "the same as"
-        : signedDifference > 0
-          ? "higher than"
-          : "lower than";
-
-    return {
-      success: true,
-      source:
-        "comparison",
-      operation:
-        "difference",
-
-      metric:
-        left.metric,
-
-      leftLabel:
-        left.label,
-
-      rightLabel:
-        right.label,
-
-      leftValue:
-        left.value,
-
-      rightValue:
-        right.value,
-
-      difference,
-
-      answer:
-        signedDifference === 0
-          ? `${left.label} and ${right.label} have the same ${metricLabel}: ${formatNumber(
-              left.value
-            )}.`
-          : `${left.label} is ${formatNumber(
-              difference
-            )} ${relationship} ${right.label} for ${metricLabel}.`,
-    };
-  }
-
-  const higher =
-    left.value >
-    right.value
-      ? left
-      : right;
-
-  const lower =
-    left.value <
-    right.value
-      ? left
-      : right;
-
-  if (
-    left.value ===
-    right.value
-  ) {
-    return {
-      success: true,
-      source:
-        "comparison",
-      operation:
-        "compare",
-      metric:
-        left.metric,
-      leftLabel:
-        left.label,
-      rightLabel:
-        right.label,
-      leftValue:
-        left.value,
-      rightValue:
-        right.value,
-      difference: 0,
-      answer:
-        `${left.label} and ${right.label} have the same ${metricLabel}: ${formatNumber(
-          left.value
-        )}.`,
-    };
-  }
-
-  if (
-    normalizedMode ===
-      "lower"
-  ) {
-    return {
-      success: true,
-      source:
-        "comparison",
-      operation:
-        "compare",
-      metric:
-        left.metric,
-      leftLabel:
-        left.label,
-      rightLabel:
-        right.label,
-      leftValue:
-        left.value,
-      rightValue:
-        right.value,
-      difference,
-      winner:
-        lower.label,
-      answer:
-        `${lower.label} has the lower ${metricLabel} at ${formatNumber(
-          lower.value
-        )}.`,
-    };
-  }
-
-  return {
-    success: true,
-    source:
-      "comparison",
-    operation:
-      "compare",
-    metric:
-      left.metric,
-    leftLabel:
-      left.label,
-    rightLabel:
-      right.label,
-    leftValue:
-      left.value,
-    rightValue:
-      right.value,
-    difference,
-    winner:
-      higher.label,
-    answer:
-      `${higher.label} has the higher ${metricLabel} at ${formatNumber(
-        higher.value
-      )}.`,
-  };
-}
-
-
 /**
  * Compare two VERIFIED results.
  */
@@ -1124,6 +446,160 @@ function compareVerifiedResults({
         `The difference between ${leftLabel} and ${rightLabel} is ${formatNumber(
           difference
         )}.`,
+    };
+  }
+
+  if (
+    normalizedMode ===
+      "percentage_higher" ||
+    normalizedMode ===
+      "percentage_lower" ||
+    normalizedMode ===
+      "percentage_difference"
+  ) {
+    const higherEntry =
+      leftValue >= rightValue
+        ? {
+            label:
+              leftLabel,
+            value:
+              leftValue,
+          }
+        : {
+            label:
+              rightLabel,
+            value:
+              rightValue,
+          };
+
+    const lowerEntry =
+      leftValue <= rightValue
+        ? {
+            label:
+              leftLabel,
+            value:
+              leftValue,
+          }
+        : {
+            label:
+              rightLabel,
+            value:
+              rightValue,
+          };
+
+    let percentage = null;
+    let answer = "";
+
+    if (
+      normalizedMode ===
+        "percentage_higher"
+    ) {
+      const denominator =
+        Math.abs(
+          lowerEntry.value
+        );
+
+      if (denominator === 0) {
+        return {
+          success: false,
+          source:
+            "comparison",
+          operation:
+            "clarify",
+          reason:
+            "ZERO_BASELINE",
+          answer:
+            `I can't calculate how many percent higher ${higherEntry.label} is because the comparison baseline is zero.`,
+        };
+      }
+
+      percentage =
+        difference /
+        denominator *
+        100;
+
+      answer =
+        `${higherEntry.label} is ${formatNumber(
+          percentage
+        )}% higher than ${lowerEntry.label} for ${check.metric}.`;
+    } else if (
+      normalizedMode ===
+        "percentage_lower"
+    ) {
+      const denominator =
+        Math.abs(
+          higherEntry.value
+        );
+
+      if (denominator === 0) {
+        return {
+          success: false,
+          source:
+            "comparison",
+          operation:
+            "clarify",
+          reason:
+            "ZERO_BASELINE",
+          answer:
+            `I can't calculate how many percent lower ${lowerEntry.label} is because the comparison baseline is zero.`,
+        };
+      }
+
+      percentage =
+        difference /
+        denominator *
+        100;
+
+      answer =
+        `${lowerEntry.label} is ${formatNumber(
+          percentage
+        )}% lower than ${higherEntry.label} for ${check.metric}.`;
+    } else {
+      const denominator =
+        (
+          Math.abs(
+            leftValue
+          ) +
+          Math.abs(
+            rightValue
+          )
+        ) / 2;
+
+      if (denominator === 0) {
+        percentage = 0;
+      } else {
+        percentage =
+          difference /
+          denominator *
+          100;
+      }
+
+      answer =
+        `The percentage difference between ${leftLabel} and ${rightLabel} for ${check.metric} is ${formatNumber(
+          percentage
+        )}%.`;
+    }
+
+    return {
+      success: true,
+      source:
+        "comparison",
+      operation:
+        normalizedMode,
+
+      metric:
+        check.metric,
+
+      leftLabel,
+      rightLabel,
+
+      leftValue,
+      rightValue,
+
+      difference,
+      percentage,
+
+      answer,
     };
   }
 
@@ -1253,6 +729,4 @@ module.exports = {
   getMetricLabel,
   areComparable,
   compareVerifiedResults,
-  findRecentComparisonOperands,
-  compareRecentVerifiedResults,
 };

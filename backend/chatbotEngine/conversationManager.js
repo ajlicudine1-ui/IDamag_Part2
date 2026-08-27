@@ -134,6 +134,12 @@ function isFollowUpQuestion(
     /\b(?:top|bottom)\s+\d{1,3}\s+instead\b/i,
     /\bwhat percentage (?:higher|lower)\b/i,
     /\bwhat percent (?:higher|lower)\b/i,
+    /\bpercentage difference\b/i,
+    /\bpercent(?:age)? (?:higher|lower)\b/i,
+    /\bhow many percent (?:higher|lower)\b/i,
+
+    /\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+(?:highest|lowest|largest|smallest)\b/i,
+    /\b\d{1,2}(?:st|nd|rd|th)\s+(?:highest|lowest|largest|smallest)\b/i,
 
     // ======================================================
     // COMPARISON FOLLOW-UPS
