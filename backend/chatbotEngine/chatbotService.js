@@ -772,20 +772,84 @@ function repairRankingIdentityPlan({
     metric.column.name,
   ];
 
+  /**
+   * Preserve grouped aggregate rankings.
+   *
+   * IMPORTANT:
+   * repairRankingIdentityPlan() runs at the END of
+   * normalizePlannerPlan(). Previously it always forced the plan
+   * back to rank_rows, which undid an earlier rank_groups repair.
+   *
+   * Example:
+   *   "Which division has the highest average actual salary?"
+   *
+   * Must remain:
+   *   rank_groups + aggregation average + groupBy DIVISION
+   *
+   * while:
+   *   "Who has the highest actual salary?"
+   *
+   * remains:
+   *   rank_rows
+   */
+  const normalizedAggregation =
+    String(
+      plan?.aggregation ||
+      ""
+    )
+      .trim()
+      .toLowerCase();
+
+  const groupedAggregation =
+    [
+      "sum",
+      "average",
+      "avg",
+      "mean",
+      "count",
+    ].includes(
+      normalizedAggregation
+    );
+
+  const finalOperation =
+    groupedAggregation
+      ? "rank_groups"
+      : "rank_rows";
+
+  const finalLabelColumn =
+    identityColumns[0];
+
   return {
     ...plan,
 
     operation:
-      "rank_rows",
+      finalOperation,
 
     column:
       metric.column.name,
 
     labelColumn:
-      identityColumns[0],
+      finalLabelColumn,
 
     groupBy:
-      null,
+      groupedAggregation
+        ? finalLabelColumn
+        : null,
+
+    aggregation:
+      groupedAggregation
+        ? (
+            normalizedAggregation ===
+              "avg" ||
+            normalizedAggregation ===
+              "mean"
+              ? "average"
+              : normalizedAggregation
+          )
+        : (
+            plan?.aggregation ||
+            null
+          ),
 
     direction,
 
@@ -794,7 +858,14 @@ function repairRankingIdentityPlan({
         question
       ),
 
-    selectColumns,
+    selectColumns: [
+      ...new Set(
+        [
+          finalLabelColumn,
+          metric.column.name,
+        ].filter(Boolean)
+      ),
+    ],
 
     outputRequested:
       true,
