@@ -5391,9 +5391,1534 @@ function getVerifiedAnalyticalPair(
 }
 
 
+
+function cleanAnalyticalLabel(
+  value
+) {
+  return String(
+    value ?? ""
+  )
+    .replace(
+      /[\r\n]+/g,
+      " "
+    )
+    .replace(
+      /\s+/g,
+      " "
+    )
+    .trim();
+}
+
+
+function getVerifiedAnalyticalSet(
+  context
+) {
+  const lastResult =
+    context?.lastResult;
+
+  const lastPlan =
+    context?.lastPlan;
+
+  if (
+    !lastResult ||
+    !lastPlan ||
+    lastResult.success === false
+  ) {
+    return null;
+  }
+
+  const operation =
+    String(
+      lastResult.operation ||
+      lastPlan.operation ||
+      ""
+    )
+      .trim()
+      .toLowerCase();
+
+  const isAnalytical =
+    [
+      "rank_groups",
+      "rank_rows",
+      "group_sum",
+      "group_average",
+      "group_minimum",
+      "group_maximum",
+      "group_count",
+    ].includes(
+      operation
+    );
+
+  if (!isAnalytical) {
+    return null;
+  }
+
+  const items =
+    Array.isArray(
+      lastResult.results
+    )
+      ? lastResult.results
+          .map(
+            (item, index) => ({
+              index,
+
+              label:
+                item?.label ??
+                item?.name ??
+                null,
+
+              value:
+                Number(
+                  item?.value
+                ),
+            })
+          )
+          .filter(
+            (item) =>
+              item.label !==
+                null &&
+              item.label !==
+                undefined &&
+              cleanAnalyticalLabel(
+                item.label
+              ) !==
+                "" &&
+              Number.isFinite(
+                item.value
+              )
+          )
+      : [];
+
+  if (!items.length) {
+    return null;
+  }
+
+  return {
+    items,
+
+    count:
+      items.length,
+
+    metric:
+      lastResult.column ||
+      lastPlan.column ||
+      "value",
+
+    aggregation:
+      lastResult.aggregation ||
+      lastPlan.aggregation ||
+      null,
+
+    groupBy:
+      lastResult.groupBy ||
+      lastResult.labelColumn ||
+      lastPlan.groupBy ||
+      lastPlan.labelColumn ||
+      "group",
+
+    direction:
+      lastResult.direction ||
+      lastPlan.direction ||
+      null,
+  };
+}
+
+
+function detectRequestedResultSubset(
+  question
+) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (!text) {
+    return null;
+  }
+
+  const topMatch =
+    text.match(
+      /\b(?:top|first)\s+(\d{1,2})\b/
+    );
+
+  if (topMatch?.[1]) {
+    return {
+      direction:
+        "top",
+      limit:
+        Math.max(
+          1,
+          Math.min(
+            Number(
+              topMatch[1]
+            ),
+            100
+          )
+        ),
+    };
+  }
+
+  const bottomMatch =
+    text.match(
+      /\b(?:bottom|last)\s+(\d{1,2})\b/
+    );
+
+  if (bottomMatch?.[1]) {
+    return {
+      direction:
+        "bottom",
+      limit:
+        Math.max(
+          1,
+          Math.min(
+            Number(
+              bottomMatch[1]
+            ),
+            100
+          )
+        ),
+    };
+  }
+
+  return null;
+}
+
+
+function detectMultiResultIntent({
+  question,
+  mode,
+}) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  const normalizedMode =
+    String(
+      mode || ""
+    )
+      .trim()
+      .toLowerCase();
+
+  if (
+    /\b(?:explain|summarize|summary|interpret|what does this mean|what do these mean|tell me about|describe)\b/.test(
+      text
+    )
+  ) {
+    return "summary";
+  }
+
+  if (
+    /\b(?:largest|biggest|greatest)\s+(?:gap|difference|drop)\b/.test(
+      text
+    ) ||
+    /\bwhere is the biggest (?:gap|drop)\b/.test(
+      text
+    )
+  ) {
+    return "largest_gap";
+  }
+
+  if (
+    /\b(?:smallest|closest|nearest)\s+(?:gap|difference|values?|pair)\b/.test(
+      text
+    ) ||
+    /\bwhich (?:two|ones?) are closest\b/.test(
+      text
+    )
+  ) {
+    return "closest_pair";
+  }
+
+  if (
+    /\b(?:above|higher than)\s+(?:the\s+)?(?:overall\s+)?average\b/.test(
+      text
+    )
+  ) {
+    return "above_average";
+  }
+
+  if (
+    /\b(?:below|lower than)\s+(?:the\s+)?(?:overall\s+)?average\b/.test(
+      text
+    )
+  ) {
+    return "below_average";
+  }
+
+  if (
+    /\b(?:outlier|outliers|stand out|stands out|unusual|extreme values?)\b/.test(
+      text
+    )
+  ) {
+    return "outliers";
+  }
+
+  if (
+    /\bmedian\b/.test(
+      text
+    )
+  ) {
+    return "median";
+  }
+
+  if (
+    /\b(?:average|mean)\s+(?:of\s+)?(?:these|them|the results?|the values?)\b/.test(
+      text
+    ) ||
+    /\bwhat(?:'s| is) the average\b/.test(
+      text
+    )
+  ) {
+    return "average";
+  }
+
+  if (
+    /\b(?:range|spread|overall difference|difference across|how spread out)\b/.test(
+      text
+    )
+  ) {
+    return "spread";
+  }
+
+  if (
+    /\b(?:highest|largest|maximum|max|top one)\b/.test(
+      text
+    ) &&
+    !/\bsecond|third|fourth|fifth|\d+(?:st|nd|rd|th)\b/.test(
+      text
+    )
+  ) {
+    return "highest";
+  }
+
+  if (
+    /\b(?:lowest|smallest|minimum|min|bottom one)\b/.test(
+      text
+    ) &&
+    !/\bsecond|third|fourth|fifth|\d+(?:st|nd|rd|th)\b/.test(
+      text
+    )
+  ) {
+    return "lowest";
+  }
+
+  if (
+    /\b(?:trend|pattern|distribution|how do they compare|compare all|compare these|compare them)\b/.test(
+      text
+    )
+  ) {
+    return "summary";
+  }
+
+  if (
+    normalizedMode ===
+      "difference"
+  ) {
+    return "spread";
+  }
+
+  if (
+    normalizedMode ===
+      "ratio"
+  ) {
+    return "top_bottom_ratio";
+  }
+
+  if (
+    normalizedMode ===
+      "percentage_higher" ||
+    normalizedMode ===
+      "percentage_lower" ||
+    normalizedMode ===
+      "percentage_difference"
+  ) {
+    return normalizedMode;
+  }
+
+  if (
+    normalizedMode ===
+      "higher"
+  ) {
+    return "highest";
+  }
+
+  if (
+    normalizedMode ===
+      "lower"
+  ) {
+    return "lowest";
+  }
+
+  return "summary";
+}
+
+
+function findExplicitAnalyticalItems({
+  items,
+  question,
+}) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (!text) {
+    return [];
+  }
+
+  const matches =
+    items
+      .filter(
+        (item) => {
+          const label =
+            normalizeText(
+              item.label
+            );
+
+          if (!label) {
+            return false;
+          }
+
+          const escaped =
+            label.replace(
+              /[.*+?^${}()|[\]\\]/g,
+              "\\$&"
+            );
+
+          return new RegExp(
+            `(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`,
+            "u"
+          ).test(
+            text
+          );
+        }
+      );
+
+  if (
+    matches.length >= 2
+  ) {
+    return matches.slice(
+      0,
+      2
+    );
+  }
+
+  const ordinalMap = [
+    ["first", 0],
+    ["second", 1],
+    ["third", 2],
+    ["fourth", 3],
+    ["fifth", 4],
+    ["sixth", 5],
+    ["seventh", 6],
+    ["eighth", 7],
+    ["ninth", 8],
+    ["tenth", 9],
+  ];
+
+  const ordinalIndexes = [];
+
+  for (
+    const [word, index]
+    of ordinalMap
+  ) {
+    if (
+      new RegExp(
+        `\\b${word}\\b`
+      ).test(
+        text
+      )
+    ) {
+      ordinalIndexes.push(
+        index
+      );
+    }
+  }
+
+  const numericRefs =
+    [
+      ...text.matchAll(
+        /(?:#|number\s+)?(\d{1,2})(?:st|nd|rd|th)?/g
+      ),
+    ]
+      .map(
+        (match) =>
+          Number(
+            match[1]
+          ) - 1
+      )
+      .filter(
+        (index) =>
+          Number.isInteger(
+            index
+          ) &&
+          index >= 0 &&
+          index < items.length
+      );
+
+  const indexes = [
+    ...new Set([
+      ...ordinalIndexes,
+      ...numericRefs,
+    ]),
+  ];
+
+  if (
+    indexes.length >= 2
+  ) {
+    return indexes
+      .slice(
+        0,
+        2
+      )
+      .map(
+        (index) =>
+          items[index]
+      )
+      .filter(Boolean);
+  }
+
+  if (
+    /\b(?:highest|top|first)\b/.test(
+      text
+    ) &&
+    /\b(?:lowest|bottom|last)\b/.test(
+      text
+    )
+  ) {
+    const sorted =
+      [...items].sort(
+        (a, b) =>
+          b.value -
+          a.value
+      );
+
+    return [
+      sorted[0],
+      sorted[
+        sorted.length - 1
+      ],
+    ].filter(Boolean);
+  }
+
+  return matches;
+}
+
+
+function calculateMedian(
+  values
+) {
+  const sorted =
+    [...values].sort(
+      (a, b) =>
+        a - b
+    );
+
+  const middle =
+    Math.floor(
+      sorted.length / 2
+    );
+
+  if (
+    sorted.length % 2
+  ) {
+    return sorted[
+      middle
+    ];
+  }
+
+  return (
+    sorted[
+      middle - 1
+    ] +
+    sorted[
+      middle
+    ]
+  ) / 2;
+}
+
+
+function analyzeVerifiedAnalyticalSet({
+  context,
+  question,
+  mode,
+}) {
+  const set =
+    getVerifiedAnalyticalSet(
+      context
+    );
+
+  if (
+    !set ||
+    set.count < 2
+  ) {
+    return null;
+  }
+
+  const metric =
+    cleanAnalyticalLabel(
+      set.metric
+    );
+
+  const groupLabel =
+    cleanAnalyticalLabel(
+      set.groupBy
+    );
+
+  const explicitPair =
+    findExplicitAnalyticalItems({
+      items:
+        set.items,
+      question,
+    });
+
+  if (
+    explicitPair.length === 2
+  ) {
+    const [
+      left,
+      right,
+    ] = explicitPair;
+
+    const difference =
+      Math.abs(
+        left.value -
+        right.value
+      );
+
+    const higher =
+      left.value >= right.value
+        ? left
+        : right;
+
+    const lower =
+      left.value <= right.value
+        ? left
+        : right;
+
+    const normalizedMode =
+      String(
+        mode || "difference"
+      )
+        .trim()
+        .toLowerCase();
+
+    if (
+      normalizedMode ===
+        "ratio"
+    ) {
+      if (
+        Math.abs(
+          lower.value
+        ) === 0
+      ) {
+        return {
+          success: false,
+          source:
+            "conversation-analytics",
+          operation:
+            "clarify",
+          answer:
+            `I can't calculate the ratio because ${cleanAnalyticalLabel(
+              lower.label
+            )}'s ${metric} is zero.`,
+        };
+      }
+
+      const ratio =
+        Math.abs(
+          higher.value
+        ) /
+        Math.abs(
+          lower.value
+        );
+
+      return {
+        success: true,
+        source:
+          "conversation-analytics",
+        operation:
+          "ratio",
+        metric,
+        results:
+          explicitPair,
+        ratio,
+        answer:
+          `${cleanAnalyticalLabel(
+            higher.label
+          )}'s ${metric} is approximately ${formatAnalyticalNumber(
+            ratio
+          )} times ${cleanAnalyticalLabel(
+            lower.label
+          )}'s.`,
+      };
+    }
+
+    if (
+      normalizedMode ===
+        "percentage_higher" ||
+      normalizedMode ===
+        "percentage_lower"
+    ) {
+      const denominator =
+        normalizedMode ===
+          "percentage_higher"
+          ? Math.abs(
+              lower.value
+            )
+          : Math.abs(
+              higher.value
+            );
+
+      if (denominator === 0) {
+        return {
+          success: false,
+          source:
+            "conversation-analytics",
+          operation:
+            "clarify",
+          answer:
+            "I can't calculate that percentage because the comparison baseline is zero.",
+        };
+      }
+
+      const percentage =
+        difference /
+        denominator *
+        100;
+
+      return {
+        success: true,
+        source:
+          "conversation-analytics",
+        operation:
+          normalizedMode,
+        metric,
+        results:
+          explicitPair,
+        percentage,
+        answer:
+          normalizedMode ===
+            "percentage_higher"
+            ? `${cleanAnalyticalLabel(
+                higher.label
+              )} is ${formatAnalyticalNumber(
+                percentage
+              )}% higher than ${cleanAnalyticalLabel(
+                lower.label
+              )} for ${metric}.`
+            : `${cleanAnalyticalLabel(
+                lower.label
+              )} is ${formatAnalyticalNumber(
+                percentage
+              )}% lower than ${cleanAnalyticalLabel(
+                higher.label
+              )} for ${metric}.`,
+      };
+    }
+
+    if (
+      normalizedMode ===
+        "higher"
+    ) {
+      return {
+        success: true,
+        source:
+          "conversation-analytics",
+        operation:
+          "compare",
+        metric,
+        results:
+          explicitPair,
+        winner:
+          higher.label,
+        answer:
+          `${cleanAnalyticalLabel(
+            higher.label
+          )} is higher at ${formatAnalyticalNumber(
+            higher.value
+          )}, compared with ${cleanAnalyticalLabel(
+            lower.label
+          )} at ${formatAnalyticalNumber(
+            lower.value
+          )}.`,
+      };
+    }
+
+    if (
+      normalizedMode ===
+        "lower"
+    ) {
+      return {
+        success: true,
+        source:
+          "conversation-analytics",
+        operation:
+          "compare",
+        metric,
+        results:
+          explicitPair,
+        winner:
+          lower.label,
+        answer:
+          `${cleanAnalyticalLabel(
+            lower.label
+          )} is lower at ${formatAnalyticalNumber(
+            lower.value
+          )}, compared with ${cleanAnalyticalLabel(
+            higher.label
+          )} at ${formatAnalyticalNumber(
+            higher.value
+          )}.`,
+      };
+    }
+
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        "difference",
+      metric,
+      results:
+        explicitPair,
+      difference,
+      answer:
+        `The difference between ${cleanAnalyticalLabel(
+          left.label
+        )} and ${cleanAnalyticalLabel(
+          right.label
+        )} for ${metric} is ${formatAnalyticalNumber(
+          difference
+        )}.`,
+    };
+  }
+
+  const sortedDesc =
+    [...set.items].sort(
+      (a, b) =>
+        b.value -
+        a.value
+    );
+
+  const highest =
+    sortedDesc[0];
+
+  const lowest =
+    sortedDesc[
+      sortedDesc.length - 1
+    ];
+
+  const values =
+    set.items.map(
+      (item) =>
+        item.value
+    );
+
+  const average =
+    values.reduce(
+      (sum, value) =>
+        sum + value,
+      0
+    ) /
+    values.length;
+
+  const median =
+    calculateMedian(
+      values
+    );
+
+  const range =
+    highest.value -
+    lowest.value;
+
+  const sortedByValue =
+    [...set.items].sort(
+      (a, b) =>
+        b.value -
+        a.value
+    );
+
+  const adjacentGaps = [];
+
+  for (
+    let index = 0;
+    index <
+      sortedByValue.length - 1;
+    index += 1
+  ) {
+    const upper =
+      sortedByValue[index];
+
+    const lower =
+      sortedByValue[
+        index + 1
+      ];
+
+    adjacentGaps.push({
+      upper,
+      lower,
+      gap:
+        Math.abs(
+          upper.value -
+          lower.value
+        ),
+    });
+  }
+
+  const largestGap =
+    [...adjacentGaps].sort(
+      (a, b) =>
+        b.gap -
+        a.gap
+    )[0] ||
+    null;
+
+  const closestPair =
+    [...adjacentGaps].sort(
+      (a, b) =>
+        a.gap -
+        b.gap
+    )[0] ||
+    null;
+
+  const subset =
+    detectRequestedResultSubset(
+      question
+    );
+
+  if (subset) {
+    const chosen =
+      subset.direction ===
+        "top"
+        ? sortedDesc.slice(
+            0,
+            subset.limit
+          )
+        : [...sortedDesc]
+            .reverse()
+            .slice(
+              0,
+              subset.limit
+            );
+
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        "multi_result_subset",
+      metric,
+      groupBy:
+        groupLabel,
+      results:
+        chosen,
+      answer:
+        `${subset.direction === "top" ? "Top" : "Bottom"} ${chosen.length} ${groupLabel.toLowerCase()}${chosen.length === 1 ? "" : "s"} by ${metric}:\n\n` +
+        chosen
+          .map(
+            (item, index) =>
+              `${index + 1}. **${cleanAnalyticalLabel(
+                item.label
+              )}** — ${formatAnalyticalNumber(
+                item.value
+              )}`
+          )
+          .join(
+            "\n"
+          ),
+    };
+  }
+
+  const intent =
+    detectMultiResultIntent({
+      question,
+      mode,
+    });
+
+  if (
+    intent ===
+      "highest"
+  ) {
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        "multi_result_highest",
+      metric,
+      result:
+        highest,
+      answer:
+        `${cleanAnalyticalLabel(
+          highest.label
+        )} is the highest at ${formatAnalyticalNumber(
+          highest.value
+        )} for ${metric}.`,
+    };
+  }
+
+  if (
+    intent ===
+      "lowest"
+  ) {
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        "multi_result_lowest",
+      metric,
+      result:
+        lowest,
+      answer:
+        `${cleanAnalyticalLabel(
+          lowest.label
+        )} is the lowest at ${formatAnalyticalNumber(
+          lowest.value
+        )} for ${metric}.`,
+    };
+  }
+
+  if (
+    intent ===
+      "average"
+  ) {
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        "multi_result_average",
+      metric,
+      average,
+      answer:
+        `The average ${metric} across these ${set.count} results is ${formatAnalyticalNumber(
+          average
+        )}.`,
+    };
+  }
+
+  if (
+    intent ===
+      "median"
+  ) {
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        "multi_result_median",
+      metric,
+      median,
+      answer:
+        `The median ${metric} across these ${set.count} results is ${formatAnalyticalNumber(
+          median
+        )}.`,
+    };
+  }
+
+  if (
+    intent ===
+      "above_average" ||
+    intent ===
+      "below_average"
+  ) {
+    const matched =
+      set.items.filter(
+        (item) =>
+          intent ===
+            "above_average"
+            ? item.value >
+              average
+            : item.value <
+              average
+      );
+
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        intent,
+      metric,
+      average,
+      results:
+        matched,
+      answer:
+        `${matched.length} of the ${set.count} ${groupLabel.toLowerCase()}${set.count === 1 ? "" : "s"} are ${intent === "above_average" ? "above" : "below"} the returned-results average of ${formatAnalyticalNumber(
+          average
+        )}:\n\n` +
+        (
+          matched.length
+            ? matched
+                .sort(
+                  (a, b) =>
+                    b.value -
+                    a.value
+                )
+                .map(
+                  (item) =>
+                    `- **${cleanAnalyticalLabel(
+                      item.label
+                    )}** — ${formatAnalyticalNumber(
+                      item.value
+                    )}`
+                )
+                .join(
+                  "\n"
+                )
+            : "None."
+        ),
+    };
+  }
+
+  if (
+    intent ===
+      "largest_gap" &&
+    largestGap
+  ) {
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        "largest_gap",
+      metric,
+      gap:
+        largestGap.gap,
+      results: [
+        largestGap.upper,
+        largestGap.lower,
+      ],
+      answer:
+        `The largest gap is between ${cleanAnalyticalLabel(
+          largestGap.upper.label
+        )} (${formatAnalyticalNumber(
+          largestGap.upper.value
+        )}) and ${cleanAnalyticalLabel(
+          largestGap.lower.label
+        )} (${formatAnalyticalNumber(
+          largestGap.lower.value
+        )}), a difference of ${formatAnalyticalNumber(
+          largestGap.gap
+        )}.`,
+    };
+  }
+
+  if (
+    intent ===
+      "closest_pair" &&
+    closestPair
+  ) {
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        "closest_pair",
+      metric,
+      gap:
+        closestPair.gap,
+      results: [
+        closestPair.upper,
+        closestPair.lower,
+      ],
+      answer:
+        `${cleanAnalyticalLabel(
+          closestPair.upper.label
+        )} and ${cleanAnalyticalLabel(
+          closestPair.lower.label
+        )} are the closest, separated by ${formatAnalyticalNumber(
+          closestPair.gap
+        )}.`,
+    };
+  }
+
+  if (
+    intent ===
+      "top_bottom_ratio"
+  ) {
+    if (
+      Math.abs(
+        lowest.value
+      ) === 0
+    ) {
+      return {
+        success: false,
+        source:
+          "conversation-analytics",
+        operation:
+          "clarify",
+        answer:
+          `I can't calculate the highest-to-lowest ratio because ${cleanAnalyticalLabel(
+            lowest.label
+          )}'s ${metric} is zero.`,
+      };
+    }
+
+    const ratio =
+      Math.abs(
+        highest.value
+      ) /
+      Math.abs(
+        lowest.value
+      );
+
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        "top_bottom_ratio",
+      metric,
+      ratio,
+      results: [
+        highest,
+        lowest,
+      ],
+      answer:
+        `${cleanAnalyticalLabel(
+          highest.label
+        )}'s ${metric} is approximately ${formatAnalyticalNumber(
+          ratio
+        )} times ${cleanAnalyticalLabel(
+          lowest.label
+        )}'s.`,
+    };
+  }
+
+  if (
+    intent ===
+      "percentage_higher" ||
+    intent ===
+      "percentage_lower"
+  ) {
+    const denominator =
+      intent ===
+        "percentage_higher"
+        ? Math.abs(
+            lowest.value
+          )
+        : Math.abs(
+            highest.value
+          );
+
+    if (denominator === 0) {
+      return {
+        success: false,
+        source:
+          "conversation-analytics",
+        operation:
+          "clarify",
+        answer:
+          "I can't calculate that percentage because the comparison baseline is zero.",
+      };
+    }
+
+    const percentage =
+      range /
+      denominator *
+      100;
+
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        intent,
+      metric,
+      percentage,
+      results: [
+        highest,
+        lowest,
+      ],
+      answer:
+        intent ===
+          "percentage_higher"
+          ? `${cleanAnalyticalLabel(
+              highest.label
+            )} is ${formatAnalyticalNumber(
+              percentage
+            )}% higher than ${cleanAnalyticalLabel(
+              lowest.label
+            )} among these results.`
+          : `${cleanAnalyticalLabel(
+              lowest.label
+            )} is ${formatAnalyticalNumber(
+              percentage
+            )}% lower than ${cleanAnalyticalLabel(
+              highest.label
+            )} among these results.`,
+    };
+  }
+
+  if (
+    intent ===
+      "percentage_difference"
+  ) {
+    const denominator =
+      (
+        Math.abs(
+          highest.value
+        ) +
+        Math.abs(
+          lowest.value
+        )
+      ) / 2;
+
+    const percentage =
+      denominator === 0
+        ? 0
+        : range /
+          denominator *
+          100;
+
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        "percentage_difference",
+      metric,
+      percentage,
+      results: [
+        highest,
+        lowest,
+      ],
+      answer:
+        `The percentage difference between the highest and lowest ${metric} in these results is ${formatAnalyticalNumber(
+          percentage
+        )}%.`,
+    };
+  }
+
+  if (
+    intent ===
+      "outliers"
+  ) {
+    const sortedValues =
+      [...values].sort(
+        (a, b) =>
+          a - b
+      );
+
+    const percentile = (
+      arr,
+      p
+    ) => {
+      if (
+        arr.length === 1
+      ) {
+        return arr[0];
+      }
+
+      const position =
+        (
+          arr.length - 1
+        ) * p;
+
+      const lowerIndex =
+        Math.floor(
+          position
+        );
+
+      const upperIndex =
+        Math.ceil(
+          position
+        );
+
+      if (
+        lowerIndex ===
+        upperIndex
+      ) {
+        return arr[
+          lowerIndex
+        ];
+      }
+
+      const weight =
+        position -
+        lowerIndex;
+
+      return (
+        arr[
+          lowerIndex
+        ] *
+          (
+            1 - weight
+          ) +
+        arr[
+          upperIndex
+        ] *
+          weight
+      );
+    };
+
+    const q1 =
+      percentile(
+        sortedValues,
+        0.25
+      );
+
+    const q3 =
+      percentile(
+        sortedValues,
+        0.75
+      );
+
+    const iqr =
+      q3 - q1;
+
+    let outliers =
+      set.items.filter(
+        (item) =>
+          item.value <
+            q1 -
+              1.5 *
+                iqr ||
+          item.value >
+            q3 +
+              1.5 *
+                iqr
+      );
+
+    if (
+      !outliers.length
+    ) {
+      const farthest =
+        [...set.items].sort(
+          (a, b) =>
+            Math.abs(
+              b.value -
+              average
+            ) -
+            Math.abs(
+              a.value -
+              average
+            )
+        )[0];
+
+      return {
+        success: true,
+        source:
+          "conversation-analytics",
+        operation:
+          "outliers",
+        metric,
+        results:
+          [],
+        standout:
+          farthest,
+        answer:
+          `No clear 1.5×IQR outlier appears among these ${set.count} values. The value farthest from their average is ${cleanAnalyticalLabel(
+            farthest.label
+          )} at ${formatAnalyticalNumber(
+            farthest.value
+          )}.`,
+      };
+    }
+
+    outliers =
+      outliers.sort(
+        (a, b) =>
+          b.value -
+          a.value
+      );
+
+    return {
+      success: true,
+      source:
+        "conversation-analytics",
+      operation:
+        "outliers",
+      metric,
+      results:
+        outliers,
+      answer:
+        `Using the 1.5×IQR rule, ${outliers.length} result${outliers.length === 1 ? "" : "s"} stand out as outliers:\n\n` +
+        outliers
+          .map(
+            (item) =>
+              `- **${cleanAnalyticalLabel(
+                item.label
+              )}** — ${formatAnalyticalNumber(
+                item.value
+              )}`
+          )
+          .join(
+            "\n"
+          ),
+    };
+  }
+
+  const summaryParts = [
+    `${cleanAnalyticalLabel(
+      highest.label
+    )} is highest at ${formatAnalyticalNumber(
+      highest.value
+    )}, while ${cleanAnalyticalLabel(
+      lowest.label
+    )} is lowest at ${formatAnalyticalNumber(
+      lowest.value
+    )}.`,
+    `The overall range is ${formatAnalyticalNumber(
+      range
+    )}.`,
+    `The average of these ${set.count} returned values is ${formatAnalyticalNumber(
+      average
+    )}, and the median is ${formatAnalyticalNumber(
+      median
+    )}.`,
+  ];
+
+  if (
+    largestGap
+  ) {
+    summaryParts.push(
+      `The largest adjacent gap is ${formatAnalyticalNumber(
+        largestGap.gap
+      )}, between ${cleanAnalyticalLabel(
+        largestGap.upper.label
+      )} and ${cleanAnalyticalLabel(
+        largestGap.lower.label
+      )}.`
+    );
+  }
+
+  return {
+    success: true,
+    source:
+      "conversation-analytics",
+    operation:
+      intent ===
+        "spread"
+        ? "multi_result_spread"
+        : "multi_result_summary",
+    metric,
+    groupBy:
+      groupLabel,
+    count:
+      set.count,
+    highest,
+    lowest,
+    range,
+    average,
+    median,
+    largestGap,
+    answer:
+      summaryParts.join(
+        " "
+      ),
+  };
+}
+
+
 function compareVerifiedAnalyticalPair({
   context,
   mode,
+  question = "",
 }) {
   const pair =
     getVerifiedAnalyticalPair(
@@ -5407,15 +6932,11 @@ function compareVerifiedAnalyticalPair({
   if (
     pair.ambiguous
   ) {
-    return {
-      success: false,
-      source:
-        "conversation-analytics",
-      operation:
-        "clarify",
-      answer:
-        `The previous result contains ${pair.count} values. Please name the two results you want me to compare.`,
-    };
+    return analyzeVerifiedAnalyticalSet({
+      context,
+      question,
+      mode,
+    });
   }
 
   if (
@@ -6216,6 +7737,9 @@ async function answerQuestion(
 
         mode:
           comparisonMode,
+
+        question:
+          cleanQuestion,
       });
 
     if (
@@ -6930,6 +8454,89 @@ async function answerQuestion(
           entityResolution.changes || [],
       };
     };
+
+
+
+  // ========================================================
+  // GENERIC MULTI-RESULT CONVERSATIONAL ANALYSIS
+  // ========================================================
+  //
+  // Handles analytical follow-ups over 3+ verified values without
+  // forcing the user to choose exactly two results.
+  //
+  const multiResultRecentResults =
+    getRecentResults(
+      sessionId
+    );
+
+  const latestMultiResultEntry =
+    multiResultRecentResults.length
+      ? multiResultRecentResults[
+          multiResultRecentResults.length -
+            1
+        ]
+      : null;
+
+  const multiResultContext = {
+    ...conversationContext,
+
+    lastPlan:
+      conversationContext
+        ?.lastPlan ||
+      latestMultiResultEntry
+        ?.plan ||
+      null,
+
+    lastResult:
+      conversationContext
+        ?.lastResult ||
+      latestMultiResultEntry
+        ?.result ||
+      null,
+  };
+
+  const verifiedMultiResultSet =
+    getVerifiedAnalyticalSet(
+      multiResultContext
+    );
+
+  const looksLikeMultiResultAnalysis =
+    verifiedMultiResultSet
+      ?.count >= 3 &&
+    (
+      /\b(?:explain|summarize|summary|interpret|describe|difference|range|spread|gap|closest|average|mean|median|highest|lowest|above average|below average|outlier|outliers|stand out|trend|pattern|distribution|compare|ratio|percent|percentage|top\s+\d+|bottom\s+\d+)\b/i.test(
+        cleanQuestion
+      )
+    );
+
+  if (
+    looksLikeMultiResultAnalysis
+  ) {
+    const multiResultAnalysis =
+      analyzeVerifiedAnalyticalSet({
+        context:
+          multiResultContext,
+
+        question:
+          cleanQuestion,
+
+        mode:
+          detectComparisonRequest(
+            cleanQuestion
+          ),
+      });
+
+    if (
+      multiResultAnalysis
+    ) {
+      return {
+        ...multiResultAnalysis,
+
+        plannerSource:
+          "conversation-analytics",
+      };
+    }
+  }
 
 
   // ========================================================
