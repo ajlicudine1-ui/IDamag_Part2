@@ -6854,14 +6854,150 @@ async function answerQuestion(
       cleanQuestion
     );
 
+  /**
+   * "Compare it with the lowest/highest" may be detected here even when
+   * conversationManager does not classify the wording as a normal
+   * follow-up. In that case getRelevantContext() can intentionally hide
+   * analyticalContext.
+   *
+   * Recover the latest VERIFIED analytical plan from recentResults so
+   * the request never falls through to Groq/local planning just because
+   * the follow-up wording was short.
+   */
+  const multiStepRecentResults =
+    extremeComparisonDirection
+      ? getRecentResults(
+          sessionId
+        )
+      : [];
+
+  const latestVerifiedAnalyticalEntry =
+    multiStepRecentResults.length
+      ? multiStepRecentResults[
+          multiStepRecentResults.length -
+            1
+        ]
+      : null;
+
+  const latestVerifiedAnalyticalPlan =
+    latestVerifiedAnalyticalEntry
+      ?.plan ||
+    null;
+
+  const latestVerifiedAnalyticalResult =
+    latestVerifiedAnalyticalEntry
+      ?.result ||
+    null;
+
+  const recoveredAnalyticalContext =
+    (
+      latestVerifiedAnalyticalPlan &&
+      [
+        "rank_groups",
+        "rank_rows",
+        "group_sum",
+        "group_average",
+        "group_minimum",
+        "group_maximum",
+        "group_count",
+      ].includes(
+        String(
+          latestVerifiedAnalyticalPlan
+            ?.operation ||
+          latestVerifiedAnalyticalResult
+            ?.operation ||
+          ""
+        )
+          .trim()
+          .toLowerCase()
+      )
+    )
+      ? {
+          dataset:
+            latestVerifiedAnalyticalPlan
+              ?.dataset ||
+            latestVerifiedAnalyticalResult
+              ?.dataset ||
+            null,
+
+          operation:
+            latestVerifiedAnalyticalPlan
+              ?.operation ||
+            latestVerifiedAnalyticalResult
+              ?.operation ||
+            null,
+
+          column:
+            latestVerifiedAnalyticalPlan
+              ?.column ||
+            latestVerifiedAnalyticalResult
+              ?.column ||
+            null,
+
+          labelColumn:
+            latestVerifiedAnalyticalPlan
+              ?.labelColumn ||
+            latestVerifiedAnalyticalResult
+              ?.labelColumn ||
+            null,
+
+          groupBy:
+            latestVerifiedAnalyticalPlan
+              ?.groupBy ||
+            latestVerifiedAnalyticalResult
+              ?.groupBy ||
+            null,
+
+          aggregation:
+            latestVerifiedAnalyticalPlan
+              ?.aggregation ||
+            latestVerifiedAnalyticalResult
+              ?.aggregation ||
+            null,
+
+          direction:
+            latestVerifiedAnalyticalPlan
+              ?.direction ||
+            latestVerifiedAnalyticalResult
+              ?.direction ||
+            null,
+
+          filters:
+            Array.isArray(
+              latestVerifiedAnalyticalPlan
+                ?.filters
+            )
+              ? latestVerifiedAnalyticalPlan
+                  .filters
+              : [],
+
+          filterGroups:
+            Array.isArray(
+              latestVerifiedAnalyticalPlan
+                ?.filterGroups
+            )
+              ? latestVerifiedAnalyticalPlan
+                  .filterGroups
+              : [],
+
+          filterGroupLogic:
+            latestVerifiedAnalyticalPlan
+              ?.filterGroupLogic ||
+            null,
+        }
+      : null;
+
+  const multiStepAnalyticalContext =
+    conversationContext
+      .analyticalContext ||
+    recoveredAnalyticalContext;
+
   if (
     extremeComparisonDirection &&
-    conversationContext
-      .analyticalContext
+    multiStepAnalyticalContext
   ) {
     const base =
-      conversationContext
-        .analyticalContext;
+      multiStepAnalyticalContext;
 
     const groupBy =
       base.groupBy ||
@@ -7016,6 +7152,36 @@ async function answerQuestion(
             "conversation-analytics",
         };
       }
+    }
+
+    /**
+     * The opposite extreme was successfully calculated, but if the
+     * generic two-result comparison helper cannot represent the pair,
+     * return the verified extreme result instead of falling through to
+     * Groq/local planning and asking an unrelated clarification.
+     */
+    const latestAfterExtreme =
+      getRecentResults(
+        sessionId
+      );
+
+    const extremeEntry =
+      latestAfterExtreme.length
+        ? latestAfterExtreme[
+            latestAfterExtreme.length -
+              1
+          ]
+        : null;
+
+    if (
+      extremeEntry?.result
+    ) {
+      return {
+        ...extremeEntry.result,
+
+        plannerSource:
+          "conversation-analytics",
+      };
     }
   }
 
