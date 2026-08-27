@@ -9181,8 +9181,167 @@ async function answerQuestion(
           referentialListPlan
         );
 
+      /**
+       * calculationEngine may return a list as primitive strings:
+       *
+       *   results: [
+       *     "Association A",
+       *     "Association B"
+       *   ]
+       *
+       * Some natural-response formatters expect object-shaped rows and
+       * therefore produce:
+       *
+       *   "1. "
+       *   "2. "
+       *
+       * Build the conversational list answer directly from the VERIFIED
+       * execution result so primitive-string lists and object lists both
+       * render correctly.
+       */
+      const verifiedListItems =
+        Array.isArray(
+          referentialListResult
+            ?.results
+        )
+          ? referentialListResult.results
+              .map(
+                (item) => {
+                  if (
+                    item === null ||
+                    item === undefined
+                  ) {
+                    return "";
+                  }
+
+                  if (
+                    typeof item !==
+                      "object"
+                  ) {
+                    return String(
+                      item
+                    ).trim();
+                  }
+
+                  /**
+                   * Prefer the exact selected subject field.
+                   */
+                  const directValue =
+                    item?.[
+                      rememberedSubject
+                    ];
+
+                  if (
+                    directValue !== null &&
+                    directValue !==
+                      undefined &&
+                    String(
+                      directValue
+                    ).trim() !== ""
+                  ) {
+                    return String(
+                      directValue
+                    ).trim();
+                  }
+
+                  /**
+                   * Common normalized result shapes.
+                   */
+                  if (
+                    item.label !== null &&
+                    item.label !==
+                      undefined &&
+                    String(
+                      item.label
+                    ).trim() !== ""
+                  ) {
+                    if (
+                      item.value !== null &&
+                      item.value !==
+                        undefined &&
+                      String(
+                        item.value
+                      ).trim() !== ""
+                    ) {
+                      return `${String(
+                        item.label
+                      ).trim()} — ${String(
+                        item.value
+                      ).trim()}`;
+                    }
+
+                    return String(
+                      item.label
+                    ).trim();
+                  }
+
+                  if (
+                    item.value !== null &&
+                    item.value !==
+                      undefined &&
+                    String(
+                      item.value
+                    ).trim() !== ""
+                  ) {
+                    return String(
+                      item.value
+                    ).trim();
+                  }
+
+                  /**
+                   * Generic fallback for an object containing one or more
+                   * displayable fields.
+                   */
+                  const displayValues =
+                    Object.values(
+                      item
+                    )
+                      .filter(
+                        (value) =>
+                          value !== null &&
+                          value !==
+                            undefined &&
+                          String(
+                            value
+                          ).trim() !==
+                            ""
+                      )
+                      .map(
+                        (value) =>
+                          String(
+                            value
+                          ).trim()
+                      );
+
+                  return displayValues.join(
+                    " — "
+                  );
+                }
+              )
+              .filter(Boolean)
+          : [];
+
+      const referentialListAnswer =
+        verifiedListItems.length
+          ? verifiedListItems
+              .map(
+                (value, index) =>
+                  `${index + 1}. ${value}`
+              )
+              .join(
+                "\n"
+              )
+          : (
+              referentialListResult
+                ?.answer ||
+              "No matching results were found."
+            );
+
       return {
         ...referentialListResult,
+
+        answer:
+          referentialListAnswer,
 
         plannerSource:
           "conversation",
