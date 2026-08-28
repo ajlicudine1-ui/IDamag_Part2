@@ -3343,6 +3343,519 @@ function extractFollowUpTargetPhrase(
 }
 
 
+
+function normalizedEditSimilarity(
+  left,
+  right
+) {
+  const a =
+    normalizeText(
+      left
+    );
+
+  const b =
+    normalizeText(
+      right
+    );
+
+  if (!a || !b) {
+    return 0;
+  }
+
+  if (a === b) {
+    return 1;
+  }
+
+  const previous =
+    Array.from(
+      {
+        length:
+          b.length + 1,
+      },
+      (_, index) =>
+        index
+    );
+
+  for (
+    let i = 1;
+    i <= a.length;
+    i += 1
+  ) {
+    const current = [
+      i,
+    ];
+
+    for (
+      let j = 1;
+      j <= b.length;
+      j += 1
+    ) {
+      const substitutionCost =
+        a[
+          i - 1
+        ] ===
+        b[
+          j - 1
+        ]
+          ? 0
+          : 1;
+
+      current[j] =
+        Math.min(
+          current[
+            j - 1
+          ] + 1,
+          previous[j] + 1,
+          previous[
+            j - 1
+          ] +
+            substitutionCost
+        );
+    }
+
+    for (
+      let j = 0;
+      j < current.length;
+      j += 1
+    ) {
+      previous[j] =
+        current[j];
+    }
+  }
+
+  const distance =
+    previous[
+      b.length
+    ];
+
+  return Math.max(
+    0,
+    1 -
+      distance /
+        Math.max(
+          a.length,
+          b.length
+        )
+  );
+}
+
+
+function filterRowsBySimpleFilters(
+  rows,
+  filters
+) {
+  if (
+    !Array.isArray(
+      rows
+    )
+  ) {
+    return [];
+  }
+
+  if (
+    !Array.isArray(
+      filters
+    ) ||
+    !filters.length
+  ) {
+    return [
+      ...rows,
+    ];
+  }
+
+  return rows.filter(
+    (row) =>
+      filters.every(
+        (filter) => {
+          const actual =
+            row?.[
+              filter?.column
+            ];
+
+          const operator =
+            String(
+              filter?.operator ||
+              "equals"
+            )
+              .trim()
+              .toLowerCase();
+
+          const expected =
+            filter?.value;
+
+          const normalizeValue = (
+            value
+          ) =>
+            normalizeText(
+              value
+            );
+
+          if (
+            operator === "in"
+          ) {
+            const expectedValues =
+              Array.isArray(
+                expected
+              )
+                ? expected
+                : [
+                    expected,
+                  ];
+
+            return expectedValues.some(
+              (value) =>
+                normalizeValue(
+                  actual
+                ) ===
+                normalizeValue(
+                  value
+                )
+            );
+          }
+
+          if (
+            operator ===
+              "contains"
+          ) {
+            return normalizeValue(
+              actual
+            ).includes(
+              normalizeValue(
+                expected
+              )
+            );
+          }
+
+          return normalizeValue(
+            actual
+          ) ===
+            normalizeValue(
+              expected
+            );
+        }
+      )
+  );
+}
+
+
+function chooseDistinguishingColumn({
+  rows,
+  excludeColumns = [],
+}) {
+  if (
+    !Array.isArray(
+      rows
+    ) ||
+    rows.length < 2
+  ) {
+    return null;
+  }
+
+  const excluded =
+    new Set(
+      excludeColumns.filter(
+        Boolean
+      )
+    );
+
+  const columns =
+    Object.keys(
+      rows[0] || {}
+    );
+
+  const candidates = [];
+
+  for (
+    const column
+    of columns
+  ) {
+    if (
+      excluded.has(
+        column
+      )
+    ) {
+      continue;
+    }
+
+    const values =
+      rows
+        .map(
+          (row) =>
+            row?.[column]
+        )
+        .filter(
+          (value) =>
+            value !== null &&
+            value !== undefined &&
+            String(
+              value
+            ).trim() !== ""
+        )
+        .map(
+          (value) =>
+            String(
+              value
+            ).trim()
+        );
+
+    if (
+      values.length <
+        rows.length
+    ) {
+      continue;
+    }
+
+    const unique =
+      [
+        ...new Set(
+          values.map(
+            (value) =>
+              normalizeText(
+                value
+              )
+          )
+        ),
+      ];
+
+    if (
+      unique.length < 2
+    ) {
+      continue;
+    }
+
+    const numericLike =
+      values.every(
+        (value) =>
+          /^[-+]?\d[\d,]*(?:\.\d+)?$/.test(
+            value
+          )
+      );
+
+    if (numericLike) {
+      continue;
+    }
+
+    const averageLength =
+      values.reduce(
+        (sum, value) =>
+          sum + value.length,
+        0
+      ) /
+      values.length;
+
+    /**
+     * Prefer compact categorical identifiers over long descriptions.
+     * This naturally favors fields like barangay/status/division over
+     * long narrative text, without naming any field explicitly.
+     */
+    const distinctRatio =
+      unique.length /
+      rows.length;
+
+    const score =
+      distinctRatio *
+        2 -
+      Math.min(
+        averageLength,
+        120
+      ) /
+        120;
+
+    candidates.push({
+      column,
+      score,
+    });
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score -
+      a.score
+  );
+
+  return (
+    candidates[0]?.column ||
+    null
+  );
+}
+
+
+function buildOneToManyListAnswer({
+  rows,
+  subjectColumn,
+  filters = [],
+}) {
+  if (
+    !Array.isArray(
+      rows
+    ) ||
+    !rows.length ||
+    !subjectColumn
+  ) {
+    return null;
+  }
+
+  const subjectValues =
+    rows
+      .map(
+        (row) =>
+          row?.[
+            subjectColumn
+          ]
+      )
+      .filter(
+        (value) =>
+          value !== null &&
+          value !== undefined &&
+          String(
+            value
+          ).trim() !== ""
+      )
+      .map(
+        (value) =>
+          String(
+            value
+          ).trim()
+      );
+
+  const uniqueSubjects =
+    [
+      ...new Map(
+        subjectValues.map(
+          (value) => [
+            normalizeText(
+              value
+            ),
+            value,
+          ]
+        )
+      ).values(),
+    ];
+
+  if (!uniqueSubjects.length) {
+    return null;
+  }
+
+  /**
+   * Multiple rows but one shared requested value:
+   * return that value once instead of repeating it.
+   */
+  if (
+    uniqueSubjects.length ===
+      1
+  ) {
+    return uniqueSubjects[0];
+  }
+
+  const discriminator =
+    chooseDistinguishingColumn({
+      rows,
+
+      excludeColumns: [
+        subjectColumn,
+
+        ...filters.map(
+          (filter) =>
+            filter?.column
+        ),
+      ],
+    });
+
+  if (!discriminator) {
+    return uniqueSubjects
+      .map(
+        (value, index) =>
+          `${index + 1}. ${value}`
+      )
+      .join(
+        "\n"
+      );
+  }
+
+  const lines = [];
+
+  const seen =
+    new Set();
+
+  for (
+    const row
+    of rows
+  ) {
+    const label =
+      row?.[
+        discriminator
+      ];
+
+    const value =
+      row?.[
+        subjectColumn
+      ];
+
+    if (
+      label === null ||
+      label === undefined ||
+      value === null ||
+      value === undefined
+    ) {
+      continue;
+    }
+
+    const cleanLabel =
+      String(
+        label
+      ).trim();
+
+    const cleanValue =
+      String(
+        value
+      ).trim();
+
+    if (
+      !cleanLabel ||
+      !cleanValue
+    ) {
+      continue;
+    }
+
+    const key =
+      `${normalizeText(
+        cleanLabel
+      )}::${normalizeText(
+        cleanValue
+      )}`;
+
+    if (
+      seen.has(
+        key
+      )
+    ) {
+      continue;
+    }
+
+    seen.add(
+      key
+    );
+
+    lines.push(
+      `${cleanLabel} — ${cleanValue}`
+    );
+  }
+
+  return lines.length
+    ? lines.join(
+        "\n"
+      )
+    : uniqueSubjects
+        .map(
+          (value, index) =>
+            `${index + 1}. ${value}`
+        )
+        .join(
+          "\n"
+        );
+}
+
+
 function inferApproximateFollowUpFilter({
   rows,
   question,
@@ -3495,9 +4008,16 @@ function inferApproximateFollowUpFilter({
       of values
     ) {
       let score =
-        similarity(
-          target,
-          value.normalized
+        Math.max(
+          similarity(
+            target,
+            value.normalized
+          ),
+
+          normalizedEditSimilarity(
+            target,
+            value.normalized
+          )
         );
 
       if (
@@ -10925,20 +11445,52 @@ async function answerQuestion(
             sameQueryPlan
           );
 
+        let sameQueryAnswer =
+          sameQueryResult
+            .answer;
+
+        if (
+          operation === "list"
+        ) {
+          const matchingRows =
+            filterRowsBySimpleFilters(
+              previousRows,
+              finalFilters
+            );
+
+          const oneToManyAnswer =
+            buildOneToManyListAnswer({
+              rows:
+                matchingRows,
+
+              subjectColumn:
+                rememberedSubject,
+
+              filters:
+                finalFilters,
+            });
+
+          sameQueryAnswer =
+            oneToManyAnswer ||
+            buildVerifiedListAnswer({
+              result:
+                sameQueryResult,
+
+              subjectColumn:
+                rememberedSubject,
+            });
+        }
+
         return {
           ...sameQueryResult,
 
           answer:
-            operation === "list"
-              ? buildVerifiedListAnswer({
-                  result:
-                    sameQueryResult,
+            sameQueryAnswer,
 
-                  subjectColumn:
-                    rememberedSubject,
-                })
-              : sameQueryResult
-                  .answer,
+          oneToManyResolved:
+            operation === "list"
+              ? true
+              : undefined,
 
           plannerSource:
             "conversation",
