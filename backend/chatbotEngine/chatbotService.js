@@ -12422,24 +12422,7 @@ async function answerQuestion(
    */
   const repairReferentialScopePlan =
     (candidatePlan) => {
-      if (
-        !candidatePlan ||
-        candidatePlan.route !== "dataset"
-      ) {
-        return candidatePlan;
-      }
-
-      const currentFilters =
-        Array.isArray(
-          candidatePlan.filters
-        )
-          ? candidatePlan.filters
-          : [];
-
-      /**
-       * Never overwrite a plan that already contains explicit filters.
-       */
-      if (currentFilters.length) {
+      if (!candidatePlan) {
         return candidatePlan;
       }
 
@@ -12460,6 +12443,31 @@ async function answerQuestion(
       if (!refersToPreviousScope) {
         return candidatePlan;
       }
+
+      /**
+       * A planner may return "clarify" simply because the user did not
+       * repeat a location/entity in a chained follow-up:
+       *
+       *   "... there?"
+       *
+       * Before accepting that clarification, check whether:
+       *   1. a verified previous scope exists, and
+       *   2. the current question explicitly names a real schema column.
+       *
+       * If both are true, the clarification is unnecessary. Rebuild a
+       * normal dataset/list plan around the explicit requested column and
+       * the verified previous scope.
+       *
+       * This is generic: no schema field, location type, worksheet, or
+       * value is hardcoded.
+       */
+      const originalRoute =
+        String(
+          candidatePlan.route ||
+          ""
+        )
+          .trim()
+          .toLowerCase();
 
       /**
        * First use the normal conversation context.
@@ -12518,6 +12526,96 @@ async function answerQuestion(
           .lastDataset ||
         latestPlan?.dataset ||
         candidatePlan.dataset;
+
+      /**
+       * Recover an unnecessary clarification into a dataset lookup when
+       * the requested output column is explicitly present in the schema.
+       */
+      if (
+        originalRoute === "clarify"
+      ) {
+        const explicitMatch =
+          findExplicitSchemaColumn({
+            schema,
+            question:
+              cleanQuestion,
+            preferredDataset:
+              rememberedDataset ||
+              null,
+          });
+
+        if (!explicitMatch) {
+          return candidatePlan;
+        }
+
+        candidatePlan = {
+          route:
+            "dataset",
+
+          dataset:
+            explicitMatch.dataset ||
+            rememberedDataset,
+
+          operation:
+            "list",
+
+          column:
+            explicitMatch.column,
+
+          labelColumn:
+            null,
+
+          groupBy:
+            null,
+
+          aggregation:
+            null,
+
+          direction:
+            null,
+
+          filters:
+            [],
+
+          selectColumns: [
+            explicitMatch.column,
+          ],
+
+          outputRequested:
+            true,
+
+          transform:
+            null,
+
+          limit:
+            10,
+
+          showAll:
+            true,
+
+          referentialClarifyRecovered:
+            true,
+        };
+      } else if (
+        originalRoute !== "dataset"
+      ) {
+        return candidatePlan;
+      }
+
+      const currentFilters =
+        Array.isArray(
+          candidatePlan.filters
+        )
+          ? candidatePlan.filters
+          : [];
+
+      /**
+       * Never overwrite a dataset plan that already contains explicit
+       * filters. A newly stated scope remains authoritative.
+       */
+      if (currentFilters.length) {
+        return candidatePlan;
+      }
 
       /**
        * Avoid importing a verified filter from a different worksheet when
