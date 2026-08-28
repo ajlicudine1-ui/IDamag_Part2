@@ -3056,6 +3056,560 @@ function scoreNaturalFieldPhrase(
 }
 
 
+function inferApproximateEntityFilterFromText({
+  rows,
+  identifierText,
+}) {
+  if (
+    !Array.isArray(rows) ||
+    !rows.length
+  ) {
+    return [];
+  }
+
+  const target =
+    normalizeText(
+      identifierText
+    );
+
+  if (!target) {
+    return [];
+  }
+
+  const candidates = [];
+
+  const columns =
+    Object.keys(
+      rows[0] || {}
+    );
+
+  for (const column of columns) {
+    const seen =
+      new Set();
+
+    for (const row of rows) {
+      const raw =
+        row?.[column];
+
+      if (
+        raw === null ||
+        raw === undefined
+      ) {
+        continue;
+      }
+
+      const value =
+        String(raw).trim();
+
+      if (
+        !value ||
+        value.length > 120 ||
+        /^[-+]?\d[\d,]*(?:\.\d+)?$/.test(
+          value
+        )
+      ) {
+        continue;
+      }
+
+      const normalizedValue =
+        normalizeText(value);
+
+      if (
+        !normalizedValue ||
+        seen.has(normalizedValue)
+      ) {
+        continue;
+      }
+
+      seen.add(
+        normalizedValue
+      );
+
+      let score =
+        Math.max(
+          similarity(
+            target,
+            normalizedValue
+          ),
+
+          normalizedEditSimilarity(
+            target,
+            normalizedValue
+          )
+        );
+
+      if (
+        target ===
+          normalizedValue
+      ) {
+        score = 1;
+      } else if (
+        target.includes(
+          normalizedValue
+        ) ||
+        normalizedValue.includes(
+          target
+        )
+      ) {
+        score =
+          Math.max(
+            score,
+            0.94
+          );
+      }
+
+      /**
+       * Conservative but typo-tolerant entity matching.
+       *
+       * The follow-up resolver already uses edit similarity because real
+       * report values and user spelling can differ slightly. Standalone
+       * direct questions should use the same evidence.
+       */
+      if (score >= 0.72) {
+        candidates.push({
+          column,
+          value,
+          score,
+        });
+      }
+    }
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score - a.score
+  );
+
+  if (!candidates.length) {
+    return [];
+  }
+
+  if (
+    candidates.length > 1 &&
+    candidates[0].column !==
+      candidates[1].column &&
+    Math.abs(
+      candidates[0].score -
+      candidates[1].score
+    ) < 0.025
+  ) {
+    return [];
+  }
+
+  return [
+    {
+      column:
+        candidates[0].column,
+
+      operator:
+        "equals",
+
+      value:
+        candidates[0].value,
+    },
+  ];
+}
+
+
+/**
+ * Resolve standalone filtered numeric aggregate questions before Groq.
+ *
+ * Examples of the shape handled:
+ *   "what is the total <metric> in <entity>"
+ *   "what is the average <metric> for <entity>"
+ *
+ * Both the metric column and entity filter are discovered dynamically
+ * from the live schema/data. Minor wording typos are tolerated through
+ * existing schema similarity plus a conservative entity-value fallback.
+ */
+function resolveDirectFilteredAggregatePlan({
+  question,
+  schema,
+  datasets,
+}) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (!text) {
+    return null;
+  }
+
+  const aggregation =
+    detectQuestionAggregation(
+      question
+    );
+
+  if (
+    !aggregation ||
+    ![
+      "sum",
+      "average",
+      "count",
+    ].includes(
+      aggregation
+    )
+  ) {
+    return null;
+  }
+
+  const match =
+    text.match(
+      /^(?:what|which|show|give|tell me|get|find|calculate|compute)\s+(?:(?:is|are|was|were)\s+)?(?:the\s+)?(.+?)\s+(?:in|at|within|inside|under|for|from)\s+(.+?)\??$/
+    );
+
+  if (
+    !match?.[1] ||
+    !match?.[2]
+  ) {
+    return null;
+  }
+
+  const requestedPhrase =
+    match[1]
+      .replace(
+        /\b(?:total|sum|combined|overall|altogether|average|avg|mean|count|number of|how many)\b/g,
+        " "
+      )
+      .replace(
+        /\s+/g,
+        " "
+      )
+      .trim();
+
+  const identifierText =
+    match[2]
+      .replace(
+        /[?.!]+$/g,
+        ""
+      )
+      .trim();
+
+  if (
+    !requestedPhrase ||
+    !identifierText
+  ) {
+    return null;
+  }
+
+  const candidates = [];
+
+  for (
+    const datasetSchema
+    of schema || []
+  ) {
+    const datasetName =
+      datasetSchema?.name;
+
+    const rows =
+      datasets?.[
+        datasetName
+      ];
+
+    if (
+      !datasetName ||
+      !Array.isArray(rows) ||
+      !rows.length
+    ) {
+      continue;
+    }
+
+    let filters =
+      inferCoherentFilters(
+        rows,
+        identifierText
+      );
+
+    if (
+      !Array.isArray(filters) ||
+      !filters.length
+    ) {
+      filters =
+        inferApproximateEntityFilterFromText({
+          rows,
+          identifierText,
+        });
+    }
+
+    if (
+      !Array.isArray(filters) ||
+      !filters.length
+    ) {
+      continue;
+    }
+
+    const excludedColumns =
+      new Set(
+        filters
+          .map(
+            (filter) =>
+              normalizeText(
+                filter?.column
+              )
+          )
+          .filter(Boolean)
+      );
+
+    const metricCandidates =
+      (datasetSchema.columns || [])
+        .filter(
+          (column) =>
+            column?.name &&
+            !excludedColumns.has(
+              normalizeText(
+                column.name
+              )
+            )
+        )
+        .filter(
+          (column) =>
+            aggregation ===
+              "count" ||
+            isNumericLikeColumn({
+              column,
+              rows,
+            })
+        )
+        .map(
+          (column) => {
+            const naturalScore =
+              scoreNaturalFieldPhrase(
+                requestedPhrase,
+                column.name
+              );
+
+            const fuzzyScore =
+              similarity(
+                normalizeText(
+                  requestedPhrase
+                ),
+                normalizeText(
+                  column.name
+                )
+              );
+
+            /**
+             * scoreNaturalFieldPhrase rewards shared schema words while
+             * similarity tolerates small typing errors such as
+             * "land are" -> "land area".
+             */
+            const score =
+              Math.max(
+                naturalScore,
+                fuzzyScore * 2.5
+              );
+
+            return {
+              column,
+              score,
+            };
+          }
+        )
+        .sort(
+          (a, b) =>
+            b.score -
+            a.score
+        );
+
+    const metric =
+      metricCandidates[0] ||
+      null;
+
+    if (
+      !metric ||
+      metric.score < 1.15
+    ) {
+      continue;
+    }
+
+    /**
+     * If two different metrics are effectively tied, do not guess.
+     */
+    if (
+      metricCandidates.length >
+        1 &&
+      Math.abs(
+        metricCandidates[0]
+          .score -
+        metricCandidates[1]
+          .score
+      ) < 0.08
+    ) {
+      continue;
+    }
+
+    candidates.push({
+      dataset:
+        datasetName,
+
+      column:
+        metric.column.name,
+
+      score:
+        metric.score,
+
+      filters,
+    });
+  }
+
+  if (!candidates.length) {
+    /**
+     * Final generic fallback:
+     * resolve the requested output column across the live schema first,
+     * then independently recover the entity filter from that dataset.
+     *
+     * This prevents a strong field phrase such as
+     * "climate related risks" from being lost merely because the first
+     * combined pass was too conservative.
+     */
+    const explicitField =
+      inferRequestedColumnFromQuestion({
+        schema,
+        question:
+          requestedPhrase,
+      });
+
+    if (explicitField) {
+      const rows =
+        datasets?.[
+          explicitField.dataset
+        ];
+
+      if (
+        Array.isArray(rows) &&
+        rows.length
+      ) {
+        let filters =
+          inferCoherentFilters(
+            rows,
+            identifierText
+          );
+
+        if (
+          !Array.isArray(filters) ||
+          !filters.length
+        ) {
+          filters =
+            inferApproximateEntityFilterFromText({
+              rows,
+              identifierText,
+            });
+        }
+
+        if (
+          Array.isArray(filters) &&
+          filters.length
+        ) {
+          candidates.push({
+            dataset:
+              explicitField.dataset,
+
+            column:
+              explicitField.column,
+
+            fieldScore:
+              explicitField.score ||
+              0.95,
+
+            filters,
+          });
+        }
+      }
+    }
+  }
+
+  if (!candidates.length) {
+    return null;
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score - a.score
+  );
+
+  if (
+    candidates.length > 1 &&
+    candidates[0].dataset !==
+      candidates[1].dataset &&
+    Math.abs(
+      candidates[0].score -
+      candidates[1].score
+    ) < 0.03
+  ) {
+    return null;
+  }
+
+  const best =
+    candidates[0];
+
+  const operation =
+    aggregation === "count"
+      ? "non_empty_count"
+      : aggregation;
+
+  return {
+    route:
+      "dataset",
+
+    dataset:
+      best.dataset,
+
+    operation,
+
+    column:
+      best.column,
+
+    labelColumn:
+      null,
+
+    groupBy:
+      null,
+
+    aggregation:
+      aggregation === "count"
+        ? "count"
+        : aggregation,
+
+    direction:
+      null,
+
+    filters:
+      best.filters.map(
+        (filter) => ({
+          ...filter,
+
+          value:
+            Array.isArray(
+              filter?.value
+            )
+              ? [...filter.value]
+              : filter?.value,
+        })
+      ),
+
+    selectColumns: [
+      best.column,
+    ],
+
+    outputRequested:
+      true,
+
+    transform:
+      null,
+
+    limit:
+      10,
+
+    showAll:
+      false,
+
+    directFilteredAggregate:
+      true,
+  };
+}
+
+
 function resolveDirectFilteredFieldPlan({
   question,
   schema,
@@ -3132,11 +3686,29 @@ function resolveDirectFilteredFieldPlan({
       continue;
     }
 
-    const filters =
+    let filters =
       inferCoherentFilters(
         rows,
         identifierText
       );
+
+    /**
+     * The typed entity can differ slightly from the stored value
+     * (for example a small spelling typo). Use the same conservative,
+     * data-driven fuzzy entity recovery used by numeric aggregates.
+     */
+    if (
+      !Array.isArray(
+        filters
+      ) ||
+      !filters.length
+    ) {
+      filters =
+        inferApproximateEntityFilterFromText({
+          rows,
+          identifierText,
+        });
+    }
 
     if (
       !Array.isArray(
@@ -3157,15 +3729,44 @@ function resolveDirectFilteredFieldPlan({
     const bestColumn =
       columns
         .map(
-          (column) => ({
-            column,
-
-            score:
+          (column) => {
+            const naturalScore =
               scoreNaturalFieldPhrase(
                 requestedPhrase,
                 column?.name
-              ),
-          })
+              );
+
+            const fuzzyScore =
+              Math.max(
+                similarity(
+                  normalizeText(
+                    requestedPhrase
+                  ),
+                  normalizeText(
+                    column?.name
+                  )
+                ),
+
+                normalizedEditSimilarity(
+                  normalizeText(
+                    requestedPhrase
+                  ),
+                  normalizeText(
+                    column?.name
+                  )
+                )
+              );
+
+            return {
+              column,
+
+              score:
+                Math.max(
+                  naturalScore,
+                  fuzzyScore * 2
+                ),
+            };
+          }
         )
         .sort(
           (a, b) =>
@@ -3177,7 +3778,7 @@ function resolveDirectFilteredFieldPlan({
     if (
       !bestColumn ||
       bestColumn.score <
-        1.0
+        0.95
     ) {
       continue;
     }
@@ -11132,6 +11733,58 @@ async function answerQuestion(
 
 
   // ========================================================
+  // DIRECT FILTERED NUMERIC AGGREGATE — PLANNER INDEPENDENT
+  // ========================================================
+  //
+  // Resolve standalone questions such as:
+  //   "what is the total <metric> in <entity>?"
+  // before Groq can unnecessarily ask which metric column to use.
+  //
+  // Numeric aggregate answers remain scalar; they are intentionally NOT
+  // rendered using the one-to-many "label — value" formatter.
+  //
+  const directFilteredAggregatePlan =
+    resolveDirectFilteredAggregatePlan({
+      question:
+        cleanQuestion,
+
+      schema,
+
+      datasets,
+    });
+
+  if (
+    directFilteredAggregatePlan
+  ) {
+    if (
+      process.env.NODE_ENV !==
+        "production"
+    ) {
+      console.log(
+        "Chatbot direct filtered-aggregate plan:",
+        JSON.stringify(
+          directFilteredAggregatePlan,
+          null,
+          2
+        )
+      );
+    }
+
+    const directFilteredAggregateResult =
+      await executeResolvedPlan(
+        directFilteredAggregatePlan
+      );
+
+    return {
+      ...directFilteredAggregateResult,
+
+      plannerSource:
+        "conversation-local",
+    };
+  }
+
+
+  // ========================================================
   // DIRECT FILTERED FIELD LOOKUP — PLANNER INDEPENDENT
   // ========================================================
   //
@@ -12422,24 +13075,7 @@ async function answerQuestion(
    */
   const repairReferentialScopePlan =
     (candidatePlan) => {
-      if (
-        !candidatePlan ||
-        candidatePlan.route !== "dataset"
-      ) {
-        return candidatePlan;
-      }
-
-      const currentFilters =
-        Array.isArray(
-          candidatePlan.filters
-        )
-          ? candidatePlan.filters
-          : [];
-
-      /**
-       * Never overwrite a plan that already contains explicit filters.
-       */
-      if (currentFilters.length) {
+      if (!candidatePlan) {
         return candidatePlan;
       }
 
@@ -12460,6 +13096,31 @@ async function answerQuestion(
       if (!refersToPreviousScope) {
         return candidatePlan;
       }
+
+      /**
+       * A planner may return "clarify" simply because the user did not
+       * repeat a location/entity in a chained follow-up:
+       *
+       *   "... there?"
+       *
+       * Before accepting that clarification, check whether:
+       *   1. a verified previous scope exists, and
+       *   2. the current question explicitly names a real schema column.
+       *
+       * If both are true, the clarification is unnecessary. Rebuild a
+       * normal dataset/list plan around the explicit requested column and
+       * the verified previous scope.
+       *
+       * This is generic: no schema field, location type, worksheet, or
+       * value is hardcoded.
+       */
+      const originalRoute =
+        String(
+          candidatePlan.route ||
+          ""
+        )
+          .trim()
+          .toLowerCase();
 
       /**
        * First use the normal conversation context.
@@ -12518,6 +13179,96 @@ async function answerQuestion(
           .lastDataset ||
         latestPlan?.dataset ||
         candidatePlan.dataset;
+
+      /**
+       * Recover an unnecessary clarification into a dataset lookup when
+       * the requested output column is explicitly present in the schema.
+       */
+      if (
+        originalRoute === "clarify"
+      ) {
+        const explicitMatch =
+          findExplicitSchemaColumn({
+            schema,
+            question:
+              cleanQuestion,
+            preferredDataset:
+              rememberedDataset ||
+              null,
+          });
+
+        if (!explicitMatch) {
+          return candidatePlan;
+        }
+
+        candidatePlan = {
+          route:
+            "dataset",
+
+          dataset:
+            explicitMatch.dataset ||
+            rememberedDataset,
+
+          operation:
+            "list",
+
+          column:
+            explicitMatch.column,
+
+          labelColumn:
+            null,
+
+          groupBy:
+            null,
+
+          aggregation:
+            null,
+
+          direction:
+            null,
+
+          filters:
+            [],
+
+          selectColumns: [
+            explicitMatch.column,
+          ],
+
+          outputRequested:
+            true,
+
+          transform:
+            null,
+
+          limit:
+            10,
+
+          showAll:
+            true,
+
+          referentialClarifyRecovered:
+            true,
+        };
+      } else if (
+        originalRoute !== "dataset"
+      ) {
+        return candidatePlan;
+      }
+
+      const currentFilters =
+        Array.isArray(
+          candidatePlan.filters
+        )
+          ? candidatePlan.filters
+          : [];
+
+      /**
+       * Never overwrite a dataset plan that already contains explicit
+       * filters. A newly stated scope remains authoritative.
+       */
+      if (currentFilters.length) {
+        return candidatePlan;
+      }
 
       /**
        * Avoid importing a verified filter from a different worksheet when
