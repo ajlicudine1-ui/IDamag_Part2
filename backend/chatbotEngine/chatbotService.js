@@ -3302,6 +3302,371 @@ function resolveDirectFilteredFieldPlan({
 }
 
 
+
+function normalizeFollowUpPhrase(
+  value
+) {
+  return normalizeText(
+    value
+  )
+    .replace(
+      /\bwhat\s+abut\b/g,
+      "what about"
+    )
+    .replace(
+      /\bhow\s+abut\b/g,
+      "how about"
+    );
+}
+
+
+
+function extractFollowUpTargetPhrase(
+  question
+) {
+  const text =
+    normalizeFollowUpPhrase(
+      question
+    );
+
+  const match =
+    text.match(
+      /^(?:what|how)\s+about\s+(.+?)(?:[?.!]+)?$|^and\s+(.+?)(?:[?.!]+)?$|^for\s+(.+?)(?:[?.!]+)?$/
+    );
+
+  return normalizeText(
+    match?.[1] ||
+    match?.[2] ||
+    match?.[3] ||
+    ""
+  );
+}
+
+
+function inferApproximateFollowUpFilter({
+  rows,
+  question,
+}) {
+  if (
+    !Array.isArray(
+      rows
+    ) ||
+    !rows.length
+  ) {
+    return [];
+  }
+
+  const target =
+    extractFollowUpTargetPhrase(
+      question
+    );
+
+  if (!target) {
+    return [];
+  }
+
+  /**
+   * Do not reinterpret analytical follow-ups as row filters.
+   */
+  if (
+    /\b(?:average|avg|mean|total|sum|highest|lowest|maximum|minimum|top|bottom|difference|ratio|median|range|spread|count|number)\b/.test(
+      target
+    )
+  ) {
+    return [];
+  }
+
+  const columns =
+    Object.keys(
+      rows[0] || {}
+    );
+
+  const candidates = [];
+
+  for (
+    const column
+    of columns
+  ) {
+    const seen =
+      new Set();
+
+    const values = [];
+
+    for (
+      const row
+      of rows
+    ) {
+      const raw =
+        row?.[column];
+
+      if (
+        raw === null ||
+        raw === undefined
+      ) {
+        continue;
+      }
+
+      const value =
+        String(
+          raw
+        ).trim();
+
+      if (
+        !value ||
+        value.length > 120
+      ) {
+        continue;
+      }
+
+      /**
+       * Avoid numeric measure columns for entity/location switching.
+       */
+      if (
+        /^[-+]?\d[\d,]*(?:\.\d+)?$/.test(
+          value
+        )
+      ) {
+        continue;
+      }
+
+      const normalized =
+        normalizeText(
+          value
+        );
+
+      if (
+        !normalized ||
+        seen.has(
+          normalized
+        )
+      ) {
+        continue;
+      }
+
+      seen.add(
+        normalized
+      );
+
+      values.push({
+        raw:
+          value,
+
+        normalized,
+      });
+
+      if (
+        values.length >= 500
+      ) {
+        break;
+      }
+    }
+
+    for (
+      const value
+      of values
+    ) {
+      let score =
+        similarity(
+          target,
+          value.normalized
+        );
+
+      if (
+        target ===
+          value.normalized
+      ) {
+        score = 1;
+      } else if (
+        target.includes(
+          value.normalized
+        ) ||
+        value.normalized.includes(
+          target
+        )
+      ) {
+        score =
+          Math.max(
+            score,
+            0.94
+          );
+      }
+
+      if (
+        score >= 0.82
+      ) {
+        candidates.push({
+          column,
+
+          value:
+            value.raw,
+
+          score,
+        });
+      }
+    }
+  }
+
+  if (!candidates.length) {
+    return [];
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score -
+      a.score
+  );
+
+  const best =
+    candidates[0];
+
+  const second =
+    candidates[1];
+
+  /**
+   * Require a confident match and avoid ambiguous near-ties across
+   * different values.
+   */
+  if (
+    best.score < 0.86
+  ) {
+    return [];
+  }
+
+  if (
+    second &&
+    second.value !==
+      best.value &&
+    Math.abs(
+      best.score -
+      second.score
+    ) < 0.03
+  ) {
+    return [];
+  }
+
+  return [
+    {
+      column:
+        best.column,
+
+      operator:
+        "equals",
+
+      value:
+        best.value,
+
+      approximateMatch:
+        true,
+
+      matchScore:
+        best.score,
+    },
+  ];
+}
+
+
+function findPreviousScopeFilterColumns({
+  context,
+}) {
+  const previousQuestion =
+    normalizeFollowUpPhrase(
+      context?.lastQuestion ||
+      context?.lastSubjectQuestion ||
+      ""
+    );
+
+  const previousFilters =
+    Array.isArray(
+      context?.lastFilters
+    )
+      ? context.lastFilters
+      : [];
+
+  if (
+    !previousQuestion ||
+    !previousFilters.length
+  ) {
+    return new Set();
+  }
+
+  const scopeMatch =
+    previousQuestion.match(
+      /\b(?:in|at|within|inside|under|for|from|of|by)\s+(.+?)(?:[?.!]+)?$/
+    );
+
+  const aboutMatch =
+    previousQuestion.match(
+      /^(?:what|how)\s+about\s+(.+?)(?:[?.!]+)?$|^and\s+(.+?)(?:[?.!]+)?$/
+    );
+
+  const scopeText =
+    normalizeText(
+      scopeMatch?.[1] ||
+      aboutMatch?.[1] ||
+      aboutMatch?.[2] ||
+      ""
+    );
+
+  if (!scopeText) {
+    return new Set();
+  }
+
+  if (!scopeText) {
+    return new Set();
+  }
+
+  const columns =
+    new Set();
+
+  for (
+    const filter
+    of previousFilters
+  ) {
+    const rawValues =
+      Array.isArray(
+        filter?.value
+      )
+        ? filter.value
+        : [
+            filter?.value,
+          ];
+
+    const matched =
+      rawValues.some(
+        (value) => {
+          const normalized =
+            normalizeText(
+              value
+            );
+
+          return (
+            normalized &&
+            (
+              scopeText.includes(
+                normalized
+              ) ||
+              normalized.includes(
+                scopeText
+              )
+            )
+          );
+        }
+      );
+
+    if (
+      matched &&
+      filter?.column
+    ) {
+      columns.add(
+        filter.column
+      );
+    }
+  }
+
+  return columns;
+}
+
+
 function buildVerifiedListAnswer({
   result,
   subjectColumn = null,
@@ -10191,7 +10556,7 @@ async function answerQuestion(
   // new follow-up question.
   //
   const sameQueryFilterText =
-    normalizeText(
+    normalizeFollowUpPhrase(
       cleanQuestion
     );
 
@@ -10231,11 +10596,27 @@ async function answerQuestion(
        * for provinces, divisions, municipalities, statuses, categories,
        * phases, etc. without hardcoding their names.
        */
-      const newlyMentionedFilters =
+      let newlyMentionedFilters =
         inferCoherentFilters(
           previousRows,
           cleanQuestion
         );
+
+      if (
+        !Array.isArray(
+          newlyMentionedFilters
+        ) ||
+        !newlyMentionedFilters.length
+      ) {
+        newlyMentionedFilters =
+          inferApproximateFollowUpFilter({
+            rows:
+              previousRows,
+
+            question:
+              cleanQuestion,
+          });
+      }
 
       if (
         Array.isArray(
@@ -10294,6 +10675,12 @@ async function answerQuestion(
               .filter(Boolean)
           );
 
+        const previousScopeColumns =
+          findPreviousScopeFilterColumns({
+            context:
+              conversationContext,
+          });
+
         const inheritedFilters =
           Array.isArray(
             conversationContext
@@ -10304,6 +10691,9 @@ async function answerQuestion(
                 .filter(
                   (filter) =>
                     !replacementColumns.has(
+                      filter?.column
+                    ) &&
+                    !previousScopeColumns.has(
                       filter?.column
                     )
                 )
@@ -10462,6 +10852,52 @@ async function answerQuestion(
         };
       }
     }
+  }
+
+
+
+  // ========================================================
+  // UNRESOLVED ENTITY/FILTER SWITCH GUARD
+  // ========================================================
+  //
+  // If "what about X?" is clearly trying to change a row-level scope
+  // but X cannot be matched to live values, do not fall through into a
+  // stale analytical context from an older question.
+  //
+  const unresolvedSwitchTarget =
+    extractFollowUpTargetPhrase(
+      cleanQuestion
+    );
+
+  const unresolvedSwitchLooksAnalytical =
+    /\b(?:average|avg|mean|total|sum|highest|lowest|maximum|minimum|top|bottom|difference|ratio|median|range|spread|count|number)\b/.test(
+      unresolvedSwitchTarget
+    );
+
+  if (
+    looksLikeSameQueryNewFilter &&
+    unresolvedSwitchTarget &&
+    !unresolvedSwitchLooksAnalytical
+  ) {
+    /**
+     * Reaching this point means the same-query handler found no exact
+     * or confident approximate live value.
+     */
+    return {
+      success: false,
+
+      source:
+        "conversation",
+
+      operation:
+        "clarify",
+
+      answer:
+        `I couldn't confidently match "${unresolvedSwitchTarget}" to a value in ${conversationContext.lastDataset}. Please check the spelling or be a little more specific.`,
+
+      plannerSource:
+        "conversation",
+    };
   }
 
 
