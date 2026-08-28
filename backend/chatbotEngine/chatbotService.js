@@ -12424,9 +12424,7 @@ async function answerQuestion(
     (candidatePlan) => {
       if (
         !candidatePlan ||
-        candidatePlan.route !== "dataset" ||
-        conversationContext
-          .isFollowUp !== true
+        candidatePlan.route !== "dataset"
       ) {
         return candidatePlan;
       }
@@ -12439,23 +12437,9 @@ async function answerQuestion(
           : [];
 
       /**
-       * Never overwrite a planner that already found explicit filters.
-       * This keeps new explicit scopes authoritative.
+       * Never overwrite a plan that already contains explicit filters.
        */
       if (currentFilters.length) {
-        return candidatePlan;
-      }
-
-      const rememberedFilters =
-        Array.isArray(
-          conversationContext
-            .lastFilters
-        )
-          ? conversationContext
-              .lastFilters
-          : [];
-
-      if (!rememberedFilters.length) {
         return candidatePlan;
       }
 
@@ -12465,8 +12449,8 @@ async function answerQuestion(
         );
 
       /**
-       * Generic anaphoric/referential language only.
-       * These words describe conversation structure, not dataset values.
+       * Generic conversational references only.
+       * No dataset field/value is named here.
        */
       const refersToPreviousScope =
         /\b(?:there|therein|same\s+(?:place|location|area|one|ones|entity|entities|group|scope)|that\s+(?:place|location|area|one|group)|those\s+(?:places|locations|areas|ones|groups))\b/i.test(
@@ -12477,8 +12461,86 @@ async function answerQuestion(
         return candidatePlan;
       }
 
+      /**
+       * First use the normal conversation context.
+       *
+       * Some short referential questions such as "... there?" are not
+       * always classified as isFollowUp by conversationManager, which can
+       * cause lastFilters to be hidden. Recover the latest VERIFIED plan
+       * from recent results as a fallback.
+       */
+      const recentEntries =
+        getRecentResults(
+          sessionId
+        );
+
+      const latestEntry =
+        Array.isArray(
+          recentEntries
+        ) &&
+        recentEntries.length
+          ? recentEntries[
+              recentEntries.length - 1
+            ]
+          : null;
+
+      const latestPlan =
+        latestEntry?.plan ||
+        latestEntry?.result
+          ?.debugPlan ||
+        null;
+
+      const rememberedFilters =
+        (
+          Array.isArray(
+            conversationContext
+              .lastFilters
+          ) &&
+          conversationContext
+            .lastFilters.length
+        )
+          ? conversationContext
+              .lastFilters
+          : (
+              Array.isArray(
+                latestPlan?.filters
+              )
+                ? latestPlan.filters
+                : []
+            );
+
+      if (!rememberedFilters.length) {
+        return candidatePlan;
+      }
+
+      const rememberedDataset =
+        conversationContext
+          .lastDataset ||
+        latestPlan?.dataset ||
+        candidatePlan.dataset;
+
+      /**
+       * Avoid importing a verified filter from a different worksheet when
+       * the new planner explicitly chose another dataset.
+       */
+      if (
+        candidatePlan.dataset &&
+        rememberedDataset &&
+        String(
+          candidatePlan.dataset
+        ) !==
+          String(
+            rememberedDataset
+          )
+      ) {
+        return candidatePlan;
+      }
+
       return {
         ...candidatePlan,
+
+        dataset:
+          rememberedDataset,
 
         filters:
           rememberedFilters.map(
@@ -12493,16 +12555,6 @@ async function answerQuestion(
                   : filter?.value,
             })
           ),
-
-        /**
-         * Scope continuity should remain on the same verified dataset
-         * whenever possible. The requested output column still comes from
-         * the newly created plan.
-         */
-        dataset:
-          conversationContext
-            .lastDataset ||
-          candidatePlan.dataset,
 
         referentialScopeInherited:
           true,
