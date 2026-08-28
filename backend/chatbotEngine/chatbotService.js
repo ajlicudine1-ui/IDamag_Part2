@@ -3772,23 +3772,9 @@ function buildOneToManyListAnswer({
 
   /**
    * Preserve row-level context whenever MORE THAN ONE row matches.
-   *
-   * Example:
-   *   Municipality = San Emilo
-   *
-   * Matching rows:
-   *   Lancuas
-   *   Kalumsing
-   *   Sibsibbu
-   *
-   * Even if all three rows have the SAME requested value, keep each
-   * matched row visible:
-   *
-   *   Lancuas — <value>
-   *   Kalumsing — <value>
-   *   Sibsibbu — <value>
-   *
-   * Only a true single-row match may return the value by itself.
+   * Even when all requested values are identical, keep each distinct
+   * matching record visible. Only a true single-row match may collapse
+   * to the requested value itself.
    */
   if (
     rows.length === 1 &&
@@ -12413,6 +12399,117 @@ async function answerQuestion(
     }
   }
 
+
+  /**
+   * ========================================================
+   * GENERIC REFERENTIAL SCOPE CONTINUITY
+   * ========================================================
+   *
+   * A follow-up can request a NEW output field while referring back to
+   * the previously verified row scope:
+   *
+   *   "What are the <new field> there?"
+   *   "What is the <new field> in the same place?"
+   *   "How about the <new field> for the same one?"
+   *
+   * The planner is allowed to resolve the new output field, but it must
+   * not silently discard the previous verified filters merely because
+   * the user used a referential phrase instead of repeating the entity.
+   *
+   * This is schema/data agnostic: it copies whatever verified filters
+   * conversationContext already contains. No worksheet, field name,
+   * municipality, barangay, commodity, person, office, etc. is named.
+   */
+  const repairReferentialScopePlan =
+    (candidatePlan) => {
+      if (
+        !candidatePlan ||
+        candidatePlan.route !== "dataset" ||
+        conversationContext
+          .isFollowUp !== true
+      ) {
+        return candidatePlan;
+      }
+
+      const currentFilters =
+        Array.isArray(
+          candidatePlan.filters
+        )
+          ? candidatePlan.filters
+          : [];
+
+      /**
+       * Never overwrite a planner that already found explicit filters.
+       * This keeps new explicit scopes authoritative.
+       */
+      if (currentFilters.length) {
+        return candidatePlan;
+      }
+
+      const rememberedFilters =
+        Array.isArray(
+          conversationContext
+            .lastFilters
+        )
+          ? conversationContext
+              .lastFilters
+          : [];
+
+      if (!rememberedFilters.length) {
+        return candidatePlan;
+      }
+
+      const referentialText =
+        normalizeFollowUpPhrase(
+          cleanQuestion
+        );
+
+      /**
+       * Generic anaphoric/referential language only.
+       * These words describe conversation structure, not dataset values.
+       */
+      const refersToPreviousScope =
+        /\b(?:there|therein|same\s+(?:place|location|area|one|ones|entity|entities|group|scope)|that\s+(?:place|location|area|one|group)|those\s+(?:places|locations|areas|ones|groups))\b/i.test(
+          referentialText
+        );
+
+      if (!refersToPreviousScope) {
+        return candidatePlan;
+      }
+
+      return {
+        ...candidatePlan,
+
+        filters:
+          rememberedFilters.map(
+            (filter) => ({
+              ...filter,
+
+              value:
+                Array.isArray(
+                  filter?.value
+                )
+                  ? [...filter.value]
+                  : filter?.value,
+            })
+          ),
+
+        /**
+         * Scope continuity should remain on the same verified dataset
+         * whenever possible. The requested output column still comes from
+         * the newly created plan.
+         */
+        dataset:
+          conversationContext
+            .lastDataset ||
+          candidatePlan.dataset,
+
+        referentialScopeInherited:
+          true,
+      };
+    };
+
+
   // ========================================================
   // 1. GROQ FIRST
   // ========================================================
@@ -12513,6 +12610,11 @@ async function answerQuestion(
         question:
           cleanQuestion,
       });
+
+    groqPlan =
+      repairReferentialScopePlan(
+        groqPlan
+      );
 
     if (
       process.env.NODE_ENV !==
@@ -12653,6 +12755,11 @@ async function answerQuestion(
         question:
           cleanQuestion,
       });
+
+    localPlan =
+      repairReferentialScopePlan(
+        localPlan
+      );
 
     if (
       process.env.NODE_ENV !==
