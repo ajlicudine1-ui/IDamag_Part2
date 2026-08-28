@@ -3771,10 +3771,27 @@ function buildOneToManyListAnswer({
   }
 
   /**
-   * Multiple rows but one shared requested value:
-   * return that value once instead of repeating it.
+   * Preserve row-level context whenever MORE THAN ONE row matches.
+   *
+   * Example:
+   *   Municipality = San Emilo
+   *
+   * Matching rows:
+   *   Lancuas
+   *   Kalumsing
+   *   Sibsibbu
+   *
+   * Even if all three rows have the SAME requested value, keep each
+   * matched row visible:
+   *
+   *   Lancuas — <value>
+   *   Kalumsing — <value>
+   *   Sibsibbu — <value>
+   *
+   * Only a true single-row match may return the value by itself.
    */
   if (
+    rows.length === 1 &&
     uniqueSubjects.length ===
       1
   ) {
