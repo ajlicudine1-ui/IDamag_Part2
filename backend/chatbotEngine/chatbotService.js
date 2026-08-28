@@ -3346,6 +3346,7 @@ function extractFollowUpTargetPhrase(
 function inferApproximateFollowUpFilter({
   rows,
   question,
+  preferredColumns = [],
 }) {
   if (
     !Array.isArray(
@@ -3376,10 +3377,38 @@ function inferApproximateFollowUpFilter({
     return [];
   }
 
-  const columns =
+  const allColumns =
     Object.keys(
       rows[0] || {}
     );
+
+  const preferred =
+    Array.isArray(
+      preferredColumns
+    )
+      ? preferredColumns.filter(
+          (column) =>
+            allColumns.includes(
+              column
+            )
+        )
+      : [];
+
+  const preferredSet =
+    new Set(
+      preferred
+    );
+
+  const columns = [
+    ...preferred,
+
+    ...allColumns.filter(
+      (column) =>
+        !preferredSet.has(
+          column
+        )
+    ),
+  ];
 
   const candidates = [];
 
@@ -3491,8 +3520,38 @@ function inferApproximateFollowUpFilter({
           );
       }
 
+      const preferredColumn =
+        preferredSet.has(
+          column
+        );
+
+      /**
+       * Strong conversational continuity:
+       * if the previous verified scope was Municipality, Division,
+       * Province, Status, etc., search that SAME column first.
+       *
+       * This lets:
+       *   Municipality = Solsona
+       *   "What about San Emilio?"
+       * resolve against Municipality values before scanning unrelated
+       * columns.
+       */
+      const effectiveScore =
+        preferredColumn
+          ? Math.min(
+              1,
+              score + 0.08
+            )
+          : score;
+
+      const threshold =
+        preferredColumn
+          ? 0.72
+          : 0.82;
+
       if (
-        score >= 0.82
+        effectiveScore >=
+          threshold
       ) {
         candidates.push({
           column,
@@ -3500,7 +3559,10 @@ function inferApproximateFollowUpFilter({
           value:
             value.raw,
 
-          score,
+          score:
+            effectiveScore,
+
+          preferredColumn,
         });
       }
     }
@@ -3526,8 +3588,14 @@ function inferApproximateFollowUpFilter({
    * Require a confident match and avoid ambiguous near-ties across
    * different values.
    */
+  const minimumScore =
+    best.preferredColumn
+      ? 0.78
+      : 0.86;
+
   if (
-    best.score < 0.86
+    best.score <
+      minimumScore
   ) {
     return [];
   }
@@ -3539,7 +3607,12 @@ function inferApproximateFollowUpFilter({
     Math.abs(
       best.score -
       second.score
-    ) < 0.03
+    ) <
+      (
+        best.preferredColumn
+          ? 0.02
+          : 0.03
+      )
   ) {
     return [];
   }
@@ -10608,6 +10681,23 @@ async function answerQuestion(
         ) ||
         !newlyMentionedFilters.length
       ) {
+        /**
+         * Same-column continuity first.
+         *
+         * Use the previous verified scope column(s) as preferred columns.
+         * Example:
+         *   Municipality = Solsona
+         *   "What about San Emilio?"
+         * -> fuzzy-match Municipality values first.
+         */
+        const preferredScopeColumns =
+          [
+            ...findPreviousScopeFilterColumns({
+              context:
+                conversationContext,
+            }),
+          ];
+
         newlyMentionedFilters =
           inferApproximateFollowUpFilter({
             rows:
@@ -10615,6 +10705,9 @@ async function answerQuestion(
 
             question:
               cleanQuestion,
+
+            preferredColumns:
+              preferredScopeColumns,
           });
       }
 
