@@ -3056,6 +3056,405 @@ function scoreNaturalFieldPhrase(
 }
 
 
+function inferApproximateEntityFilterFromText({
+  rows,
+  identifierText,
+}) {
+  if (
+    !Array.isArray(rows) ||
+    !rows.length
+  ) {
+    return [];
+  }
+
+  const target =
+    normalizeText(
+      identifierText
+    );
+
+  if (!target) {
+    return [];
+  }
+
+  const candidates = [];
+
+  const columns =
+    Object.keys(
+      rows[0] || {}
+    );
+
+  for (const column of columns) {
+    const seen =
+      new Set();
+
+    for (const row of rows) {
+      const raw =
+        row?.[column];
+
+      if (
+        raw === null ||
+        raw === undefined
+      ) {
+        continue;
+      }
+
+      const value =
+        String(raw).trim();
+
+      if (
+        !value ||
+        value.length > 120 ||
+        /^[-+]?\d[\d,]*(?:\.\d+)?$/.test(
+          value
+        )
+      ) {
+        continue;
+      }
+
+      const normalizedValue =
+        normalizeText(value);
+
+      if (
+        !normalizedValue ||
+        seen.has(normalizedValue)
+      ) {
+        continue;
+      }
+
+      seen.add(
+        normalizedValue
+      );
+
+      const score =
+        similarity(
+          target,
+          normalizedValue
+        );
+
+      if (score >= 0.82) {
+        candidates.push({
+          column,
+          value,
+          score,
+        });
+      }
+    }
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score - a.score
+  );
+
+  if (!candidates.length) {
+    return [];
+  }
+
+  if (
+    candidates.length > 1 &&
+    candidates[0].column !==
+      candidates[1].column &&
+    Math.abs(
+      candidates[0].score -
+      candidates[1].score
+    ) < 0.025
+  ) {
+    return [];
+  }
+
+  return [
+    {
+      column:
+        candidates[0].column,
+
+      operator:
+        "equals",
+
+      value:
+        candidates[0].value,
+    },
+  ];
+}
+
+
+/**
+ * Resolve standalone filtered numeric aggregate questions before Groq.
+ *
+ * Examples of the shape handled:
+ *   "what is the total <metric> in <entity>"
+ *   "what is the average <metric> for <entity>"
+ *
+ * Both the metric column and entity filter are discovered dynamically
+ * from the live schema/data. Minor wording typos are tolerated through
+ * existing schema similarity plus a conservative entity-value fallback.
+ */
+function resolveDirectFilteredAggregatePlan({
+  question,
+  schema,
+  datasets,
+}) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (!text) {
+    return null;
+  }
+
+  const aggregation =
+    detectQuestionAggregation(
+      question
+    );
+
+  if (
+    !aggregation ||
+    ![
+      "sum",
+      "average",
+      "count",
+    ].includes(
+      aggregation
+    )
+  ) {
+    return null;
+  }
+
+  const match =
+    text.match(
+      /^(?:what|which|show|give|tell me|get|find|calculate|compute)\s+(?:(?:is|are|was|were)\s+)?(?:the\s+)?(.+?)\s+(?:in|at|within|inside|under|for|from)\s+(.+?)\??$/
+    );
+
+  if (
+    !match?.[1] ||
+    !match?.[2]
+  ) {
+    return null;
+  }
+
+  const requestedPhrase =
+    match[1]
+      .replace(
+        /\b(?:total|sum|combined|overall|altogether|average|avg|mean|count|number of|how many)\b/g,
+        " "
+      )
+      .replace(
+        /\s+/g,
+        " "
+      )
+      .trim();
+
+  const identifierText =
+    match[2]
+      .replace(
+        /[?.!]+$/g,
+        ""
+      )
+      .trim();
+
+  if (
+    !requestedPhrase ||
+    !identifierText
+  ) {
+    return null;
+  }
+
+  const candidates = [];
+
+  for (
+    const datasetSchema
+    of schema || []
+  ) {
+    const datasetName =
+      datasetSchema?.name;
+
+    const rows =
+      datasets?.[
+        datasetName
+      ];
+
+    if (
+      !datasetName ||
+      !Array.isArray(rows) ||
+      !rows.length
+    ) {
+      continue;
+    }
+
+    let filters =
+      inferCoherentFilters(
+        rows,
+        identifierText
+      );
+
+    if (
+      !Array.isArray(filters) ||
+      !filters.length
+    ) {
+      filters =
+        inferApproximateEntityFilterFromText({
+          rows,
+          identifierText,
+        });
+    }
+
+    if (
+      !Array.isArray(filters) ||
+      !filters.length
+    ) {
+      continue;
+    }
+
+    const metric =
+      inferRequestedColumnFromQuestion({
+        schema,
+        question:
+          requestedPhrase,
+
+        preferredDataset:
+          datasetName,
+
+        excludedColumns:
+          filters.map(
+            (filter) =>
+              filter?.column
+          ),
+      });
+
+    if (
+      !metric ||
+      metric.dataset !==
+        datasetName
+    ) {
+      continue;
+    }
+
+    const columnMeta =
+      (datasetSchema.columns || [])
+        .find(
+          (column) =>
+            column?.name ===
+              metric.column
+        );
+
+    /**
+     * Sum/average should target numeric data.
+     * Count can operate without forcing a numeric metric.
+     */
+    if (
+      aggregation !== "count" &&
+      columnMeta?.type &&
+      columnMeta.type !==
+        "number"
+    ) {
+      continue;
+    }
+
+    candidates.push({
+      dataset:
+        datasetName,
+
+      column:
+        metric.column,
+
+      score:
+        metric.score || 0,
+
+      filters,
+    });
+  }
+
+  if (!candidates.length) {
+    return null;
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score - a.score
+  );
+
+  if (
+    candidates.length > 1 &&
+    candidates[0].dataset !==
+      candidates[1].dataset &&
+    Math.abs(
+      candidates[0].score -
+      candidates[1].score
+    ) < 0.03
+  ) {
+    return null;
+  }
+
+  const best =
+    candidates[0];
+
+  const operation =
+    aggregation === "count"
+      ? "non_empty_count"
+      : aggregation;
+
+  return {
+    route:
+      "dataset",
+
+    dataset:
+      best.dataset,
+
+    operation,
+
+    column:
+      best.column,
+
+    labelColumn:
+      null,
+
+    groupBy:
+      null,
+
+    aggregation:
+      aggregation === "count"
+        ? "count"
+        : aggregation,
+
+    direction:
+      null,
+
+    filters:
+      best.filters.map(
+        (filter) => ({
+          ...filter,
+
+          value:
+            Array.isArray(
+              filter?.value
+            )
+              ? [...filter.value]
+              : filter?.value,
+        })
+      ),
+
+    selectColumns: [
+      best.column,
+    ],
+
+    outputRequested:
+      true,
+
+    transform:
+      null,
+
+    limit:
+      10,
+
+    showAll:
+      false,
+
+    directFilteredAggregate:
+      true,
+  };
+}
+
+
 function resolveDirectFilteredFieldPlan({
   question,
   schema,
@@ -11129,6 +11528,58 @@ async function answerQuestion(
 
 
 
+
+
+  // ========================================================
+  // DIRECT FILTERED NUMERIC AGGREGATE — PLANNER INDEPENDENT
+  // ========================================================
+  //
+  // Resolve standalone questions such as:
+  //   "what is the total <metric> in <entity>?"
+  // before Groq can unnecessarily ask which metric column to use.
+  //
+  // Numeric aggregate answers remain scalar; they are intentionally NOT
+  // rendered using the one-to-many "label — value" formatter.
+  //
+  const directFilteredAggregatePlan =
+    resolveDirectFilteredAggregatePlan({
+      question:
+        cleanQuestion,
+
+      schema,
+
+      datasets,
+    });
+
+  if (
+    directFilteredAggregatePlan
+  ) {
+    if (
+      process.env.NODE_ENV !==
+        "production"
+    ) {
+      console.log(
+        "Chatbot direct filtered-aggregate plan:",
+        JSON.stringify(
+          directFilteredAggregatePlan,
+          null,
+          2
+        )
+      );
+    }
+
+    const directFilteredAggregateResult =
+      await executeResolvedPlan(
+        directFilteredAggregatePlan
+      );
+
+    return {
+      ...directFilteredAggregateResult,
+
+      plannerSource:
+        "conversation-local",
+    };
+  }
 
 
   // ========================================================
