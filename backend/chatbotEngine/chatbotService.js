@@ -2912,6 +2912,396 @@ function inferRememberedSubjectColumn({
 
 
 
+
+function tokenizeSchemaPhrase(
+  value
+) {
+  return normalizeText(
+    value
+  )
+    .replace(
+      /&/g,
+      " and "
+    )
+    .replace(
+      /[^\p{L}\p{N}\s]/gu,
+      " "
+    )
+    .split(
+      /\s+/
+    )
+    .map(
+      (token) =>
+        token.trim()
+    )
+    .filter(Boolean)
+    .map(
+      (token) => {
+        if (
+          token.endsWith(
+            "ies"
+          ) &&
+          token.length > 3
+        ) {
+          return (
+            token.slice(
+              0,
+              -3
+            ) +
+            "y"
+          );
+        }
+
+        if (
+          token.endsWith(
+            "s"
+          ) &&
+          !token.endsWith(
+            "ss"
+          ) &&
+          token.length > 3
+        ) {
+          return token.slice(
+            0,
+            -1
+          );
+        }
+
+        return token;
+      }
+    );
+}
+
+
+function scoreNaturalFieldPhrase(
+  requestedPhrase,
+  columnName
+) {
+  const requestedTokens =
+    tokenizeSchemaPhrase(
+      requestedPhrase
+    );
+
+  const columnTokens =
+    tokenizeSchemaPhrase(
+      columnName
+    );
+
+  if (
+    !requestedTokens.length ||
+    !columnTokens.length
+  ) {
+    return 0;
+  }
+
+  const requestedSet =
+    new Set(
+      requestedTokens
+    );
+
+  const columnSet =
+    new Set(
+      columnTokens
+    );
+
+  const overlap =
+    requestedTokens.filter(
+      (token) =>
+        columnSet.has(
+          token
+        )
+    ).length;
+
+  const coverage =
+    overlap /
+    requestedTokens.length;
+
+  const reverseCoverage =
+    overlap /
+    columnTokens.length;
+
+  const compactRequested =
+    requestedTokens.join(
+      " "
+    );
+
+  const compactColumn =
+    columnTokens.join(
+      " "
+    );
+
+  let score =
+    coverage *
+      1.5 +
+    reverseCoverage *
+      0.5;
+
+  if (
+    compactRequested ===
+      compactColumn
+  ) {
+    score += 1.5;
+  } else if (
+    compactColumn.includes(
+      compactRequested
+    ) ||
+    compactRequested.includes(
+      compactColumn
+    )
+  ) {
+    score += 0.75;
+  }
+
+  return score;
+}
+
+
+function resolveDirectFilteredFieldPlan({
+  question,
+  schema,
+  datasets,
+}) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (!text) {
+    return null;
+  }
+
+  /**
+   * Direct field + entity/location/value questions.
+   *
+   * Examples:
+   *   "What are the climate related risks in Solsona?"
+   *   "What are the commodities in Dingras?"
+   *   "Which projects are in San Fernando?"
+   *   "What is the enterprise in Barangay X?"
+   *
+   * The field and filter value are both resolved from live schema/data.
+   */
+  const match =
+    text.match(
+      /^(?:what|which|who|show|give|list|display|tell me|get|find)\s+(?:(?:is|are|was|were)\s+)?(?:the\s+)?(.+?)\s+(?:in|at|within|inside|under|for|from|of)\s+(.+?)\??$/
+    );
+
+  if (
+    !match?.[1] ||
+    !match?.[2]
+  ) {
+    return null;
+  }
+
+  const requestedPhrase =
+    match[1]
+      .trim();
+
+  const identifierText =
+    match[2]
+      .replace(
+        /[?.!]+$/g,
+        ""
+      )
+      .trim();
+
+  if (
+    !requestedPhrase ||
+    !identifierText
+  ) {
+    return null;
+  }
+
+  const candidates = [];
+
+  for (
+    const datasetSchema
+    of schema || []
+  ) {
+    const rows =
+      datasets?.[
+        datasetSchema?.name
+      ];
+
+    if (
+      !Array.isArray(
+        rows
+      ) ||
+      !rows.length
+    ) {
+      continue;
+    }
+
+    const filters =
+      inferCoherentFilters(
+        rows,
+        identifierText
+      );
+
+    if (
+      !Array.isArray(
+        filters
+      ) ||
+      !filters.length
+    ) {
+      continue;
+    }
+
+    const columns =
+      Array.isArray(
+        datasetSchema.columns
+      )
+        ? datasetSchema.columns
+        : [];
+
+    const bestColumn =
+      columns
+        .map(
+          (column) => ({
+            column,
+
+            score:
+              scoreNaturalFieldPhrase(
+                requestedPhrase,
+                column?.name
+              ),
+          })
+        )
+        .sort(
+          (a, b) =>
+            b.score -
+            a.score
+        )[0] ||
+      null;
+
+    if (
+      !bestColumn ||
+      bestColumn.score <
+        1.0
+    ) {
+      continue;
+    }
+
+    candidates.push({
+      dataset:
+        datasetSchema.name,
+
+      column:
+        bestColumn.column.name,
+
+      fieldScore:
+        bestColumn.score,
+
+      filters,
+    });
+  }
+
+  if (!candidates.length) {
+    return null;
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.fieldScore -
+      a.fieldScore
+  );
+
+  const best =
+    candidates[0];
+
+  /**
+   * Avoid auto-picking when two worksheets are genuinely tied.
+   */
+  if (
+    candidates.length > 1 &&
+    Math.abs(
+      candidates[0].fieldScore -
+      candidates[1].fieldScore
+    ) <
+      0.05 &&
+    candidates[0].column !==
+      candidates[1].column
+  ) {
+    return null;
+  }
+
+  const asksForList =
+    /^(?:what|which)\s+are\b/.test(
+      text
+    ) ||
+    /^(?:show|give|list|display)\b/.test(
+      text
+    );
+
+  return {
+    route:
+      "dataset",
+
+    dataset:
+      best.dataset,
+
+    operation:
+      asksForList
+        ? "list"
+        : "lookup",
+
+    column:
+      best.column,
+
+    labelColumn:
+      asksForList
+        ? best.column
+        : null,
+
+    groupBy:
+      null,
+
+    aggregation:
+      null,
+
+    direction:
+      null,
+
+    filters:
+      best.filters.map(
+        (filter) => ({
+          ...filter,
+
+          value:
+            Array.isArray(
+              filter?.value
+            )
+              ? [
+                  ...filter.value,
+                ]
+              : filter?.value,
+        })
+      ),
+
+    selectColumns: [
+      best.column,
+    ],
+
+    outputRequested:
+      true,
+
+    transform:
+      null,
+
+    showAll:
+      asksForList,
+
+    limit:
+      asksForList
+        ? 100
+        : 10,
+
+    directFilteredField:
+      true,
+  };
+}
+
+
 function buildVerifiedListAnswer({
   result,
   subjectColumn = null,
@@ -9710,6 +10100,72 @@ async function answerQuestion(
     };
 
 
+
+
+
+  // ========================================================
+  // DIRECT FILTERED FIELD LOOKUP — PLANNER INDEPENDENT
+  // ========================================================
+  //
+  // Resolve field + value questions from live schema/data BEFORE
+  // Groq/local planning. This prevents unnecessary worksheet
+  // clarification when the requested field itself identifies the
+  // correct worksheet.
+  //
+  const directFilteredFieldPlan =
+    resolveDirectFilteredFieldPlan({
+      question:
+        cleanQuestion,
+
+      schema,
+
+      datasets,
+    });
+
+  if (
+    directFilteredFieldPlan
+  ) {
+    if (
+      process.env.NODE_ENV !==
+        "production"
+    ) {
+      console.log(
+        "Chatbot direct filtered-field plan:",
+        JSON.stringify(
+          directFilteredFieldPlan,
+          null,
+          2
+        )
+      );
+    }
+
+    const directFilteredFieldResult =
+      await executeResolvedPlan(
+        directFilteredFieldPlan
+      );
+
+    return {
+      ...directFilteredFieldResult,
+
+      answer:
+        directFilteredFieldPlan
+          .operation ===
+          "list"
+          ? buildVerifiedListAnswer({
+              result:
+                directFilteredFieldResult,
+
+              subjectColumn:
+                directFilteredFieldPlan
+                  .column,
+            })
+          : directFilteredFieldResult
+              .answer,
+
+      plannerSource:
+        "conversation-local",
+    };
+  }
 
 
   // ========================================================
