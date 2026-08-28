@@ -3305,47 +3305,102 @@ function resolveDirectFilteredAggregatePlan({
       continue;
     }
 
-    const metric =
-      inferRequestedColumnFromQuestion({
-        schema,
-        question:
-          requestedPhrase,
-
-        preferredDataset:
-          datasetName,
-
-        excludedColumns:
-          filters.map(
+    const excludedColumns =
+      new Set(
+        filters
+          .map(
             (filter) =>
-              filter?.column
-          ),
-      });
+              normalizeText(
+                filter?.column
+              )
+          )
+          .filter(Boolean)
+      );
+
+    const metricCandidates =
+      (datasetSchema.columns || [])
+        .filter(
+          (column) =>
+            column?.name &&
+            !excludedColumns.has(
+              normalizeText(
+                column.name
+              )
+            )
+        )
+        .filter(
+          (column) =>
+            aggregation ===
+              "count" ||
+            isNumericLikeColumn({
+              column,
+              rows,
+            })
+        )
+        .map(
+          (column) => {
+            const naturalScore =
+              scoreNaturalFieldPhrase(
+                requestedPhrase,
+                column.name
+              );
+
+            const fuzzyScore =
+              similarity(
+                normalizeText(
+                  requestedPhrase
+                ),
+                normalizeText(
+                  column.name
+                )
+              );
+
+            /**
+             * scoreNaturalFieldPhrase rewards shared schema words while
+             * similarity tolerates small typing errors such as
+             * "land are" -> "land area".
+             */
+            const score =
+              Math.max(
+                naturalScore,
+                fuzzyScore * 2.5
+              );
+
+            return {
+              column,
+              score,
+            };
+          }
+        )
+        .sort(
+          (a, b) =>
+            b.score -
+            a.score
+        );
+
+    const metric =
+      metricCandidates[0] ||
+      null;
 
     if (
       !metric ||
-      metric.dataset !==
-        datasetName
+      metric.score < 1.15
     ) {
       continue;
     }
 
-    const columnMeta =
-      (datasetSchema.columns || [])
-        .find(
-          (column) =>
-            column?.name ===
-              metric.column
-        );
-
     /**
-     * Sum/average should target numeric data.
-     * Count can operate without forcing a numeric metric.
+     * If two different metrics are effectively tied, do not guess.
      */
     if (
-      aggregation !== "count" &&
-      columnMeta?.type &&
-      columnMeta.type !==
-        "number"
+      metricCandidates.length >
+        1 &&
+      Math.abs(
+        metricCandidates[0]
+          .score -
+        metricCandidates[1]
+          .score
+      ) < 0.08
     ) {
       continue;
     }
@@ -3355,10 +3410,10 @@ function resolveDirectFilteredAggregatePlan({
         datasetName,
 
       column:
-        metric.column,
+        metric.column.name,
 
       score:
-        metric.score || 0,
+        metric.score,
 
       filters,
     });
@@ -3531,11 +3586,29 @@ function resolveDirectFilteredFieldPlan({
       continue;
     }
 
-    const filters =
+    let filters =
       inferCoherentFilters(
         rows,
         identifierText
       );
+
+    /**
+     * The typed entity can differ slightly from the stored value
+     * (for example a small spelling typo). Use the same conservative,
+     * data-driven fuzzy entity recovery used by numeric aggregates.
+     */
+    if (
+      !Array.isArray(
+        filters
+      ) ||
+      !filters.length
+    ) {
+      filters =
+        inferApproximateEntityFilterFromText({
+          rows,
+          identifierText,
+        });
+    }
 
     if (
       !Array.isArray(
