@@ -12688,8 +12688,91 @@ async function answerQuestion(
           groqPlan
         );
 
+      let finalAnswer =
+        result.answer;
+
+      let oneToManyResolved =
+        undefined;
+
+      /**
+       * ======================================================
+       * GENERIC ONE-TO-MANY LIST RENDERING FOR GROQ PLANS
+       * ======================================================
+       *
+       * calculationEngine may correctly deduplicate a list result:
+       *
+       *   results: ["shared value"]
+       *
+       * even though the verified filters matched several source rows.
+       *
+       * For conversational field lookups, preserve those row identities
+       * in the final answer by formatting the FILTERED SOURCE ROWS rather
+       * than only the deduplicated result array.
+       *
+       * No worksheet, field name, filter column, or data value is
+       * hardcoded here.
+       */
+      if (
+        String(
+          groqPlan.operation ||
+          ""
+        )
+          .trim()
+          .toLowerCase() ===
+          "list" &&
+        groqPlan.column &&
+        Array.isArray(
+          groqPlan.filters
+        ) &&
+        groqPlan.filters.length
+      ) {
+        const sourceRows =
+          Array.isArray(
+            datasets?.[
+              groqPlan.dataset
+            ]
+          )
+            ? datasets[
+                groqPlan.dataset
+              ]
+            : [];
+
+        const matchingRows =
+          filterRowsBySimpleFilters(
+            sourceRows,
+            groqPlan.filters
+          );
+
+        if (matchingRows.length) {
+          const rowAwareAnswer =
+            buildOneToManyListAnswer({
+              rows:
+                matchingRows,
+
+              subjectColumn:
+                groqPlan.column,
+
+              filters:
+                groqPlan.filters,
+            });
+
+          if (rowAwareAnswer) {
+            finalAnswer =
+              rowAwareAnswer;
+
+            oneToManyResolved =
+              matchingRows.length > 1;
+          }
+        }
+      }
+
       return {
         ...result,
+
+        answer:
+          finalAnswer,
+
+        oneToManyResolved,
 
         plannerSource:
           "groq",
@@ -12832,8 +12915,77 @@ async function answerQuestion(
         localPlan
       );
 
+    let finalAnswer =
+      result.answer;
+
+    let oneToManyResolved =
+      undefined;
+
+    /**
+     * Apply the same row-aware list rendering to local-fallback plans so
+     * Groq availability does not change conversational output semantics.
+     */
+    if (
+      String(
+        localPlan.operation ||
+        ""
+      )
+        .trim()
+        .toLowerCase() ===
+        "list" &&
+      localPlan.column &&
+      Array.isArray(
+        localPlan.filters
+      ) &&
+      localPlan.filters.length
+    ) {
+      const sourceRows =
+        Array.isArray(
+          datasets?.[
+            localPlan.dataset
+          ]
+        )
+          ? datasets[
+              localPlan.dataset
+            ]
+          : [];
+
+      const matchingRows =
+        filterRowsBySimpleFilters(
+          sourceRows,
+          localPlan.filters
+        );
+
+      if (matchingRows.length) {
+        const rowAwareAnswer =
+          buildOneToManyListAnswer({
+            rows:
+              matchingRows,
+
+            subjectColumn:
+              localPlan.column,
+
+            filters:
+              localPlan.filters,
+          });
+
+        if (rowAwareAnswer) {
+          finalAnswer =
+            rowAwareAnswer;
+
+          oneToManyResolved =
+            matchingRows.length > 1;
+        }
+      }
+    }
+
     return {
       ...result,
+
+      answer:
+        finalAnswer,
+
+      oneToManyResolved,
 
       plannerSource:
         "local-fallback",
