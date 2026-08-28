@@ -3680,6 +3680,40 @@ function chooseDistinguishingColumn({
 }
 
 
+
+function isLikelyIdentityOutputColumn(
+  columnName
+) {
+  const text =
+    normalizeExplicitColumnText(
+      columnName
+    );
+
+  if (!text) {
+    return false;
+  }
+
+  /**
+   * Generic identity/display semantics only.
+   *
+   * Examples:
+   *   Name of Association
+   *   Employee Name
+   *   Project Title
+   *   Registration Number
+   *   Farm ID
+   *
+   * These are already meaningful labels by themselves, so a one-to-many
+   * formatter should not prepend an unrelated discriminator such as a date.
+   *
+   * This is schema-semantic, not dataset-specific.
+   */
+  return /\b(?:name|title|identifier|id|code|number|no)\b/.test(
+    text
+  );
+}
+
+
 function buildOneToManyListAnswer({
   rows,
   subjectColumn,
@@ -3745,6 +3779,39 @@ function buildOneToManyListAnswer({
       1
   ) {
     return uniqueSubjects[0];
+  }
+
+  /**
+   * If the requested output column is itself an identity/display field,
+   * list those values directly.
+   *
+   * Example:
+   *   subjectColumn = "Name of Association"
+   *
+   * Correct:
+   *   1. Association A
+   *   2. Association B
+   *
+   * Wrong:
+   *   14-Oct-15 — Association A
+   *   03-Aug-18 — Association B
+   *
+   * A discriminator is useful only when the requested values are
+   * descriptive/non-identity outputs that need row context.
+   */
+  if (
+    isLikelyIdentityOutputColumn(
+      subjectColumn
+    )
+  ) {
+    return uniqueSubjects
+      .map(
+        (value, index) =>
+          `${index + 1}. ${value}`
+      )
+      .join(
+        "\n"
+      );
   }
 
   const discriminator =
