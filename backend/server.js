@@ -5,6 +5,7 @@ const cors = corsModule.default || corsModule;
 
 const dotenv = require("dotenv");
 const bcrypt = require("bcryptjs");
+const { google } = require("googleapis");
 
 // Load environment variables before database/model modules.
 dotenv.config();
@@ -381,6 +382,189 @@ app.post("/api/login", async (req, res) => {
     });
   }
 });
+
+
+// ============================================================
+// GOOGLE OAUTH TOKEN HELPER
+// Temporary setup helper for obtaining a Google refresh token.
+// Remove these routes after GOOGLE_REFRESH_TOKEN is saved in Vercel.
+// ============================================================
+
+function getGoogleOAuthClient() {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const redirectUri =
+    process.env.GOOGLE_REDIRECT_URI ||
+    "https://i-damag-part2.vercel.app/api/google/callback";
+
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured in the server environment."
+    );
+  }
+
+  return new google.auth.OAuth2(
+    clientId,
+    clientSecret,
+    redirectUri
+  );
+}
+
+app.get("/api/google/connect", (req, res) => {
+  try {
+    const oauth2Client = getGoogleOAuthClient();
+
+    const authUrl = oauth2Client.generateAuthUrl({
+      access_type: "offline",
+      prompt: "consent",
+      scope: [
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+      ],
+    });
+
+    return res.redirect(authUrl);
+  } catch (error) {
+    console.error("GOOGLE OAUTH CONNECT ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+app.get("/api/google/callback", async (req, res) => {
+  try {
+    const code = String(req.query.code || "").trim();
+
+    if (!code) {
+      return res.status(400).send(
+        "Google did not return an authorization code."
+      );
+    }
+
+    const oauth2Client = getGoogleOAuthClient();
+    const { tokens } = await oauth2Client.getToken(code);
+
+    if (!tokens.refresh_token) {
+      return res
+        .status(400)
+        .type("html")
+        .send(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>I-DAMAG Google Authorization</title>
+</head>
+<body style="font-family:Arial,sans-serif;padding:40px;line-height:1.6">
+  <h1>No refresh token was returned</h1>
+  <p>
+    Open <strong>/api/google/connect</strong> again and make sure you approve
+    access. The route already requests <code>prompt=consent</code>.
+  </p>
+  <p>
+    If the Google account previously authorized this OAuth client, revoke the
+    I-DAMAG connection in your Google Account permissions and try again.
+  </p>
+</body>
+</html>`);
+    }
+
+    // Intentionally do NOT log the refresh token to Vercel logs.
+    // It is shown once in the browser so the administrator can copy it
+    // directly into Vercel Environment Variables.
+    const escapedToken = String(tokens.refresh_token)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+
+    return res
+      .status(200)
+      .type("html")
+      .send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>I-DAMAG Google Authorization</title>
+  <style>
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      background: #f5f7f6;
+      color: #1f2937;
+      margin: 0;
+      padding: 32px;
+    }
+    main {
+      max-width: 820px;
+      margin: 30px auto;
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 14px;
+      padding: 32px;
+    }
+    h1 { color: #176b3a; }
+    code, textarea {
+      width: 100%;
+      box-sizing: border-box;
+      font-family: Consolas, monospace;
+    }
+    textarea {
+      min-height: 130px;
+      padding: 12px;
+      resize: vertical;
+    }
+    .warning {
+      background: #fff8e1;
+      border-left: 4px solid #d69e2e;
+      padding: 12px 14px;
+      margin: 18px 0;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Google authorization completed</h1>
+    <p>
+      Copy the refresh token below directly into Vercel as
+      <strong>GOOGLE_REFRESH_TOKEN</strong>.
+    </p>
+    <div class="warning">
+      Treat this token like a password. Do not send it in chat, email, screenshots,
+      or source control. After saving it in Vercel and confirming the live Sheets
+      reader works, remove these temporary OAuth helper routes.
+    </div>
+    <textarea readonly onclick="this.select()">${escapedToken}</textarea>
+    <p>
+      Also make sure Vercel contains <strong>GOOGLE_CLIENT_ID</strong>,
+      <strong>GOOGLE_CLIENT_SECRET</strong>, and
+      <strong>GOOGLE_REDIRECT_URI</strong>.
+    </p>
+  </main>
+</body>
+</html>`);
+  } catch (error) {
+    console.error(
+      "GOOGLE OAUTH CALLBACK ERROR:",
+      error?.message || error
+    );
+
+    return res
+      .status(500)
+      .type("html")
+      .send(
+        `<h1>Google authorization failed</h1><p>${String(
+          error?.message || "Unknown OAuth error"
+        )
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")}</p>`
+      );
+  }
+});
+
 
 // ============================================================
 // TEST CONNECTION
@@ -2253,176 +2437,6 @@ app.get("/api/feedback/website", async (req, res) => {
     });
   }
 });
-
-
-// ============================================================
-// PRIVACY POLICY
-// IMPORTANT: Vercel routes only /api/* requests to this backend.
-// Therefore the public Google OAuth privacy-policy URL is /api/privacy.
-// ============================================================
-
-function renderPrivacyPolicyPage() {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>I-DAMAG Privacy Policy</title>
-  <style>
-    :root {
-      color-scheme: light;
-      font-family: Arial, Helvetica, sans-serif;
-    }
-
-    * { box-sizing: border-box; }
-
-    body {
-      margin: 0;
-      background: #f5f7f6;
-      color: #1f2937;
-      line-height: 1.65;
-    }
-
-    main {
-      width: min(920px, calc(100% - 32px));
-      margin: 48px auto;
-      background: #ffffff;
-      border: 1px solid #e5e7eb;
-      border-radius: 16px;
-      padding: 40px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05);
-    }
-
-    h1 {
-      margin-top: 0;
-      color: #176b3a;
-      font-size: 2rem;
-    }
-
-    h2 {
-      margin-top: 2rem;
-      color: #245c3a;
-      font-size: 1.2rem;
-    }
-
-    p, li { font-size: 1rem; }
-
-    .updated {
-      color: #6b7280;
-      margin-top: -8px;
-    }
-
-    .notice {
-      padding: 16px 18px;
-      background: #f0f8f3;
-      border-left: 4px solid #2f855a;
-      border-radius: 8px;
-    }
-
-    a { color: #176b3a; }
-
-    @media (max-width: 640px) {
-      main {
-        margin: 16px auto;
-        padding: 24px;
-      }
-    }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>I-DAMAG Privacy Policy</h1>
-    <p class="updated">Last updated: September 2, 2026</p>
-
-    <p>
-      I-DAMAG is an information and dashboard management system used to
-      organize, retrieve, and present report data. This Privacy Policy explains
-      how I-DAMAG handles information when Google services are connected to the
-      application.
-    </p>
-
-    <div class="notice">
-      I-DAMAG requests read-only access to Google Sheets only when that access
-      is required to retrieve spreadsheet data that the authorized Google
-      account is already permitted to view.
-    </div>
-
-    <h2>Information I-DAMAG accesses</h2>
-    <p>
-      When Google Sheets access is authorized, I-DAMAG may read spreadsheet
-      contents and worksheet metadata needed to provide dashboard and chatbot
-      features. I-DAMAG does not request permission to edit, delete, or modify
-      Google Sheets through the read-only Google Sheets permission.
-    </p>
-
-    <h2>How Google Sheets data is used</h2>
-    <p>
-      Spreadsheet data is used only to provide I-DAMAG features such as report
-      retrieval, dashboard support, data analysis, and answers generated by the
-      application's chatbot. Access is limited to data required for these
-      functions.
-    </p>
-
-    <h2>Google account permissions</h2>
-    <p>
-      I-DAMAG cannot access a spreadsheet that the authorized Google account
-      does not have permission to view. Google authorization does not bypass
-      Google Drive or Google Sheets sharing permissions.
-    </p>
-
-    <h2>Data sharing</h2>
-    <p>
-      I-DAMAG does not sell Google user data. Google Sheets information is not
-      shared with third parties for advertising purposes. Data may be processed
-      only as necessary to operate the application's requested features and
-      supporting services.
-    </p>
-
-    <h2>Data storage and security</h2>
-    <p>
-      Authentication credentials and tokens used by the server are intended to
-      be stored securely in server-side environment variables or protected
-      server-side storage and are not intentionally exposed in the browser.
-      Reasonable technical measures are used to protect application data and
-      credentials from unauthorized access.
-    </p>
-
-    <h2>Revoking access</h2>
-    <p>
-      Users may revoke I-DAMAG's Google account access at any time through
-      their Google Account security settings. Revoking access prevents future
-      authenticated requests that depend on that authorization.
-    </p>
-
-    <h2>Changes to this policy</h2>
-    <p>
-      This policy may be updated when I-DAMAG's features or data-handling
-      practices change. The latest version will be available on this page.
-    </p>
-
-    <h2>Contact</h2>
-    <p>
-      Questions about this Privacy Policy or I-DAMAG's handling of Google data
-      may be sent to
-      <a href="mailto:ajlicudine1@gmail.com">ajlicudine1@gmail.com</a>.
-    </p>
-  </main>
-</body>
-</html>`;
-}
-
-const sendPrivacyPolicy = (req, res) => {
-  res.status(200).type("html").send(renderPrivacyPolicyPage());
-};
-
-// Production/Vercel route: /api/* is routed to the backend service.
-app.get("/api/privacy", sendPrivacyPolicy);
-app.get("/api/privacy-policy", sendPrivacyPolicy);
-
-// Local-development aliases.
-app.get("/privacy", sendPrivacyPolicy);
-app.get("/privacy-policy", sendPrivacyPolicy);
-
 
 // ============================================================
 // ROOT
