@@ -2257,7 +2257,8 @@ app.get("/api/feedback/website", async (req, res) => {
 
 // ============================================================
 // PRIVACY POLICY
-// Public page used by Google OAuth consent-screen configuration.
+// IMPORTANT: Vercel routes only /api/* requests to this backend.
+// Therefore the public Google OAuth privacy-policy URL is /api/privacy.
 // ============================================================
 
 function renderPrivacyPolicyPage() {
@@ -2273,9 +2274,7 @@ function renderPrivacyPolicyPage() {
       font-family: Arial, Helvetica, sans-serif;
     }
 
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
@@ -2306,10 +2305,7 @@ function renderPrivacyPolicyPage() {
       font-size: 1.2rem;
     }
 
-    p,
-    li {
-      font-size: 1rem;
-    }
+    p, li { font-size: 1rem; }
 
     .updated {
       color: #6b7280;
@@ -2323,9 +2319,7 @@ function renderPrivacyPolicyPage() {
       border-radius: 8px;
     }
 
-    a {
-      color: #176b3a;
-    }
+    a { color: #176b3a; }
 
     @media (max-width: 640px) {
       main {
@@ -2417,20 +2411,17 @@ function renderPrivacyPolicyPage() {
 </html>`;
 }
 
-app.get("/privacy", (req, res) => {
-  res
-    .status(200)
-    .type("html")
-    .send(renderPrivacyPolicyPage());
-});
+const sendPrivacyPolicy = (req, res) => {
+  res.status(200).type("html").send(renderPrivacyPolicyPage());
+};
 
-// Optional alias in case the policy URL is later configured with this path.
-app.get("/privacy-policy", (req, res) => {
-  res
-    .status(200)
-    .type("html")
-    .send(renderPrivacyPolicyPage());
-});
+// Production/Vercel route: /api/* is routed to the backend service.
+app.get("/api/privacy", sendPrivacyPolicy);
+app.get("/api/privacy-policy", sendPrivacyPolicy);
+
+// Local-development aliases.
+app.get("/privacy", sendPrivacyPolicy);
+app.get("/privacy-policy", sendPrivacyPolicy);
 
 
 // ============================================================
