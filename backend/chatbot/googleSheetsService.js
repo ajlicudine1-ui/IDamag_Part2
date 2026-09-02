@@ -6,7 +6,40 @@ const { parse } = require("csv-parse/sync");
  */
 function withCacheBuster(csvUrl) {
   const separator = csvUrl.includes("?") ? "&" : "?";
-  return `${csvUrl}${separator}_ts=${Date.now()}`;
+  return `${csvUrl}${separator}_ts=${Date.now()}_${Math.random()
+    .toString(36)
+    .slice(2)}`;
+}
+
+/**
+ * Converts a normal Google Sheets export CSV URL into the gviz CSV
+ * endpoint. The gviz endpoint reads the current worksheet values and is
+ * less prone to serving an older generated export snapshot.
+ *
+ * This is generic: spreadsheet ID and worksheet GID are extracted from
+ * the configured URL at runtime.
+ */
+function buildLiveCsvUrl(csvUrl) {
+  const spreadsheetMatch = String(csvUrl).match(
+    /\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/
+  );
+
+  const gidMatch = String(csvUrl).match(
+    /[?&]gid=([^&]+)/
+  );
+
+  if (!spreadsheetMatch || !gidMatch) {
+    return withCacheBuster(csvUrl);
+  }
+
+  const spreadsheetId = spreadsheetMatch[1];
+  const gid = decodeURIComponent(gidMatch[1]);
+
+  return withCacheBuster(
+    `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&gid=${encodeURIComponent(
+      gid
+    )}`
+  );
 }
 
 /**
@@ -22,7 +55,13 @@ async function loadPublishedWorksheet(csvUrl) {
     throw new Error("The Google Sheets CSV URL must start with https://");
   }
 
-  const freshUrl = withCacheBuster(csvUrl);
+  const freshUrl = buildLiveCsvUrl(csvUrl);
+
+  const requestedAt = new Date().toISOString();
+
+  console.log(
+    `[Google Sheets] Fresh fetch started at ${requestedAt}`
+  );
 
   const response = await fetch(freshUrl, {
     method: "GET",
@@ -42,6 +81,10 @@ async function loadPublishedWorksheet(csvUrl) {
 
   const csvText = await response.text();
 
+  console.log(
+    `[Google Sheets] Fresh response received: ${csvText.length} CSV character(s).`
+  );
+
   if (
     csvText.toLowerCase().includes("<!doctype html") ||
     csvText.toLowerCase().includes("<html")
@@ -59,7 +102,7 @@ async function loadPublishedWorksheet(csvUrl) {
     relax_column_count: true,
   });
 
-  return rows.map((row) => {
+  const cleanedRows = rows.map((row) => {
     const cleanedRow = {};
 
     for (const [columnName, value] of Object.entries(row)) {
@@ -75,6 +118,12 @@ async function loadPublishedWorksheet(csvUrl) {
 
     return cleanedRow;
   });
+
+  console.log(
+    `[Google Sheets] Parsed ${cleanedRows.length} current row(s).`
+  );
+
+  return cleanedRows;
 }
 
 /**
@@ -125,6 +174,7 @@ async function loadDivisionData(divisionConfig) {
 
 module.exports = {
   withCacheBuster,
+  buildLiveCsvUrl,
   loadPublishedWorksheet,
   loadDivisionData,
 };
