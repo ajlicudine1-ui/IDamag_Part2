@@ -1,8 +1,9 @@
 const { parse } = require("csv-parse/sync");
+const { google } = require("googleapis");
 
 /**
- * Adds a cache-busting query parameter so each request asks Google
- * for the latest published CSV instead of reusing a stale cached URL.
+ * Adds a cache-busting query parameter so each public fallback request asks
+ * Google for a fresh representation instead of reusing the same URL.
  */
 function withCacheBuster(csvUrl) {
   const separator = csvUrl.includes("?") ? "&" : "?";
@@ -11,40 +12,140 @@ function withCacheBuster(csvUrl) {
     .slice(2)}`;
 }
 
-/**
- * Converts a normal Google Sheets export CSV URL into the gviz CSV
- * endpoint. The gviz endpoint reads the current worksheet values and is
- * less prone to serving an older generated export snapshot.
- *
- * This is generic: spreadsheet ID and worksheet GID are extracted from
- * the configured URL at runtime.
- */
-function buildLiveCsvUrl(csvUrl) {
-  const spreadsheetMatch = String(csvUrl).match(
-    /\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/
-  );
-
-  const gidMatch = String(csvUrl).match(
-    /[?&]gid=([^&]+)/
-  );
-
-  if (!spreadsheetMatch || !gidMatch) {
-    return withCacheBuster(csvUrl);
+function getGoogleSpreadsheetId(sheetUrl) {
+  if (!sheetUrl || typeof sheetUrl !== "string") {
+    throw new Error("A valid Google Sheets URL is required.");
   }
 
-  const spreadsheetId = spreadsheetMatch[1];
-  const gid = decodeURIComponent(gidMatch[1]);
+  const match = sheetUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
 
-  return withCacheBuster(
-    `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&gid=${encodeURIComponent(
-      gid
-    )}`
+  if (!match) {
+    throw new Error("Unable to determine the Google Spreadsheet ID.");
+  }
+
+  return match[1];
+}
+
+function cleanRows(rows) {
+  return rows.map((row) => {
+    const cleanedRow = {};
+
+    for (const [columnName, value] of Object.entries(row || {})) {
+      const cleanedColumnName = String(columnName || "").trim();
+
+      if (!cleanedColumnName) {
+        continue;
+      }
+
+      cleanedRow[cleanedColumnName] =
+        typeof value === "string" ? value.trim() : value;
+    }
+
+    return cleanedRow;
+  });
+}
+
+function valuesToObjects(values) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return [];
+  }
+
+  const headers = (values[0] || []).map((value) =>
+    String(value ?? "").trim()
   );
+
+  const rows = [];
+
+  for (const sourceRow of values.slice(1)) {
+    if (!Array.isArray(sourceRow)) {
+      continue;
+    }
+
+    const hasValue = sourceRow.some(
+      (value) => String(value ?? "").trim() !== ""
+    );
+
+    if (!hasValue) {
+      continue;
+    }
+
+    const row = {};
+
+    headers.forEach((header, index) => {
+      if (!header) {
+        return;
+      }
+
+      const value = sourceRow[index];
+      row[header] = value == null ? "" : String(value).trim();
+    });
+
+    rows.push(row);
+  }
+
+  return cleanRows(rows);
+}
+
+function createExistingOAuthClient() {
+  const clientId = String(process.env.GOOGLE_CLIENT_ID || "").trim();
+  const clientSecret = String(process.env.GOOGLE_CLIENT_SECRET || "").trim();
+  const refreshToken = String(process.env.GOOGLE_REFRESH_TOKEN || "").trim();
+
+  if (!clientId || !clientSecret || !refreshToken) {
+    return null;
+  }
+
+  const oauthClient = new google.auth.OAuth2(clientId, clientSecret);
+  oauthClient.setCredentials({ refresh_token: refreshToken });
+
+  return oauthClient;
 }
 
 /**
- * Downloads and converts one public Google Sheets CSV link
- * into an array of JavaScript objects.
+ * Preferred live reader.
+ *
+ * Reuses the Google OAuth credentials that the existing backend already uses
+ * for Google Drive. No new login page or per-dashboard hardcoding is needed.
+ * The configured worksheet name is used dynamically as the Sheets API range.
+ */
+async function loadWorksheetViaSheetsApi({ csvUrl, worksheetName }) {
+  const auth = createExistingOAuthClient();
+
+  if (!auth) {
+    throw new Error(
+      "Existing Google OAuth environment variables are not fully configured."
+    );
+  }
+
+  const spreadsheetId = getGoogleSpreadsheetId(csvUrl);
+  const safeSheetName = String(worksheetName || "").replace(/'/g, "''");
+
+  if (!safeSheetName) {
+    throw new Error("Worksheet name is required for the live Sheets API reader.");
+  }
+
+  const sheets = google.sheets({ version: "v4", auth });
+
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `'${safeSheetName}'`,
+    majorDimension: "ROWS",
+    valueRenderOption: "FORMATTED_VALUE",
+    dateTimeRenderOption: "FORMATTED_STRING",
+  });
+
+  const rows = valuesToObjects(response.data.values || []);
+
+  console.log(
+    `[Google Sheets] LIVE API loaded "${worksheetName}" with ${rows.length} row(s).`
+  );
+
+  return rows;
+}
+
+/**
+ * Public fallback reader. This keeps existing dashboards working when the
+ * authenticated Google account cannot access a particular spreadsheet.
  */
 async function loadPublishedWorksheet(csvUrl) {
   if (!csvUrl || typeof csvUrl !== "string") {
@@ -55,12 +156,10 @@ async function loadPublishedWorksheet(csvUrl) {
     throw new Error("The Google Sheets CSV URL must start with https://");
   }
 
-  const freshUrl = buildLiveCsvUrl(csvUrl);
-
-  const requestedAt = new Date().toISOString();
+  const freshUrl = withCacheBuster(csvUrl);
 
   console.log(
-    `[Google Sheets] Fresh fetch started at ${requestedAt}`
+    `[Google Sheets] Public fallback fetch started at ${new Date().toISOString()}`
   );
 
   const response = await fetch(freshUrl, {
@@ -81,16 +180,12 @@ async function loadPublishedWorksheet(csvUrl) {
 
   const csvText = await response.text();
 
-  console.log(
-    `[Google Sheets] Fresh response received: ${csvText.length} CSV character(s).`
-  );
-
   if (
     csvText.toLowerCase().includes("<!doctype html") ||
     csvText.toLowerCase().includes("<html")
   ) {
     throw new Error(
-      "Google returned a webpage instead of CSV data. Make sure the sheet is set to 'Anyone with the link can view'."
+      "Google returned a webpage instead of CSV data. The sheet may not be publicly readable."
     );
   }
 
@@ -102,34 +197,25 @@ async function loadPublishedWorksheet(csvUrl) {
     relax_column_count: true,
   });
 
-  const cleanedRows = rows.map((row) => {
-    const cleanedRow = {};
-
-    for (const [columnName, value] of Object.entries(row)) {
-      const cleanedColumnName = String(columnName || "").trim();
-
-      if (!cleanedColumnName) {
-        continue;
-      }
-
-      cleanedRow[cleanedColumnName] =
-        typeof value === "string" ? value.trim() : value;
-    }
-
-    return cleanedRow;
-  });
+  const cleaned = cleanRows(rows);
 
   console.log(
-    `[Google Sheets] Parsed ${cleanedRows.length} current row(s).`
+    `[Google Sheets] PUBLIC fallback loaded ${cleaned.length} row(s).`
   );
 
-  return cleanedRows;
+  return cleaned;
 }
 
 /**
  * Loads every worksheet configured for one division.
  *
- * Every call reloads the configured public CSVs.
+ * Priority:
+ *   1. Google Sheets API using the backend's EXISTING Google OAuth token.
+ *   2. Existing public CSV reader as a compatibility fallback.
+ *
+ * Nothing is hardcoded to a division, report, spreadsheet ID, GID, field,
+ * municipality, or worksheet. The existing report configuration remains the
+ * source of truth.
  */
 async function loadDivisionData(divisionConfig) {
   if (!divisionConfig) {
@@ -149,7 +235,31 @@ async function loadDivisionData(divisionConfig) {
     }
 
     try {
-      const rows = await loadPublishedWorksheet(sheet.csvUrl);
+      let rows;
+
+      try {
+        rows = await loadWorksheetViaSheetsApi({
+          csvUrl: sheet.csvUrl,
+          worksheetName: sheet.name,
+        });
+
+        console.log(
+          `[Google Sheets] Source for "${sheet.name}": google-sheets-api`
+        );
+      } catch (apiError) {
+        console.warn(
+          `[Google Sheets] LIVE API unavailable for "${sheet.name}": ${apiError.message}`
+        );
+        console.warn(
+          `[Google Sheets] Falling back to public CSV for "${sheet.name}".`
+        );
+
+        rows = await loadPublishedWorksheet(sheet.csvUrl);
+
+        console.log(
+          `[Google Sheets] Source for "${sheet.name}": public-csv-fallback`
+        );
+      }
 
       console.log(
         `[Google Sheets] Loaded "${sheet.name}" with ${rows.length} row(s).`
@@ -174,7 +284,9 @@ async function loadDivisionData(divisionConfig) {
 
 module.exports = {
   withCacheBuster,
-  buildLiveCsvUrl,
+  getGoogleSpreadsheetId,
+  valuesToObjects,
+  loadWorksheetViaSheetsApi,
   loadPublishedWorksheet,
   loadDivisionData,
 };
