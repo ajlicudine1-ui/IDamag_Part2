@@ -12075,6 +12075,860 @@ function findFollowUpMetricColumn({
 
 
 
+
+/**
+ * ==========================================================
+ * DETERMINISTIC TREND / CHANGE RANKING
+ * ==========================================================
+ *
+ * Handles structures such as:
+ *
+ *   "Which X had the largest increase in average Y in January?"
+ *   "Which X had the biggest decrease in Y?"
+ *   "What X showed the highest growth in average Z?"
+ *
+ * The resolver is fully schema/data driven:
+ * - label/group field is inferred from the live schema;
+ * - numeric metric is inferred from the live schema;
+ * - explicit row filters are inferred from live values;
+ * - a real time dimension is discovered from live columns;
+ * - earliest vs latest comparable period is used when the
+ *   question does not explicitly name both periods.
+ *
+ * No worksheet, commodity, province, month, year, price field,
+ * or report name is hardcoded.
+ */
+
+function normalizeTrendOperation(question) {
+  const text = normalizeText(question);
+
+  if (!text) return null;
+
+  if (
+    /\b(?:increase|increased|increasing|growth|grew|rise|rose|gain|gained|improvement)\b/.test(
+      text
+    )
+  ) {
+    return "increase";
+  }
+
+  if (
+    /\b(?:decrease|decreased|decreasing|drop|dropped|fell|decline|declined|reduction)\b/.test(
+      text
+    )
+  ) {
+    return "decrease";
+  }
+
+  if (
+    /\b(?:change|changed|difference)\b/.test(
+      text
+    )
+  ) {
+    return "change";
+  }
+
+  return null;
+}
+
+
+function parseComparableTimeValue(value) {
+  if (
+    value === null ||
+    value === undefined ||
+    String(value).trim() === ""
+  ) {
+    return null;
+  }
+
+  const raw = String(value).trim();
+
+  // Plain numeric time values, especially years/period numbers.
+  const numeric = Number(
+    raw.replace(/,/g, "")
+  );
+
+  if (Number.isFinite(numeric)) {
+    return {
+      key: numeric,
+      display: raw,
+    };
+  }
+
+  // Date-like values.
+  const timestamp = Date.parse(raw);
+
+  if (Number.isFinite(timestamp)) {
+    return {
+      key: timestamp,
+      display: raw,
+    };
+  }
+
+  return null;
+}
+
+
+function findTrendTimeColumn({
+  schemaDataset,
+  rows,
+  excludedColumns = [],
+}) {
+  if (
+    !schemaDataset ||
+    !Array.isArray(rows) ||
+    !rows.length
+  ) {
+    return null;
+  }
+
+  const excluded = new Set(
+    (excludedColumns || [])
+      .filter(Boolean)
+      .map((value) => normalizeText(value))
+  );
+
+  const candidates = [];
+
+  for (
+    const column of
+    schemaDataset.columns || []
+  ) {
+    const columnName = column?.name;
+
+    if (
+      !columnName ||
+      excluded.has(
+        normalizeText(columnName)
+      )
+    ) {
+      continue;
+    }
+
+    const normalizedName =
+      normalizeText(columnName);
+
+    const values =
+      rows
+        .map((row) => row?.[columnName])
+        .filter(
+          (value) =>
+            value !== null &&
+            value !== undefined &&
+            String(value).trim() !== ""
+        );
+
+    if (values.length < 2) {
+      continue;
+    }
+
+    const parsed =
+      values
+        .map(parseComparableTimeValue)
+        .filter(Boolean);
+
+    if (
+      parsed.length <
+      Math.max(
+        2,
+        Math.ceil(values.length * 0.6)
+      )
+    ) {
+      continue;
+    }
+
+    const uniqueKeys =
+      new Set(
+        parsed.map((item) => item.key)
+      );
+
+    if (uniqueKeys.size < 2) {
+      continue;
+    }
+
+    let score = 0;
+
+    // Generic schema-name signals for temporal dimensions.
+    if (
+      /\b(?:year|date|time|period|quarter|semester|season|week|day)\b/.test(
+        normalizedName
+      )
+    ) {
+      score += 3;
+    }
+
+    if (
+      /\b(?:month)\b/.test(
+        normalizedName
+      )
+    ) {
+      score += 1;
+    }
+
+    // Prefer low-cardinality period columns over high-cardinality IDs.
+    score +=
+      1 /
+      Math.max(
+        uniqueKeys.size,
+        1
+      );
+
+    candidates.push({
+      column:
+        columnName,
+      score,
+      uniqueCount:
+        uniqueKeys.size,
+    });
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score - a.score ||
+      a.uniqueCount -
+        b.uniqueCount
+  );
+
+  return (
+    candidates[0] || null
+  );
+}
+
+
+function resolveTrendColumns({
+  schema,
+  datasets,
+  question,
+}) {
+  const requestedLabel =
+    inferRequestedColumnFromQuestion({
+      schema,
+      question,
+      preferredDataset:
+        null,
+    });
+
+  const explicitColumns =
+    findExplicitSchemaColumns({
+      schema,
+      question,
+      preferredDataset:
+        null,
+    });
+
+  const candidates = [];
+
+  for (
+    const datasetSchema of
+    schema || []
+  ) {
+    const rows =
+      datasets?.[
+        datasetSchema.name
+      ];
+
+    if (
+      !Array.isArray(rows) ||
+      !rows.length
+    ) {
+      continue;
+    }
+
+    const columns =
+      datasetSchema.columns || [];
+
+    const numericColumns =
+      columns
+        .filter((column) =>
+          isNumericLikeColumn({
+            column,
+            rows,
+          })
+        )
+        .map((column) => ({
+          column,
+          score:
+            scoreTargetToColumn(
+              question,
+              column.name
+            ),
+        }))
+        .sort(
+          (a, b) =>
+            b.score - a.score
+        );
+
+    const textColumns =
+      columns
+        .filter(
+          (column) =>
+            column?.name &&
+            !isNumericLikeColumn({
+              column,
+              rows,
+            })
+        )
+        .map((column) => ({
+          column,
+          score:
+            scoreTargetToColumn(
+              question,
+              column.name
+            ),
+        }))
+        .sort(
+          (a, b) =>
+            b.score - a.score
+        );
+
+    let metric =
+      numericColumns[0] || null;
+
+    // Prefer an explicitly named numeric column.
+    for (
+      const explicit of
+      explicitColumns
+    ) {
+      if (
+        String(explicit.dataset) !==
+        String(datasetSchema.name)
+      ) {
+        continue;
+      }
+
+      const explicitColumn =
+        columns.find(
+          (column) =>
+            String(column?.name) ===
+            String(explicit.column)
+        );
+
+      if (
+        explicitColumn &&
+        isNumericLikeColumn({
+          column:
+            explicitColumn,
+          rows,
+        })
+      ) {
+        metric = {
+          column:
+            explicitColumn,
+          score:
+            100,
+        };
+        break;
+      }
+    }
+
+    let label = null;
+
+    // Prefer an explicitly named/requested nonnumeric grouping field.
+    if (
+      requestedLabel &&
+      String(requestedLabel.dataset) ===
+      String(datasetSchema.name)
+    ) {
+      const requestedColumn =
+        columns.find(
+          (column) =>
+            String(column?.name) ===
+            String(requestedLabel.column)
+        );
+
+      if (
+        requestedColumn &&
+        !isNumericLikeColumn({
+          column:
+            requestedColumn,
+          rows,
+        })
+      ) {
+        label = {
+          column:
+            requestedColumn,
+          score:
+            requestedLabel.score || 1,
+        };
+      }
+    }
+
+    if (!label) {
+      label =
+        textColumns.find(
+          (item) =>
+            !metric ||
+            item.column.name !==
+              metric.column.name
+        ) ||
+        null;
+    }
+
+    if (
+      !metric ||
+      !label
+    ) {
+      continue;
+    }
+
+    candidates.push({
+      datasetName:
+        datasetSchema.name,
+      schemaDataset:
+        datasetSchema,
+      rows,
+      metricColumn:
+        metric.column.name,
+      labelColumn:
+        label.column.name,
+      score:
+        (metric.score || 0) * 2 +
+        (label.score || 0),
+    });
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score - a.score
+  );
+
+  return candidates;
+}
+
+
+function buildTrendRankingResult({
+  schema,
+  datasets,
+  question,
+}) {
+  const trendType =
+    normalizeTrendOperation(
+      question
+    );
+
+  if (!trendType) {
+    return null;
+  }
+
+  const normalizedQuestion =
+    normalizeText(question);
+
+  const asksRanking =
+    /\b(?:which|what|who|largest|smallest|highest|lowest|most|least|top|bottom)\b/.test(
+      normalizedQuestion
+    );
+
+  if (!asksRanking) {
+    return null;
+  }
+
+  const candidates =
+    resolveTrendColumns({
+      schema,
+      datasets,
+      question,
+    });
+
+  if (!candidates.length) {
+    return null;
+  }
+
+  const combinedByLabel =
+    new Map();
+
+  let chosenMetric = null;
+  let chosenLabel = null;
+  let chosenTimeColumn = null;
+  const datasetsUsed = [];
+
+  for (
+    const candidate of
+    candidates
+  ) {
+    const {
+      datasetName,
+      schemaDataset,
+      rows,
+      metricColumn,
+      labelColumn,
+    } = candidate;
+
+    /**
+     * Apply only explicit live-value filters from the question.
+     * This catches month/province/category/etc. without hardcoding
+     * any particular dimension.
+     */
+    const inferred =
+      inferValueFilters(
+        rows,
+        question,
+        [
+          metricColumn,
+          labelColumn,
+        ]
+      );
+
+    const filters =
+      filterClearlyMentionedLiveFilters(
+        inferred,
+        question
+      );
+
+    const filteredRows =
+      filterRowsBySimpleFilters(
+        rows,
+        filters
+      );
+
+    if (
+      !filteredRows.length
+    ) {
+      continue;
+    }
+
+    const timeCandidate =
+      findTrendTimeColumn({
+        schemaDataset,
+        rows:
+          filteredRows,
+        excludedColumns: [
+          metricColumn,
+          labelColumn,
+          ...filters.map(
+            (filter) =>
+              filter.column
+          ),
+        ],
+      });
+
+    if (!timeCandidate) {
+      continue;
+    }
+
+    const timeColumn =
+      timeCandidate.column;
+
+    const validRows =
+      filteredRows
+        .map((row) => {
+          const label =
+            String(
+              row?.[
+                labelColumn
+              ] ?? ""
+            ).trim();
+
+          const metric =
+            parseNumber(
+              row?.[
+                metricColumn
+              ]
+            );
+
+          const time =
+            parseComparableTimeValue(
+              row?.[
+                timeColumn
+              ]
+            );
+
+          if (
+            !label ||
+            metric === null ||
+            !time
+          ) {
+            return null;
+          }
+
+          return {
+            label,
+            metric,
+            time,
+          };
+        })
+        .filter(Boolean);
+
+    if (!validRows.length) {
+      continue;
+    }
+
+    chosenMetric =
+      chosenMetric ||
+      metricColumn;
+
+    chosenLabel =
+      chosenLabel ||
+      labelColumn;
+
+    chosenTimeColumn =
+      chosenTimeColumn ||
+      timeColumn;
+
+    datasetsUsed.push(
+      datasetName
+    );
+
+    for (
+      const row of
+      validRows
+    ) {
+      const key =
+        normalizeText(
+          row.label
+        );
+
+      if (
+        !combinedByLabel.has(
+          key
+        )
+      ) {
+        combinedByLabel.set(
+          key,
+          {
+            label:
+              row.label,
+            byTime:
+              new Map(),
+          }
+        );
+      }
+
+      const entry =
+        combinedByLabel.get(
+          key
+        );
+
+      if (
+        !entry.byTime.has(
+          row.time.key
+        )
+      ) {
+        entry.byTime.set(
+          row.time.key,
+          {
+            display:
+              row.time.display,
+            values:
+              [],
+          }
+        );
+      }
+
+      entry.byTime
+        .get(
+          row.time.key
+        )
+        .values
+        .push(
+          row.metric
+        );
+    }
+  }
+
+  if (
+    !combinedByLabel.size ||
+    !chosenMetric ||
+    !chosenLabel ||
+    !chosenTimeColumn
+  ) {
+    return null;
+  }
+
+  const ranked = [];
+
+  for (
+    const entry of
+    combinedByLabel.values()
+  ) {
+    const periods =
+      Array.from(
+        entry.byTime.entries()
+      )
+        .map(
+          ([
+            key,
+            period,
+          ]) => ({
+            key,
+            display:
+              period.display,
+            average:
+              period.values.reduce(
+                (sum, value) =>
+                  sum + value,
+                0
+              ) /
+              period.values.length,
+          })
+        )
+        .sort(
+          (a, b) =>
+            a.key - b.key
+        );
+
+    if (
+      periods.length < 2
+    ) {
+      continue;
+    }
+
+    const first =
+      periods[0];
+
+    const last =
+      periods[
+        periods.length - 1
+      ];
+
+    const change =
+      last.average -
+      first.average;
+
+    ranked.push({
+      label:
+        entry.label,
+      firstPeriod:
+        first.display,
+      lastPeriod:
+        last.display,
+      firstAverage:
+        first.average,
+      lastAverage:
+        last.average,
+      change,
+      absoluteChange:
+        Math.abs(change),
+    });
+  }
+
+  if (!ranked.length) {
+    return null;
+  }
+
+  if (
+    trendType ===
+      "decrease"
+  ) {
+    ranked.sort(
+      (a, b) =>
+        a.change -
+        b.change
+    );
+  } else if (
+    trendType ===
+      "change"
+  ) {
+    ranked.sort(
+      (a, b) =>
+        b.absoluteChange -
+        a.absoluteChange
+    );
+  } else {
+    ranked.sort(
+      (a, b) =>
+        b.change -
+        a.change
+    );
+  }
+
+  const top =
+    ranked.slice(
+      0,
+      Math.min(
+        10,
+        ranked.length
+      )
+    );
+
+  const directionWord =
+    trendType === "decrease"
+      ? "decrease"
+      : trendType === "change"
+        ? "change"
+        : "increase";
+
+  const answer =
+    top
+      .map(
+        (item, index) =>
+          `${index + 1}. ${item.label} — ` +
+          `${directionWord}: ${formatNumber(
+            trendType === "change"
+              ? item.absoluteChange
+              : Math.abs(
+                  item.change
+                )
+          )} ` +
+          `(${formatNumber(
+            item.firstAverage
+          )} → ${formatNumber(
+            item.lastAverage
+          )}, ` +
+          `${item.firstPeriod} to ${item.lastPeriod})`
+      )
+      .join("\n");
+
+  return {
+    success:
+      true,
+    source:
+      "dataset",
+    dataset:
+      datasetsUsed.length === 1
+        ? datasetsUsed[0]
+        : null,
+    datasetsUsed: [
+      ...new Set(
+        datasetsUsed
+      ),
+    ],
+    operation:
+      "trend_rank",
+    trendType,
+    labelColumn:
+      chosenLabel,
+    metricColumn:
+      chosenMetric,
+    timeColumn:
+      chosenTimeColumn,
+    count:
+      ranked.length,
+    results:
+      top,
+    answer:
+      `The ${chosenLabel.toLowerCase()} entries with the largest ${directionWord} in average ${chosenMetric.toLowerCase()} are:\n\n${answer}`,
+    responseStyle:
+      "natural",
+    debugPlan: {
+      route:
+        "dataset",
+      operation:
+        "trend_rank",
+      labelColumn:
+        chosenLabel,
+      column:
+        chosenMetric,
+      timeColumn:
+        chosenTimeColumn,
+      trendType,
+      datasets:
+        [
+          ...new Set(
+            datasetsUsed
+          ),
+        ],
+      outputRequested:
+        true,
+    },
+    debugEntityChanges:
+      [],
+    plannerSource:
+      "deterministic-trend-ranking",
+  };
+}
+
+
+
 /**
  * ==========================================================
  * MAIN CHATBOT ENTRY POINT
@@ -13382,6 +14236,48 @@ async function answerQuestion(
   }
 
 
+
+
+
+  // ========================================================
+  // DETERMINISTIC TREND / CHANGE RANKING
+  // ========================================================
+  //
+  // Run before simple filtered aggregate/field shortcuts.
+  //
+  const deterministicTrendResult =
+    buildTrendRankingResult({
+      schema,
+      datasets,
+      question:
+        cleanQuestion,
+    });
+
+  if (
+    deterministicTrendResult
+  ) {
+    updateConversation(
+      sessionId,
+      {
+        question:
+          cleanQuestion,
+        plan:
+          deterministicTrendResult
+            .debugPlan,
+        result:
+          deterministicTrendResult,
+      }
+    );
+
+    return {
+      ...deterministicTrendResult,
+      answer:
+        formatUserFacingAnswer(
+          deterministicTrendResult
+            .answer
+        ),
+    };
+  }
 
 
   // ========================================================
