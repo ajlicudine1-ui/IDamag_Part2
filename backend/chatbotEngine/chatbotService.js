@@ -10710,6 +10710,778 @@ function buildOrdinalAnalyticalAnswer({
 }
 
 
+
+/**
+ * ==========================================================
+ * DETERMINISTIC MULTI-CATEGORY COUNT RESOLVER
+ * ==========================================================
+ *
+ * Handles count questions that mention multiple real category
+ * values, even when those values live in different columns.
+ *
+ * No worksheet names, column names, category values, project
+ * names, report names, or IDs are hardcoded.
+ */
+
+function containsNormalizedPhrase(
+  normalizedQuestion,
+  normalizedValue
+) {
+  const questionText =
+    String(
+      normalizedQuestion || ""
+    ).trim();
+
+  const valueText =
+    String(
+      normalizedValue || ""
+    ).trim();
+
+  if (
+    !questionText ||
+    !valueText
+  ) {
+    return -1;
+  }
+
+  const paddedQuestion =
+    ` ${questionText} `;
+
+  const paddedValue =
+    ` ${valueText} `;
+
+  const index =
+    paddedQuestion.indexOf(
+      paddedValue
+    );
+
+  return index < 0
+    ? -1
+    : Math.max(
+        0,
+        index - 1
+      );
+}
+
+
+function isUsefulCategoryColumn(
+  rows,
+  column
+) {
+  const values =
+    rows
+      .map(
+        (row) =>
+          row?.[column]
+      )
+      .filter(
+        (value) =>
+          value !== null &&
+          value !== undefined &&
+          String(value).trim() !== ""
+      );
+
+  if (
+    values.length < 2
+  ) {
+    return false;
+  }
+
+  const uniqueTextValues =
+    new Set();
+
+  for (
+    const rawValue of
+    values
+  ) {
+    const display =
+      String(
+        rawValue
+      ).trim();
+
+    if (
+      !display ||
+      parseNumber(display) !== null
+    ) {
+      continue;
+    }
+
+    const normalized =
+      normalizeText(
+        display
+      );
+
+    if (
+      !normalized
+    ) {
+      continue;
+    }
+
+    const words =
+      normalized
+        .split(/\s+/)
+        .filter(Boolean);
+
+    if (
+      words.length > 7 ||
+      normalized.length > 80
+    ) {
+      continue;
+    }
+
+    uniqueTextValues.add(
+      normalized
+    );
+  }
+
+  const uniqueCount =
+    uniqueTextValues.size;
+
+  if (
+    uniqueCount < 2
+  ) {
+    return false;
+  }
+
+  const maxUsefulDistinct =
+    Math.min(
+      80,
+      Math.max(
+        12,
+        Math.ceil(
+          rows.length * 0.65
+        )
+      )
+    );
+
+  return (
+    uniqueCount <=
+    maxUsefulDistinct
+  );
+}
+
+
+function findMentionedCategoriesInDataset({
+  rows,
+  question,
+}) {
+  if (
+    !Array.isArray(rows) ||
+    !rows.length
+  ) {
+    return [];
+  }
+
+  const normalizedQuestion =
+    normalizeText(
+      question
+    );
+
+  if (
+    !normalizedQuestion
+  ) {
+    return [];
+  }
+
+  const columns =
+    Array.from(
+      new Set(
+        rows.flatMap(
+          (row) =>
+            Object.keys(
+              row || {}
+            )
+        )
+      )
+    );
+
+  const candidates = [];
+
+  for (
+    const column of
+    columns
+  ) {
+    if (
+      !isUsefulCategoryColumn(
+        rows,
+        column
+      )
+    ) {
+      continue;
+    }
+
+    const distinctValues =
+      new Map();
+
+    for (
+      const row of
+      rows
+    ) {
+      const rawValue =
+        row?.[column];
+
+      if (
+        rawValue === null ||
+        rawValue === undefined
+      ) {
+        continue;
+      }
+
+      const displayValue =
+        String(
+          rawValue
+        ).trim();
+
+      if (
+        !displayValue ||
+        parseNumber(
+          displayValue
+        ) !== null
+      ) {
+        continue;
+      }
+
+      const normalizedValue =
+        normalizeText(
+          displayValue
+        );
+
+      if (
+        !normalizedValue ||
+        normalizedValue.length < 2
+      ) {
+        continue;
+      }
+
+      const words =
+        normalizedValue
+          .split(/\s+/)
+          .filter(Boolean);
+
+      if (
+        words.length > 7 ||
+        normalizedValue.length > 80
+      ) {
+        continue;
+      }
+
+      if (
+        !distinctValues.has(
+          normalizedValue
+        )
+      ) {
+        distinctValues.set(
+          normalizedValue,
+          displayValue
+        );
+      }
+    }
+
+    for (
+      const [
+        normalizedValue,
+        displayValue,
+      ] of
+      distinctValues.entries()
+    ) {
+      const mentionIndex =
+        containsNormalizedPhrase(
+          normalizedQuestion,
+          normalizedValue
+        );
+
+      if (
+        mentionIndex < 0
+      ) {
+        continue;
+      }
+
+      candidates.push({
+        column,
+        value:
+          displayValue,
+        normalizedValue,
+        mentionIndex,
+      });
+    }
+  }
+
+  const distinctCountCache =
+    new Map();
+
+  const getDistinctCount =
+    (columnName) => {
+      if (
+        distinctCountCache.has(
+          columnName
+        )
+      ) {
+        return distinctCountCache.get(
+          columnName
+        );
+      }
+
+      const count =
+        new Set(
+          rows
+            .map(
+              (row) =>
+                normalizeText(
+                  row?.[
+                    columnName
+                  ]
+                )
+            )
+            .filter(Boolean)
+        ).size;
+
+      distinctCountCache.set(
+        columnName,
+        count
+      );
+
+      return count;
+    };
+
+  const byValue =
+    new Map();
+
+  for (
+    const candidate of
+    candidates
+  ) {
+    const key =
+      candidate.normalizedValue;
+
+    const previous =
+      byValue.get(
+        key
+      );
+
+    if (
+      !previous ||
+      getDistinctCount(
+        candidate.column
+      ) <
+      getDistinctCount(
+        previous.column
+      )
+    ) {
+      byValue.set(
+        key,
+        candidate
+      );
+    }
+  }
+
+  let uniqueCandidates =
+    Array.from(
+      byValue.values()
+    );
+
+  uniqueCandidates =
+    uniqueCandidates.filter(
+      (candidate) =>
+        !uniqueCandidates.some(
+          (other) => {
+            if (
+              other === candidate
+            ) {
+              return false;
+            }
+
+            const candidateStart =
+              candidate.mentionIndex;
+
+            const candidateEnd =
+              candidateStart +
+              candidate
+                .normalizedValue
+                .length;
+
+            const otherStart =
+              other.mentionIndex;
+
+            const otherEnd =
+              otherStart +
+              other
+                .normalizedValue
+                .length;
+
+            const overlaps =
+              candidateStart <
+                otherEnd &&
+              otherStart <
+                candidateEnd;
+
+            return (
+              overlaps &&
+              other
+                .normalizedValue
+                .length >
+                candidate
+                  .normalizedValue
+                  .length
+            );
+          }
+        )
+    );
+
+  uniqueCandidates.sort(
+    (a, b) =>
+      a.mentionIndex -
+        b.mentionIndex ||
+      b.normalizedValue.length -
+        a.normalizedValue.length
+  );
+
+  return uniqueCandidates;
+}
+
+
+function buildMultiCategoryCountResolution({
+  datasets,
+  question,
+  preferredDataset,
+}) {
+  const isCountQuestion =
+    /\b(?:how many|number of|count(?: of)?|counts? of)\b/i.test(
+      String(
+        question || ""
+      )
+    );
+
+  if (
+    !isCountQuestion
+  ) {
+    return null;
+  }
+
+  const ranked = [];
+
+  for (
+    const [
+      datasetName,
+      rows,
+    ] of
+    Object.entries(
+      datasets || {}
+    )
+  ) {
+    const categories =
+      findMentionedCategoriesInDataset({
+        rows,
+        question,
+      });
+
+    if (
+      categories.length < 2
+    ) {
+      continue;
+    }
+
+    ranked.push({
+      datasetName,
+      rows,
+      categories,
+      preferred:
+        preferredDataset &&
+        datasetName ===
+          preferredDataset
+          ? 1
+          : 0,
+    });
+  }
+
+  if (
+    !ranked.length
+  ) {
+    return null;
+  }
+
+  ranked.sort(
+    (a, b) =>
+      b.categories.length -
+        a.categories.length ||
+      b.preferred -
+        a.preferred
+  );
+
+  const best =
+    ranked[0];
+
+  const second =
+    ranked[1];
+
+  if (
+    second &&
+    second.categories.length ===
+      best.categories.length &&
+    second.preferred ===
+      best.preferred
+  ) {
+    return null;
+  }
+
+  const categoryResults =
+    best.categories.map(
+      (category) => {
+        const target =
+          normalizeText(
+            category.value
+          );
+
+        const count =
+          best.rows.reduce(
+            (
+              total,
+              row
+            ) =>
+              normalizeText(
+                row?.[
+                  category.column
+                ]
+              ) === target
+                ? total + 1
+                : total,
+            0
+          );
+
+        return {
+          column:
+            category.column,
+          value:
+            category.value,
+          count,
+        };
+      }
+    );
+
+  if (
+    categoryResults.length < 2
+  ) {
+    return null;
+  }
+
+  const answer =
+    categoryResults
+      .map(
+        (item) =>
+          `${item.value}: ${item.count}`
+      )
+      .join("; ") +
+    ".";
+
+  const plan = {
+    route:
+      "dataset",
+    dataset:
+      best.datasetName,
+    operation:
+      "multi_category_count",
+    categories:
+      categoryResults.map(
+        (item) => ({
+          column:
+            item.column,
+          operator:
+            "equals",
+          value:
+            item.value,
+        })
+      ),
+    outputRequested:
+      true,
+  };
+
+  const result = {
+    success:
+      true,
+    source:
+      "dataset",
+    dataset:
+      best.datasetName,
+    operation:
+      "multi_category_count",
+    categories:
+      categoryResults,
+    answer,
+    responseStyle:
+      "natural",
+    debugPlan:
+      plan,
+    debugEntityChanges:
+      [],
+  };
+
+  return {
+    plan,
+    result,
+  };
+}
+
+
+/**
+ * ==========================================================
+ * GENERIC COMPOUND / MULTI-QUESTION SPLITTER
+ * ==========================================================
+ *
+ * Allows multiple independent questions/calculations inside one
+ * message while preserving normal category lists.
+ *
+ * No dataset, worksheet, field, category, or business term is
+ * hardcoded.
+ */
+
+function splitCompoundQuestions(
+  question
+) {
+  const original =
+    String(
+      question || ""
+    )
+      .replace(/\s+/g, " ")
+      .trim();
+
+  if (
+    !original
+  ) {
+    return [];
+  }
+
+  let pieces =
+    original
+      .split(
+        /\?\s*(?=[A-Za-z0-9])/g
+      )
+      .map(
+        (part) =>
+          String(
+            part || ""
+          )
+            .trim()
+            .replace(
+              /^[,;:\-\s]+/,
+              ""
+            )
+      )
+      .filter(Boolean);
+
+  if (
+    pieces.length === 1
+  ) {
+    pieces =
+      original
+        .split(
+          /\s*(?:,|;)?\s+\b(?:and|also|plus)\b\s+(?=(?:what|which|who|where|when|how\s+many|how\s+much|how|calculate|compute|find|give|show|tell)\b|(?:the\s+)?(?:total|sum|average|avg|mean|median|minimum|maximum|max|min|count|number\s+of)\b)/i
+        )
+        .map(
+          (part) =>
+            String(
+              part || ""
+            )
+              .trim()
+              .replace(
+                /^[,;:\-\s]+/,
+                ""
+              )
+        )
+        .filter(Boolean);
+  }
+
+  if (
+    pieces.length === 1 &&
+    original.includes(";")
+  ) {
+    const semicolonParts =
+      original
+        .split(/\s*;\s*/)
+        .map(
+          (part) =>
+            part.trim()
+        )
+        .filter(Boolean);
+
+    const analyticalCue =
+      /\b(?:what|which|who|where|when|how|calculate|compute|find|give|show|tell|total|sum|average|avg|mean|median|minimum|maximum|max|min|count|number)\b/i;
+
+    if (
+      semicolonParts.length > 1 &&
+      semicolonParts.every(
+        (part) =>
+          analyticalCue.test(
+            part
+          )
+      )
+    ) {
+      pieces =
+        semicolonParts;
+    }
+  }
+
+  if (
+    pieces.length < 2
+  ) {
+    return [
+      original,
+    ];
+  }
+
+  const meaningful =
+    pieces.filter(
+      (part) =>
+        normalizeText(
+          part
+        )
+          .split(/\s+/)
+          .filter(Boolean)
+          .length >= 2
+    );
+
+  return (
+    meaningful.length >= 2
+      ? meaningful
+      : [
+          original,
+        ]
+  );
+}
+
+
+function buildCompoundAnswer(
+  subResults
+) {
+  const answers =
+    subResults
+      .map(
+        (item) =>
+          String(
+            item?.result?.answer ||
+            ""
+          ).trim()
+      )
+      .filter(Boolean);
+
+  if (
+    !answers.length
+  ) {
+    return (
+      "I couldn't complete the requested questions."
+    );
+  }
+
+  return answers
+    .map(
+      (answer, index) =>
+        subResults.length > 1
+          ? `${index + 1}. ${answer}`
+          : answer
+    )
+    .join("\n");
+}
+
+
+
 /**
  * ==========================================================
  * MAIN CHATBOT ENTRY POINT
@@ -10735,7 +11507,8 @@ function buildOrdinalAnalyticalAnswer({
 async function answerQuestion(
   input,
   question,
-  sessionId = "default"
+  sessionId = "default",
+  internalOptions = {}
 ) {
   const originalQuestion =
     String(
@@ -10777,6 +11550,151 @@ async function answerQuestion(
         "No usable worksheet data is currently available.",
     };
   }
+
+
+  // ========================================================
+  // COMPOUND / MULTI-QUESTION REQUEST
+  // ========================================================
+  //
+  // Split only clearly independent questions/calculations.
+  // Each part is processed again by this same chatbot engine,
+  // so all existing operations and validation remain reusable.
+  //
+  if (
+    internalOptions
+      ?.disableCompound !== true
+  ) {
+    const compoundQuestions =
+      splitCompoundQuestions(
+        cleanQuestion
+      );
+
+    if (
+      compoundQuestions.length > 1
+    ) {
+      const subResults = [];
+
+      for (
+        let index = 0;
+        index <
+        compoundQuestions.length;
+        index += 1
+      ) {
+        const subQuestion =
+          compoundQuestions[
+            index
+          ];
+
+        const compoundSessionId =
+          `${sessionId}::compound::${Date.now()}::${index}`;
+
+        let subResult;
+
+        try {
+          subResult =
+            await answerQuestion(
+              input,
+              subQuestion,
+              compoundSessionId,
+              {
+                disableCompound:
+                  true,
+              }
+            );
+        } catch (error) {
+          subResult = {
+            success:
+              false,
+            source:
+              "system",
+            operation:
+              "error",
+            answer:
+              error?.message ||
+              "This part of the question could not be processed.",
+          };
+        }
+
+        subResults.push({
+          question:
+            subQuestion,
+          result:
+            subResult,
+        });
+      }
+
+      return {
+        success:
+          subResults.every(
+            (item) =>
+              item?.result
+                ?.success !==
+              false
+          ),
+        source:
+          "dataset",
+        operation:
+          "compound",
+        questionCount:
+          subResults.length,
+        questions:
+          subResults.map(
+            (item) =>
+              item.question
+          ),
+        results:
+          subResults.map(
+            (item) => ({
+              question:
+                item.question,
+              success:
+                item.result
+                  ?.success,
+              dataset:
+                item.result
+                  ?.dataset ||
+                null,
+              operation:
+                item.result
+                  ?.operation ||
+                null,
+              value:
+                item.result
+                  ?.value,
+              categories:
+                item.result
+                  ?.categories,
+              answer:
+                item.result
+                  ?.answer,
+              plannerSource:
+                item.result
+                  ?.plannerSource,
+              debugPlan:
+                item.result
+                  ?.debugPlan,
+            })
+          ),
+        answer:
+          buildCompoundAnswer(
+            subResults
+          ),
+        responseStyle:
+          "natural",
+        plannerSource:
+          "compound",
+        debugPlan: {
+          route:
+            "compound",
+          operation:
+            "compound",
+          questions:
+            compoundQuestions,
+        },
+      };
+    }
+  }
+
 
   // ========================================================
   // STEP 2 — RETRIEVE RELEVANT REAL DATA
@@ -13311,6 +14229,52 @@ async function answerQuestion(
           true,
       };
     };
+
+
+
+  // ========================================================
+  // DETERMINISTIC MULTI-CATEGORY COUNT
+  // ========================================================
+  //
+  // Keep working single-category row_count behavior untouched.
+  // Intervene only when TWO OR MORE real category values are
+  // explicitly mentioned in the same count question.
+  //
+  const multiCategoryCount =
+    buildMultiCategoryCountResolution({
+      datasets,
+      question:
+        cleanQuestion,
+      preferredDataset:
+        conversationContext
+          ?.lastDataset ||
+        null,
+    });
+
+  if (
+    multiCategoryCount
+  ) {
+    updateConversation(
+      sessionId,
+      {
+        question:
+          cleanQuestion,
+        plan:
+          multiCategoryCount
+            .plan,
+        result:
+          multiCategoryCount
+            .result,
+      }
+    );
+
+    return {
+      ...multiCategoryCount
+        .result,
+      plannerSource:
+        "deterministic-multi-category",
+    };
+  }
 
 
   // ========================================================
