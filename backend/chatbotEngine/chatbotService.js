@@ -3241,6 +3241,29 @@ function resolveDirectFilteredAggregatePlan({
       question
     );
 
+  /**
+   * Do NOT collapse ranking/trend questions into a simple filtered
+   * aggregate merely because they contain words such as "average".
+   *
+   * Examples of structures that must continue to the analytical
+   * planner instead:
+   *   - "which X had the largest increase in average Y?"
+   *   - "which X decreased the most?"
+   *   - "highest growth in Z"
+   *
+   * This is generic and does not depend on any worksheet/field name.
+   */
+  const hasTrendOrRankingIntent =
+    /\b(?:increase|increased|increasing|decrease|decreased|decreasing|change|changed|growth|grew|rise|rose|drop|fell|decline|difference|largest|smallest|highest|lowest|most|least|top|bottom)\b/.test(
+      text
+    );
+
+  if (
+    hasTrendOrRankingIntent
+  ) {
+    return null;
+  }
+
   if (
     !aggregation ||
     ![
@@ -3476,9 +3499,50 @@ function resolveDirectFilteredAggregatePlan({
           explicitField.dataset
         ];
 
+      const explicitDatasetSchema =
+        (schema || []).find(
+          (item) =>
+            String(
+              item?.name || ""
+            ) ===
+            String(
+              explicitField.dataset || ""
+            )
+        );
+
+      const explicitColumnSchema =
+        explicitDatasetSchema
+          ?.columns
+          ?.find(
+            (column) =>
+              String(
+                column?.name || ""
+              ) ===
+              String(
+                explicitField.column || ""
+              )
+          ) ||
+        null;
+
+      /**
+       * SUM/AVERAGE must never target a non-numeric field just because
+       * the field name was the strongest fuzzy text match.
+       */
+      const metricTypeIsValid =
+        aggregation === "count" ||
+        isNumericLikeColumn({
+          column:
+            explicitColumnSchema,
+          rows:
+            Array.isArray(rows)
+              ? rows
+              : [],
+        });
+
       if (
         Array.isArray(rows) &&
-        rows.length
+        rows.length &&
+        metricTypeIsValid
       ) {
         let filters =
           inferCoherentFilters(
