@@ -11674,9 +11674,7 @@ function buildLinkedMultiFieldPlan({
       question
     );
 
-  if (
-    !linked
-  ) {
+  if (!linked) {
     return null;
   }
 
@@ -11689,39 +11687,16 @@ function buildLinkedMultiFieldPlan({
         null,
     });
 
-  if (
-    !firstField
-  ) {
+  if (!firstField) {
     return null;
   }
 
-  const secondField =
-    inferRequestedColumnFromQuestion({
-      schema,
-      question:
-        linked.secondClause,
-      preferredDataset:
-        firstField.dataset,
-      excludedColumns: [
-        firstField.column,
-      ],
-    });
-
-  if (
-    !secondField ||
-    String(
-      secondField.dataset
-    ) !==
-      String(
-        firstField.dataset
-      )
-  ) {
-    return null;
-  }
+  const datasetName =
+    firstField.dataset;
 
   const rows =
     datasets?.[
-      firstField.dataset
+      datasetName
     ];
 
   if (
@@ -11731,14 +11706,98 @@ function buildLinkedMultiFieldPlan({
     return null;
   }
 
+  /**
+   * Collect 2+ requested output fields from the live schema.
+   * This allows:
+   *   "what are X in Y and give me Z"
+   *   "what are X in Y and give me Z and W"
+   *   "show X in Y and include Z, W, and Q"
+   */
+  const requestedColumns = [];
+
+  const addColumn =
+    (columnName) => {
+      const value =
+        String(
+          columnName || ""
+        ).trim();
+
+      if (
+        !value ||
+        requestedColumns.some(
+          (existing) =>
+            normalizeText(existing) ===
+            normalizeText(value)
+        )
+      ) {
+        return;
+      }
+
+      requestedColumns.push(value);
+    };
+
+  addColumn(firstField.column);
+
+  const explicitFields =
+    findExplicitSchemaColumns({
+      schema,
+      question,
+      preferredDataset:
+        datasetName,
+    });
+
+  for (
+    const item of
+    explicitFields
+  ) {
+    if (
+      String(item.dataset) ===
+      String(datasetName)
+    ) {
+      addColumn(item.column);
+    }
+  }
+
+  /**
+   * Fuzzy/abbreviation fallback for misspelled requested fields.
+   */
+  const inferredSecondField =
+    inferRequestedColumnFromQuestion({
+      schema,
+      question:
+        linked.secondClause,
+      preferredDataset:
+        datasetName,
+      excludedColumns:
+        requestedColumns,
+    });
+
+  if (
+    inferredSecondField &&
+    String(
+      inferredSecondField.dataset
+    ) ===
+      String(datasetName)
+  ) {
+    addColumn(
+      inferredSecondField.column
+    );
+  }
+
+  if (
+    requestedColumns.length < 2
+  ) {
+    return null;
+  }
+
+  /**
+   * Infer scope ONLY from the first clause.
+   */
   const rawFilters =
     inferValueFilters(
       rows,
       linked.firstClause,
-      [
-        firstField.column,
-        secondField.column,
-      ]
+      requestedColumns
     );
 
   const filters =
@@ -11747,14 +11806,7 @@ function buildLinkedMultiFieldPlan({
       linked.firstClause
     );
 
-  /**
-   * The first clause must provide at least one real scope/value
-   * filter. Otherwise this should remain a normal multi-output
-   * question for the existing planner.
-   */
-  if (
-    !filters.length
-  ) {
+  if (!filters.length) {
     return null;
   }
 
@@ -11762,7 +11814,7 @@ function buildLinkedMultiFieldPlan({
     route:
       "dataset",
     dataset:
-      firstField.dataset,
+      datasetName,
     operation:
       "lookup",
     column:
@@ -11776,10 +11828,8 @@ function buildLinkedMultiFieldPlan({
     direction:
       null,
     filters,
-    selectColumns: [
-      firstField.column,
-      secondField.column,
-    ],
+    selectColumns:
+      requestedColumns,
     outputRequested:
       true,
     transform:
@@ -11791,6 +11841,172 @@ function buildLinkedMultiFieldPlan({
     linkedMultiField:
       true,
   };
+}
+
+
+
+/**
+ * ==========================================================
+ * CONVERSATION SCOPE SAFEGUARDS
+ * ==========================================================
+ *
+ * Two distinct behaviors are needed:
+ *
+ * 1. A fully self-contained analytical question starts a NEW
+ *    scope and must not silently inherit an old entity filter.
+ *
+ * 2. A short "what about <field>?" question may be a metric
+ *    switch, not an entity/value switch.
+ *
+ * Both behaviors are derived only from the live schema and the
+ * user's wording. No report, worksheet, column, or entity value
+ * is hardcoded.
+ */
+
+function hasReferentialScopeLanguage(
+  question
+) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (!text) {
+    return false;
+  }
+
+  return (
+    /^(?:what|how)\s+about\b/.test(
+      text
+    ) ||
+    /^(?:and|also|then|for)\b/.test(
+      text
+    ) ||
+    /\b(?:there|those|these|them|they|that|this|same|previous|above|earlier)\b/.test(
+      text
+    ) ||
+    /\b(?:of|for|among|within)\s+(?:those|these|them|that|this|the same)\b/.test(
+      text
+    )
+  );
+}
+
+
+function isSelfContainedAnalyticalQuestion({
+  schema,
+  question,
+}) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (!text) {
+    return false;
+  }
+
+  /**
+   * Require an explicit analytical instruction.
+   * This includes the main scalar operations and rankings.
+   */
+  const hasAnalyticalInstruction =
+    /\b(?:total|sum|average|avg|mean|median|minimum|maximum|min|max|highest|lowest|largest|smallest|count|how many|number of|difference|ratio|percentage|percent)\b/.test(
+      text
+    );
+
+  if (
+    !hasAnalyticalInstruction
+  ) {
+    return false;
+  }
+
+  /**
+   * Require the user to explicitly name at least one REAL field
+   * from the current live schema. This keeps vague follow-ups such
+   * as "what about the total?" connected to prior context.
+   */
+  const explicitColumns =
+    findExplicitSchemaColumns({
+      schema,
+      question,
+      preferredDataset:
+        null,
+    });
+
+  if (
+    !Array.isArray(
+      explicitColumns
+    ) ||
+    !explicitColumns.length
+  ) {
+    return false;
+  }
+
+  /**
+   * Referential wording means the user is intentionally continuing
+   * the previous scope, so do not reset it.
+   *
+   * Examples that KEEP context:
+   *   "What is the total quantity there?"
+   *   "What about the average?"
+   *   "And total project cost?"
+   */
+  if (
+    hasReferentialScopeLanguage(
+      question
+    )
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+
+function findFollowUpMetricColumn({
+  schema,
+  question,
+  preferredDataset = null,
+}) {
+  const target =
+    extractFollowUpTargetPhrase(
+      question
+    );
+
+  if (!target) {
+    return null;
+  }
+
+  /**
+   * Prefer an explicit real schema-column match.
+   */
+  const exact =
+    findExplicitSchemaColumn({
+      schema,
+      question:
+        target,
+      preferredDataset,
+    });
+
+  if (exact) {
+    return exact;
+  }
+
+  /**
+   * Then allow the existing conservative schema-aware fuzzy
+   * resolver for abbreviations/minor misspellings.
+   */
+  return (
+    inferRequestedColumnFromQuestion({
+      schema,
+      question:
+        target,
+      preferredDataset,
+      excludedColumns:
+        [],
+    }) ||
+    null
+  );
 }
 
 
@@ -12076,6 +12292,66 @@ async function answerQuestion(
       cleanQuestion
     );
 
+  /**
+   * ========================================================
+   * NEW SELF-CONTAINED QUESTION = NEW SCOPE
+   * ========================================================
+   *
+   * A complete analytical question that names its own metric
+   * should not inherit an older province/municipality/status/etc.
+   *
+   * Example structure:
+   *   previous: "... in <some place>"
+   *   current:  "What is the total <real metric>?"
+   *
+   * The current question is complete by itself, so clear only the
+   * conversational carry-over. The user's actual session/history is
+   * NOT deleted; this affects only planning for this turn.
+   */
+  const startsFreshAnalyticalScope =
+    isSelfContainedAnalyticalQuestion({
+      schema,
+      question:
+        cleanQuestion,
+    });
+
+  if (
+    startsFreshAnalyticalScope &&
+    conversationContext &&
+    typeof conversationContext ===
+      "object"
+  ) {
+    conversationContext.isFollowUp =
+      false;
+
+    conversationContext.lastDataset =
+      null;
+
+    conversationContext.lastPlan =
+      null;
+
+    conversationContext.lastResult =
+      null;
+
+    conversationContext.lastFilters =
+      [];
+
+    conversationContext.lastEntity =
+      null;
+
+    conversationContext.lastSubjectColumn =
+      null;
+
+    conversationContext.lastSubjectQuestion =
+      null;
+
+    conversationContext.lastIntent =
+      null;
+
+    conversationContext.analyticalContext =
+      null;
+  }
+
   if (
     process.env.NODE_ENV !==
       "production"
@@ -12089,6 +12365,77 @@ async function answerQuestion(
       )
     );
   }
+
+
+  // ========================================================
+  // DETERMINISTIC LINKED MULTI-FIELD LOOKUP
+  // ========================================================
+  //
+  // Example structure:
+  //
+  //   "What are the <A> in <scope> and give me <B>"
+  //
+  // This is handled as ONE lookup so the scope/filter from the
+  // first clause remains attached to every requested output.
+  //
+  const linkedMultiFieldPlan =
+    buildLinkedMultiFieldPlan({
+      datasets,
+      schema,
+      question:
+        cleanQuestion,
+    });
+
+  if (
+    linkedMultiFieldPlan
+  ) {
+    const linkedResult =
+      await executeResolvedPlan(
+        linkedMultiFieldPlan
+      );
+
+    /**
+     * Preserve the calculation engine's row-aware rendering so
+     * all requested output fields remain attached to each row.
+     */
+    const linkedAnswer =
+      linkedResult?.answer;
+
+    updateConversation(
+      sessionId,
+      {
+        question:
+          cleanQuestion,
+        plan:
+          linkedMultiFieldPlan,
+        result:
+          linkedResult,
+      }
+    );
+
+    return {
+      ...linkedResult,
+
+      answer:
+        formatUserFacingAnswer(
+          linkedAnswer ||
+          linkedResult?.answer
+        ),
+
+      responseStyle:
+        "natural",
+
+      debugPlan:
+        linkedMultiFieldPlan,
+
+      debugEntityChanges:
+        [],
+
+      plannerSource:
+        "deterministic-linked-multifield",
+    };
+  }
+
 
 
   // ========================================================
@@ -13116,6 +13463,29 @@ async function answerQuestion(
       cleanQuestion
     );
 
+  /**
+   * Before interpreting "what about X?" as a NEW ENTITY/FILTER,
+   * check whether X is actually a real schema metric/field.
+   *
+   * Example structure:
+   *   previous: "total <metric A>"
+   *   follow-up: "what about <metric B>"
+   *
+   * If <metric B> is a real field, the analytical follow-up
+   * handler later in the pipeline should switch the metric while
+   * preserving the previous operation.
+   */
+  const sameQueryMetricColumn =
+    findFollowUpMetricColumn({
+      schema,
+      question:
+        cleanQuestion,
+      preferredDataset:
+        conversationContext
+          ?.lastDataset ||
+        null,
+    });
+
   const looksLikeSameQueryNewFilter =
     conversationContext
       .isFollowUp === true &&
@@ -13123,7 +13493,8 @@ async function answerQuestion(
       sameQueryFilterText
     ) &&
     conversationContext
-      .lastDataset;
+      .lastDataset &&
+    !sameQueryMetricColumn;
 
   if (
     looksLikeSameQueryNewFilter
@@ -14606,79 +14977,6 @@ async function answerQuestion(
     };
   }
 
-
-
-  // ========================================================
-  // DETERMINISTIC LINKED MULTI-FIELD LOOKUP
-  // ========================================================
-  //
-  // Example structure:
-  //
-  //   "What are the <A> in <scope> and give me <B>"
-  //
-  // This is handled as ONE lookup so the scope/filter from the
-  // first clause remains attached to every requested output.
-  //
-  const linkedMultiFieldPlan =
-    buildLinkedMultiFieldPlan({
-      datasets,
-      schema,
-      question:
-        cleanQuestion,
-    });
-
-  if (
-    linkedMultiFieldPlan
-  ) {
-    const linkedResult =
-      await executeResolvedPlan(
-        linkedMultiFieldPlan
-      );
-
-    const linkedAnswer =
-      await generateNaturalResponse({
-        question:
-          cleanQuestion,
-        plan:
-          linkedMultiFieldPlan,
-        result:
-          linkedResult,
-      });
-
-    updateConversation(
-      sessionId,
-      {
-        question:
-          cleanQuestion,
-        plan:
-          linkedMultiFieldPlan,
-        result:
-          linkedResult,
-      }
-    );
-
-    return {
-      ...linkedResult,
-
-      answer:
-        formatUserFacingAnswer(
-          linkedAnswer ||
-          linkedResult?.answer
-        ),
-
-      responseStyle:
-        "natural",
-
-      debugPlan:
-        linkedMultiFieldPlan,
-
-      debugEntityChanges:
-        [],
-
-      plannerSource:
-        "deterministic-linked-multifield",
-    };
-  }
 
 
   // ========================================================
