@@ -11482,6 +11482,319 @@ function buildCompoundAnswer(
 
 
 
+
+/**
+ * ==========================================================
+ * USER-FACING ANSWER FORMATTER
+ * ==========================================================
+ * Presentation only. Dataset calculations are unchanged.
+ */
+function formatUserFacingAnswer(answer) {
+  let output = String(answer || "").trim();
+  if (!output) return output;
+
+  // I-DAMAG monetary values are presented in Philippine pesos.
+  output = output.replace(/\$(?=\s*[\d,.])/g, "₱");
+
+  // Avoid raw Markdown markers in the chatbot bubble.
+  output = output.replace(/\*\*/g, "");
+
+  return output;
+}
+
+function improveCompoundAnswerWording(subResults) {
+  const answers = subResults
+    .map((item) =>
+      formatUserFacingAnswer(item?.result?.answer)
+    )
+    .filter(Boolean);
+
+  if (!answers.length) {
+    return "I couldn't complete the requested questions.";
+  }
+
+  if (answers.length === 1) {
+    return answers[0];
+  }
+
+  const cleaned = answers.map((answer) =>
+    String(answer).replace(/[.!?]+$/, "").trim()
+  );
+
+  if (cleaned.length === 2) {
+    return `${cleaned[0]}. ${cleaned[1]}.`;
+  }
+
+  return cleaned
+    .map((answer, index) => `${index + 1}. ${answer}.`)
+    .join("\n");
+}
+
+
+
+/**
+ * ==========================================================
+ * LINKED MULTI-FIELD REQUEST DETECTOR
+ * ==========================================================
+ *
+ * Handles related requests such as:
+ *
+ *   "What are the <field A> in <scope> and give me <field B>"
+ *   "Show <field A> for <scope> and include <field B>"
+ *
+ * These are NOT two independent questions. They are one
+ * row-aware lookup with shared filters and multiple outputs.
+ *
+ * No worksheet names, field names, values, or business terms
+ * are hardcoded.
+ */
+
+function splitLinkedMultiFieldRequest(
+  question
+) {
+  const original =
+    String(
+      question || ""
+    )
+      .replace(/\s+/g, " ")
+      .trim();
+
+  if (!original) {
+    return null;
+  }
+
+  const match =
+    original.match(
+      /^(.+?)\s+(?:,?\s*)\band\b\s+(?:(?:also\s+)?(?:give|show|tell)\s+(?:me\s+)?|include\s+)(.+)$/i
+    );
+
+  if (
+    !match?.[1] ||
+    !match?.[2]
+  ) {
+    return null;
+  }
+
+  const firstClause =
+    match[1].trim();
+
+  const secondClause =
+    match[2].trim();
+
+  /**
+   * If the second clause explicitly asks for its own analytical
+   * operation, it is a true compound calculation and should
+   * continue through the compound-question path.
+   */
+  const secondIsIndependentCalculation =
+    /\b(?:how\s+many|how\s+much|total|sum|average|avg|mean|median|minimum|maximum|max|min|count|number\s+of|difference|ratio|percentage|percent)\b/i.test(
+      secondClause
+    );
+
+  if (
+    secondIsIndependentCalculation
+  ) {
+    return null;
+  }
+
+  return {
+    firstClause,
+    secondClause,
+  };
+}
+
+
+function filterClearlyMentionedLiveFilters(
+  filters,
+  question
+) {
+  const normalizedQuestion =
+    ` ${normalizeText(
+      question
+    )} `;
+
+  return (
+    Array.isArray(filters)
+      ? filters
+      : []
+  ).filter(
+    (filter) => {
+      const rawValues =
+        Array.isArray(
+          filter?.value
+        )
+          ? filter.value
+          : [
+              filter?.value,
+            ];
+
+      if (
+        !rawValues.length
+      ) {
+        return false;
+      }
+
+      return rawValues.every(
+        (rawValue) => {
+          const normalizedValue =
+            normalizeText(
+              rawValue
+            );
+
+          if (
+            !normalizedValue
+          ) {
+            return false;
+          }
+
+          /**
+           * Require the inferred value to appear as a complete
+           * normalized phrase in the user's scope clause.
+           *
+           * This blocks accidental substring matches such as
+           * a short value being inferred from inside a longer word.
+           */
+          return normalizedQuestion.includes(
+            ` ${normalizedValue} `
+          );
+        }
+      );
+    }
+  );
+}
+
+
+function buildLinkedMultiFieldPlan({
+  datasets,
+  schema,
+  question,
+}) {
+  const linked =
+    splitLinkedMultiFieldRequest(
+      question
+    );
+
+  if (
+    !linked
+  ) {
+    return null;
+  }
+
+  const firstField =
+    inferRequestedColumnFromQuestion({
+      schema,
+      question:
+        linked.firstClause,
+      preferredDataset:
+        null,
+    });
+
+  if (
+    !firstField
+  ) {
+    return null;
+  }
+
+  const secondField =
+    inferRequestedColumnFromQuestion({
+      schema,
+      question:
+        linked.secondClause,
+      preferredDataset:
+        firstField.dataset,
+      excludedColumns: [
+        firstField.column,
+      ],
+    });
+
+  if (
+    !secondField ||
+    String(
+      secondField.dataset
+    ) !==
+      String(
+        firstField.dataset
+      )
+  ) {
+    return null;
+  }
+
+  const rows =
+    datasets?.[
+      firstField.dataset
+    ];
+
+  if (
+    !Array.isArray(rows) ||
+    !rows.length
+  ) {
+    return null;
+  }
+
+  const rawFilters =
+    inferValueFilters(
+      rows,
+      linked.firstClause,
+      [
+        firstField.column,
+        secondField.column,
+      ]
+    );
+
+  const filters =
+    filterClearlyMentionedLiveFilters(
+      rawFilters,
+      linked.firstClause
+    );
+
+  /**
+   * The first clause must provide at least one real scope/value
+   * filter. Otherwise this should remain a normal multi-output
+   * question for the existing planner.
+   */
+  if (
+    !filters.length
+  ) {
+    return null;
+  }
+
+  return {
+    route:
+      "dataset",
+    dataset:
+      firstField.dataset,
+    operation:
+      "lookup",
+    column:
+      null,
+    labelColumn:
+      firstField.column,
+    groupBy:
+      null,
+    aggregation:
+      null,
+    direction:
+      null,
+    filters,
+    selectColumns: [
+      firstField.column,
+      secondField.column,
+    ],
+    outputRequested:
+      true,
+    transform:
+      null,
+    showAll:
+      true,
+    limit:
+      100,
+    linkedMultiField:
+      true,
+  };
+}
+
+
+
 /**
  * ==========================================================
  * MAIN CHATBOT ENTRY POINT
@@ -11564,10 +11877,19 @@ async function answerQuestion(
     internalOptions
       ?.disableCompound !== true
   ) {
-    const compoundQuestions =
-      splitCompoundQuestions(
+    const linkedMultiFieldCandidate =
+      splitLinkedMultiFieldRequest(
         cleanQuestion
       );
+
+    const compoundQuestions =
+      linkedMultiFieldCandidate
+        ? [
+            cleanQuestion,
+          ]
+        : splitCompoundQuestions(
+            cleanQuestion
+          );
 
     if (
       compoundQuestions.length > 1
@@ -11676,7 +11998,7 @@ async function answerQuestion(
             })
           ),
         answer:
-          buildCompoundAnswer(
+          improveCompoundAnswerWording(
             subResults
           ),
         responseStyle:
@@ -14271,8 +14593,90 @@ async function answerQuestion(
     return {
       ...multiCategoryCount
         .result,
+
+      answer:
+        formatUserFacingAnswer(
+          multiCategoryCount
+            .result
+            ?.answer
+        ),
+
       plannerSource:
         "deterministic-multi-category",
+    };
+  }
+
+
+
+  // ========================================================
+  // DETERMINISTIC LINKED MULTI-FIELD LOOKUP
+  // ========================================================
+  //
+  // Example structure:
+  //
+  //   "What are the <A> in <scope> and give me <B>"
+  //
+  // This is handled as ONE lookup so the scope/filter from the
+  // first clause remains attached to every requested output.
+  //
+  const linkedMultiFieldPlan =
+    buildLinkedMultiFieldPlan({
+      datasets,
+      schema,
+      question:
+        cleanQuestion,
+    });
+
+  if (
+    linkedMultiFieldPlan
+  ) {
+    const linkedResult =
+      await executeResolvedPlan(
+        linkedMultiFieldPlan
+      );
+
+    const linkedAnswer =
+      await generateNaturalResponse({
+        question:
+          cleanQuestion,
+        plan:
+          linkedMultiFieldPlan,
+        result:
+          linkedResult,
+      });
+
+    updateConversation(
+      sessionId,
+      {
+        question:
+          cleanQuestion,
+        plan:
+          linkedMultiFieldPlan,
+        result:
+          linkedResult,
+      }
+    );
+
+    return {
+      ...linkedResult,
+
+      answer:
+        formatUserFacingAnswer(
+          linkedAnswer ||
+          linkedResult?.answer
+        ),
+
+      responseStyle:
+        "natural",
+
+      debugPlan:
+        linkedMultiFieldPlan,
+
+      debugEntityChanges:
+        [],
+
+      plannerSource:
+        "deterministic-linked-multifield",
     };
   }
 
@@ -14485,7 +14889,9 @@ async function answerQuestion(
         ...result,
 
         answer:
-          finalAnswer,
+          formatUserFacingAnswer(
+            finalAnswer
+          ),
 
         oneToManyResolved,
 
@@ -14698,7 +15104,9 @@ async function answerQuestion(
       ...result,
 
       answer:
-        finalAnswer,
+        formatUserFacingAnswer(
+          finalAnswer
+        ),
 
       oneToManyResolved,
 
