@@ -12368,77 +12368,6 @@ async function answerQuestion(
 
 
   // ========================================================
-  // DETERMINISTIC LINKED MULTI-FIELD LOOKUP
-  // ========================================================
-  //
-  // Example structure:
-  //
-  //   "What are the <A> in <scope> and give me <B>"
-  //
-  // This is handled as ONE lookup so the scope/filter from the
-  // first clause remains attached to every requested output.
-  //
-  const linkedMultiFieldPlan =
-    buildLinkedMultiFieldPlan({
-      datasets,
-      schema,
-      question:
-        cleanQuestion,
-    });
-
-  if (
-    linkedMultiFieldPlan
-  ) {
-    const linkedResult =
-      await executeResolvedPlan(
-        linkedMultiFieldPlan
-      );
-
-    /**
-     * Preserve the calculation engine's row-aware rendering so
-     * all requested output fields remain attached to each row.
-     */
-    const linkedAnswer =
-      linkedResult?.answer;
-
-    updateConversation(
-      sessionId,
-      {
-        question:
-          cleanQuestion,
-        plan:
-          linkedMultiFieldPlan,
-        result:
-          linkedResult,
-      }
-    );
-
-    return {
-      ...linkedResult,
-
-      answer:
-        formatUserFacingAnswer(
-          linkedAnswer ||
-          linkedResult?.answer
-        ),
-
-      responseStyle:
-        "natural",
-
-      debugPlan:
-        linkedMultiFieldPlan,
-
-      debugEntityChanges:
-        [],
-
-      plannerSource:
-        "deterministic-linked-multifield",
-    };
-  }
-
-
-
-  // ========================================================
   // STEP 10 — ANALYTICAL COMPARISON FOLLOW-UPS
   // ========================================================
   //
@@ -13315,6 +13244,78 @@ async function answerQuestion(
       };
     };
 
+
+
+
+
+  // ========================================================
+  // DETERMINISTIC LINKED MULTI-FIELD LOOKUP
+  // ========================================================
+  //
+  // Example structure:
+  //
+  //   "What are the <A> in <scope> and give me <B>"
+  //
+  // This is handled as ONE lookup so the scope/filter from the
+  // first clause remains attached to every requested output.
+  //
+  const linkedMultiFieldPlan =
+    buildLinkedMultiFieldPlan({
+      datasets,
+      schema,
+      question:
+        cleanQuestion,
+    });
+
+  if (
+    linkedMultiFieldPlan
+  ) {
+    const linkedResult =
+      await executeResolvedPlan(
+        linkedMultiFieldPlan
+      );
+
+    /**
+     * Preserve the calculation engine's row-aware rendering so
+     * all requested output fields remain attached to each row.
+     */
+    const linkedAnswer =
+      linkedResult?.answer;
+
+    updateConversation(
+      sessionId,
+      {
+        question:
+          cleanQuestion,
+        plan:
+          linkedMultiFieldPlan,
+        result:
+          linkedResult,
+      }
+    );
+
+    return {
+      ...linkedResult,
+
+      answer:
+        formatUserFacingAnswer(
+          linkedAnswer ||
+          linkedResult?.answer
+        ),
+
+      responseStyle:
+        "natural",
+
+      debugPlan:
+        linkedMultiFieldPlan,
+
+      debugEntityChanges:
+        [],
+
+      plannerSource:
+        "deterministic-linked-multifield",
+    };
+  }
 
 
 
