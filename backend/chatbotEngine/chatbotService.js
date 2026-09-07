@@ -5970,44 +5970,112 @@ function buildVerifiedListAnswer({
 function buildContextAwareContinuousListAnswer({
   result,
   subjectColumn = null,
+  pairColumn = null,
   context = null,
   preferScopeValue = false,
 }) {
+  const resultRows = Array.isArray(result?.results) ? result.results : [];
+
+  /**
+   * For chained field questions, preserve the ACTUAL row relationship:
+   *
+   *   <value from previous field> - <value from current requested field>
+   *
+   * Example shape only (never hardcoded):
+   *   <association value> - <municipality value>
+   *   <municipality value> - <commodity value>
+   *
+   * This uses values returned by the calculation engine, not schema labels.
+   */
+  if (
+    pairColumn &&
+    subjectColumn &&
+    normalizeText(pairColumn) !== normalizeText(subjectColumn) &&
+    resultRows.some((item) => item && typeof item === "object")
+  ) {
+    const pairs = [];
+
+    for (const item of resultRows) {
+      if (!item || typeof item !== "object") continue;
+
+      const leftRaw =
+        item?.[pairColumn] ??
+        item?.label ??
+        null;
+
+      const rightRaw =
+        item?.[subjectColumn] ??
+        item?.value ??
+        null;
+
+      const left = String(leftRaw ?? "").trim();
+      const right = String(rightRaw ?? "").trim();
+
+      if (!left || !right) continue;
+
+      // Explicit delimiters always indicate multiple values. For comma-delimited
+      // cells, split only when the text looks like a compact category list.
+      let rightValues = [right];
+      if (/[;|]/.test(right)) {
+        rightValues = right.split(/[;|]/);
+      } else if (right.includes(",")) {
+        const parts = right.split(",").map((v) => v.trim()).filter(Boolean);
+        const compactCategoryList =
+          parts.length >= 2 &&
+          parts.every((v) => v.split(/\s+/).filter(Boolean).length <= 5);
+        if (compactCategoryList) rightValues = parts;
+      }
+
+      for (const value of rightValues) {
+        const cleaned = String(value).trim();
+        if (cleaned) pairs.push({ left, right: cleaned });
+      }
+    }
+
+    const uniquePairs = [];
+    const seenPairs = new Set();
+    for (const pair of pairs) {
+      const key = `${normalizeText(pair.left)}\u0000${normalizeText(pair.right)}`;
+      if (!pair.left || !pair.right || seenPairs.has(key)) continue;
+      seenPairs.add(key);
+      uniquePairs.push(pair);
+    }
+
+    if (uniquePairs.length) {
+      return uniquePairs.map((pair) => `${pair.left} - ${pair.right}`).join("\n");
+    }
+  }
+
   const rawItems =
-    Array.isArray(result?.results)
-      ? result.results
-          .map((item) => {
-            if (item === null || item === undefined) return "";
-            if (typeof item !== "object") return String(item).trim();
-            if (subjectColumn && item?.[subjectColumn] !== null && item?.[subjectColumn] !== undefined) {
-              return String(item[subjectColumn]).trim();
-            }
-            if (item.value !== null && item.value !== undefined) return String(item.value).trim();
-            if (item.label !== null && item.label !== undefined) return String(item.label).trim();
-            return "";
-          })
-          .filter(Boolean)
-      : [];
+    resultRows
+      .map((item) => {
+        if (item === null || item === undefined) return "";
+        if (typeof item !== "object") return String(item).trim();
+        if (subjectColumn && item?.[subjectColumn] !== null && item?.[subjectColumn] !== undefined) {
+          return String(item[subjectColumn]).trim();
+        }
+        if (item.value !== null && item.value !== undefined) return String(item.value).trim();
+        if (item.label !== null && item.label !== undefined) return String(item.label).trim();
+        return "";
+      })
+      .filter(Boolean);
 
   if (!rawItems.length) {
     return result?.answer || "No matching results were found.";
   }
 
-  // Generic multi-value-cell normalization. Split comma-delimited values only
-  // when multiple rows share at least one token, which is a strong signal that
-  // the cells contain categories rather than prose/names. Semicolon/pipe are
-  // treated as explicit multi-value delimiters.
+  // Generic multi-value-cell normalization.
   let items = [...rawItems];
   const explicitMulti = rawItems.some((v) => /[;|]/.test(v));
   const commaRows = rawItems.filter((v) => v.includes(","));
   let sharedCommaToken = false;
   if (commaRows.length >= 2) {
     const tokenSets = commaRows.map((v) => new Set(v.split(",").map((x) => normalizeText(x)).filter(Boolean)));
-    const seen = new Set();
+    const tokenSeen = new Set();
     for (const set of tokenSets) {
       for (const token of set) {
-        if (seen.has(token)) sharedCommaToken = true;
-        seen.add(token);
+        if (tokenSeen.has(token)) sharedCommaToken = true;
+        tokenSeen.add(token);
       }
     }
   }
@@ -6018,7 +6086,6 @@ function buildContextAwareContinuousListAnswer({
       .filter(Boolean);
   }
 
-  // Case-insensitive de-duplication while preserving first-seen spelling.
   const unique = [];
   const seen = new Set();
   for (const item of items) {
@@ -6034,23 +6101,13 @@ function buildContextAwareContinuousListAnswer({
       ? String(filters[0]?.value ?? "").trim()
       : "";
 
-  const humanizeSubject = (value) => {
-    let label = String(value || "").trim();
-    if (!label) return "";
-    label = label.replace(/^name\s+of\s+/i, "").replace(/^list\s+of\s+/i, "").trim();
-    return label;
-  };
-
-  const previousSubject = humanizeSubject(context?.lastSubjectColumn);
+  const previousSubject = String(context?.lastSubjectColumn || "").trim();
   const prefix =
     preferScopeValue && singleScopeValue
       ? singleScopeValue
       : previousSubject || singleScopeValue;
 
-  if (!prefix) {
-    return unique.join("\n");
-  }
-
+  if (!prefix) return unique.join("\n");
   return unique.map((value) => `${prefix} - ${value}`).join("\n");
 }
 
@@ -13374,28 +13431,39 @@ function buildExplicitReferentialFieldPlan({
         )
       : [];
 
+  const previousSubjectColumn =
+    context.lastSubjectColumn &&
+    normalizeText(context.lastSubjectColumn) !== normalizeText(requested.column)
+      ? context.lastSubjectColumn
+      : null;
+
+  const selectColumns = [];
+  if (previousSubjectColumn) selectColumns.push(previousSubjectColumn);
+  selectColumns.push(requested.column);
+
   return {
     route: "dataset",
     dataset:
       context.lastDataset,
-    operation: "list",
+    operation:
+      previousSubjectColumn ? "lookup" : "list",
     column:
       requested.column,
     labelColumn:
-      requested.column,
+      previousSubjectColumn || requested.column,
     groupBy: null,
     aggregation: null,
     direction: null,
     filters,
-    selectColumns: [
-      requested.column,
-    ],
+    selectColumns,
     outputRequested: true,
     transform: null,
     showAll: true,
     limit: 100,
     explicitReferentialField: true,
     explicitReferentialFieldMatch: "morphology-aware",
+    conversationalPairColumn:
+      previousSubjectColumn,
   };
 }
 
@@ -14961,6 +15029,9 @@ async function answerQuestion(
             explicitReferentialFieldResult,
           subjectColumn:
             explicitReferentialFieldPlan.column,
+          pairColumn:
+            explicitReferentialFieldPlan.conversationalPairColumn ||
+            null,
           context:
             conversationContext,
           preferScopeValue:
