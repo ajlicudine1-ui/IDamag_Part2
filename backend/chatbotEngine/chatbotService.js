@@ -1618,6 +1618,476 @@ function detectGroupedComparisonOperation(
   return null;
 }
 
+
+/**
+ * Resolve explicit ranking fields from the CURRENT question.
+ *
+ * Priority rule:
+ *   current-question schema fields > current-question inference > memory.
+ *
+ * No field names are hardcoded. Numeric/text roles come from the live
+ * schema and live rows.
+ */
+function resolveExplicitRankingColumns({
+  datasets,
+  schema,
+  question,
+  preferredDataset = null,
+}) {
+  const explicit =
+    findExplicitSchemaColumns({
+      schema,
+      question,
+      preferredDataset,
+    });
+
+  if (!explicit.length) {
+    return null;
+  }
+
+  const byDataset = new Map();
+
+  for (const item of explicit) {
+    if (!byDataset.has(item.dataset)) {
+      byDataset.set(item.dataset, []);
+    }
+    byDataset.get(item.dataset).push(item);
+  }
+
+  const candidates = [];
+
+  for (const [datasetName, items] of byDataset) {
+    const datasetSchema =
+      (schema || []).find(
+        (entry) =>
+          String(entry?.name || "") ===
+          String(datasetName || "")
+      );
+
+    const rows = datasets?.[datasetName];
+
+    if (!datasetSchema || !Array.isArray(rows)) {
+      continue;
+    }
+
+    const numeric = [];
+    const labels = [];
+
+    for (const item of items) {
+      const columnSchema =
+        (datasetSchema.columns || []).find(
+          (column) =>
+            String(column?.name || "") ===
+            String(item.column || "")
+        );
+
+      if (!columnSchema) continue;
+
+      if (
+        isNumericLikeColumn({
+          column: columnSchema,
+          rows,
+        })
+      ) {
+        numeric.push(item.column);
+      } else {
+        labels.push(item.column);
+      }
+    }
+
+    if (numeric.length || labels.length) {
+      candidates.push({
+        dataset: datasetName,
+        numeric,
+        labels,
+        score:
+          numeric.length * 3 +
+          labels.length * 2 +
+          (datasetName === preferredDataset ? 0.25 : 0),
+      });
+    }
+  }
+
+  candidates.sort(
+    (a, b) => b.score - a.score
+  );
+
+  const best = candidates[0] || null;
+
+  if (!best) {
+    return null;
+  }
+
+  return {
+    dataset: best.dataset,
+    metricColumn:
+      best.numeric[0] || null,
+    groupColumn:
+      best.labels[0] || null,
+    explicitColumns: explicit,
+  };
+}
+
+/**
+ * True when the current wording explicitly names a grouping field that
+ * differs from the grouping represented by a previous analytical set.
+ */
+function currentQuestionOverridesAnalyticalGroup({
+  datasets,
+  schema,
+  question,
+  previousGroupBy,
+  preferredDataset = null,
+}) {
+  const resolved =
+    resolveExplicitRankingColumns({
+      datasets,
+      schema,
+      question,
+      preferredDataset,
+    });
+
+  if (!resolved?.groupColumn) {
+    return false;
+  }
+
+  return (
+    normalizeText(resolved.groupColumn) !==
+    normalizeText(previousGroupBy || "")
+  );
+}
+
+/**
+ * Semantic filter guard.
+ *
+ * Protects aggregate/ranking plans from weak substring filters created
+ * from descriptive/report-context wording. Exact values and explicitly
+ * narrowed filters remain intact.
+ */
+function sanitizeSemanticPlanFilters({
+  datasets,
+  plan,
+  question,
+  reportContext = null,
+}) {
+  if (
+    !plan ||
+    plan.route !== "dataset" ||
+    !Array.isArray(plan.filters) ||
+    !plan.filters.length ||
+    !plan.dataset
+  ) {
+    return plan;
+  }
+
+  const rows = datasets?.[plan.dataset];
+  if (!Array.isArray(rows) || !rows.length) {
+    return plan;
+  }
+
+  const questionText = normalizeText(question);
+  const reportText = normalizeText(
+    typeof reportContext === "string"
+      ? reportContext
+      : reportContext?.title ||
+        reportContext?.name ||
+        ""
+  );
+
+  const analyticalOperation =
+    new Set([
+      "sum",
+      "average",
+      "median",
+      "minimum",
+      "maximum",
+      "count",
+      "non_empty_count",
+      "distinct_count",
+      "rank_rows",
+      "rank_groups",
+      "group_sum",
+      "group_average",
+      "group_minimum",
+      "group_maximum",
+      "group_count",
+    ]).has(
+      String(plan.operation || "")
+        .trim()
+        .toLowerCase()
+    );
+
+  if (!analyticalOperation) {
+    return plan;
+  }
+
+  const hasExplicitNarrowingCue = (valueText) => {
+    if (!valueText) return false;
+
+    const escaped = valueText.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&"
+    );
+
+    return new RegExp(
+      `\\b(?:in|from|at|within|where|with|only|named|called|equals?|equal\\s+to|filter(?:ed)?(?:\\s+by)?|containing|contains)\\b[^.?!]{0,80}\\b${escaped}\\b|\\b${escaped}\\b[^.?!]{0,40}\\b(?:only|specifically)\\b`,
+      "u"
+    ).test(questionText);
+  };
+
+  const cleaned = [];
+  const removed = [];
+
+  for (const filter of plan.filters) {
+    const operator =
+      String(filter?.operator || "equals")
+        .trim()
+        .toLowerCase();
+
+    const values =
+      Array.isArray(filter?.value)
+        ? filter.value
+        : [filter?.value];
+
+    // Multi-value/in/equality filters are strong enough to preserve here.
+    if (operator !== "contains" || values.length !== 1) {
+      cleaned.push(filter);
+      continue;
+    }
+
+    const rawValue = values[0];
+    const valueText = normalizeText(rawValue);
+    const columnName = filter?.column;
+
+    if (!valueText || !columnName) {
+      cleaned.push(filter);
+      continue;
+    }
+
+    const distinctValues = [
+      ...new Set(
+        rows
+          .map((row) => row?.[columnName])
+          .filter(
+            (value) =>
+              value !== null &&
+              value !== undefined &&
+              String(value).trim() !== ""
+          )
+          .map((value) => String(value).trim())
+      ),
+    ];
+
+    const exactExists = distinctValues.some(
+      (value) => normalizeText(value) === valueText
+    );
+
+    const partialMatches = distinctValues.filter(
+      (value) =>
+        normalizeText(value).includes(valueText)
+    );
+
+    const explicitNarrowing =
+      hasExplicitNarrowingCue(valueText);
+
+    const valueTokens =
+      valueText.split(/\s+/).filter(Boolean);
+
+    const columnWords =
+      normalizeText(columnName)
+        .split(/\s+/)
+        .filter(
+          (token) =>
+            token.length >= 4 &&
+            !new Set([
+              "name",
+              "number",
+              "total",
+              "value",
+              "code",
+              "description",
+            ]).has(token)
+        );
+
+    const contextNounPattern = columnWords.length
+      ? new RegExp(
+          `\\b${valueText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b\\s+(?:${columnWords
+            .map((word) => `${word}s?`)
+            .join("|")})\\b`,
+          "u"
+        )
+      : null;
+
+    const looksLikeDescriptiveContext =
+      Boolean(
+        contextNounPattern &&
+        contextNounPattern.test(questionText)
+      );
+
+    const representedByReportContext =
+      Boolean(
+        reportText &&
+        reportText.includes(valueText)
+      );
+
+    const weakContains =
+      partialMatches.length > 0 &&
+      valueTokens.length <= 3 &&
+      !explicitNarrowing &&
+      (
+        representedByReportContext ||
+        (
+          !exactExists &&
+          looksLikeDescriptiveContext
+        )
+      );
+
+    if (weakContains) {
+      removed.push({
+        ...filter,
+        reason:
+          representedByReportContext
+            ? "report-context-suppression"
+            : "weak-contains-filter",
+        matchedDistinctValues:
+          partialMatches.length,
+      });
+      continue;
+    }
+
+    cleaned.push(filter);
+  }
+
+  if (cleaned.length === plan.filters.length) {
+    return plan;
+  }
+
+  return {
+    ...plan,
+    filters: cleaned,
+    semanticGuardChanges: [
+      ...(Array.isArray(plan.semanticGuardChanges)
+        ? plan.semanticGuardChanges
+        : []),
+      ...removed,
+    ],
+  };
+}
+
+/**
+ * Deterministically honor explicit aggregate wording when the selected
+ * metric is a real numeric field. The planner still chooses the dataset
+ * and metric; JavaScript only aligns the operation with the user's words.
+ */
+function repairSemanticAggregatePlan({
+  datasets,
+  schema,
+  plan,
+  question,
+}) {
+  if (!plan || plan.route !== "dataset") {
+    return plan;
+  }
+
+  const requestedAggregation =
+    detectQuestionAggregation(question);
+
+  if (
+    !requestedAggregation ||
+    !["sum", "average"].includes(requestedAggregation)
+  ) {
+    return plan;
+  }
+
+  const datasetSchema =
+    (schema || []).find(
+      (entry) =>
+        String(entry?.name || "") ===
+        String(plan.dataset || "")
+    );
+  const rows = datasets?.[plan.dataset];
+
+  if (!datasetSchema || !Array.isArray(rows)) {
+    return plan;
+  }
+
+  let metricName = plan.column || null;
+
+  const explicit =
+    findExplicitSchemaColumns({
+      schema,
+      question,
+      preferredDataset: plan.dataset || null,
+    });
+
+  const explicitNumeric = explicit.find((item) => {
+    const column =
+      (datasetSchema.columns || []).find(
+        (candidate) =>
+          String(candidate?.name || "") ===
+          String(item.column || "")
+      );
+    return column && isNumericLikeColumn({ column, rows });
+  });
+
+  if (explicitNumeric?.column) {
+    metricName = explicitNumeric.column;
+  }
+
+  const metricSchema =
+    (datasetSchema.columns || []).find(
+      (column) =>
+        String(column?.name || "") ===
+        String(metricName || "")
+    );
+
+  if (
+    !metricSchema ||
+    !isNumericLikeColumn({
+      column: metricSchema,
+      rows,
+    })
+  ) {
+    return plan;
+  }
+
+  const ranking = Boolean(
+    detectRankingDirection(question)
+  );
+
+  if (ranking) {
+    return {
+      ...plan,
+      column: metricName,
+      aggregation:
+        plan.groupBy || plan.labelColumn
+          ? requestedAggregation
+          : plan.aggregation,
+      selectColumns: [
+        ...new Set([
+          plan.groupBy,
+          plan.labelColumn,
+          metricName,
+          ...(Array.isArray(plan.selectColumns)
+            ? plan.selectColumns
+            : []),
+        ].filter(Boolean)),
+      ],
+    };
+  }
+
+  return {
+    ...plan,
+    operation: requestedAggregation,
+    column: metricName,
+    aggregation: null,
+    groupBy: null,
+    labelColumn: null,
+    selectColumns: [metricName],
+    outputRequested: true,
+  };
+}
+
 function normalizePlannerPlan({
   datasets,
   schema,
@@ -1673,6 +2143,82 @@ function normalizePlannerPlan({
     detectRankingDirection(
       question
     );
+
+
+  /**
+   * CURRENT QUESTION OVERRIDES REMEMBERED GROUPING.
+   *
+   * Example:
+   *   previous: grouped by Year
+   *   current:  "top 10 Item highest Total Cost"
+   *
+   * If Item and Total Cost are real live fields, the current wording wins
+   * even when an older conversation plan used a different groupBy.
+   */
+  if (rankingDirection) {
+    const explicitRanking =
+      resolveExplicitRankingColumns({
+        datasets,
+        schema,
+        question,
+        preferredDataset:
+          normalized.dataset || null,
+      });
+
+    if (
+      explicitRanking?.dataset &&
+      (
+        explicitRanking.metricColumn ||
+        explicitRanking.groupColumn
+      )
+    ) {
+      normalized.dataset =
+        explicitRanking.dataset;
+
+      if (explicitRanking.metricColumn) {
+        normalized.column =
+          explicitRanking.metricColumn;
+      }
+
+      if (explicitRanking.groupColumn) {
+        normalized.labelColumn =
+          explicitRanking.groupColumn;
+
+        const aggregate =
+          detectQuestionAggregation(
+            question
+          );
+
+        if (aggregate) {
+          normalized.operation =
+            "rank_groups";
+          normalized.groupBy =
+            explicitRanking.groupColumn;
+          normalized.aggregation =
+            aggregate;
+        } else {
+          normalized.operation =
+            "rank_rows";
+          normalized.groupBy = null;
+        }
+      }
+
+      normalized.direction =
+        rankingDirection;
+      normalized.limit =
+        detectRankingLimit(
+          question
+        );
+      normalized.selectColumns = [
+        ...new Set([
+          normalized.labelColumn,
+          normalized.groupBy,
+          normalized.column,
+        ].filter(Boolean)),
+      ];
+      normalized.outputRequested = true;
+    }
+  }
 
   /**
    * ========================================================
@@ -7397,7 +7943,7 @@ function buildAnalyticalFollowUpPlan({
         : "rank_rows";
   }
 
-  const groupBy =
+  let groupBy =
     operation === "rank_rows"
       ? null
       : (
@@ -7405,6 +7951,43 @@ function buildAnalyticalFollowUpPlan({
           previous.labelColumn ||
           null
         );
+
+  /*
+   * An explicitly named CURRENT grouping field must override remembered
+   * analytical grouping. This is live-schema driven and therefore works
+   * for Item, Year, Municipality, Commodity, Category, or any future
+   * dataset field without hardcoding names.
+   */
+  const explicitRankingFields =
+    resolveExplicitRankingColumns({
+      datasets,
+      schema,
+      question,
+      preferredDataset:
+        previous.dataset || null,
+    });
+
+  if (
+    explicitRankingFields?.groupColumn &&
+    detectRankingDirection(question)
+  ) {
+    groupBy =
+      explicitRankingFields.groupColumn;
+
+    if (explicitRankingFields.metricColumn) {
+      metricColumn =
+        explicitRankingFields.metricColumn;
+    }
+
+    operation =
+      aggregation
+        ? "rank_groups"
+        : "rank_rows";
+
+    if (operation === "rank_rows") {
+      groupBy = null;
+    }
+  }
 
   const excludedValues =
     detectAnalyticalExclusions({
@@ -7414,9 +7997,12 @@ function buildAnalyticalFollowUpPlan({
     });
 
   const labelColumn =
-    previous.labelColumn ||
     groupBy ||
-    null;
+    (
+      explicitRankingFields?.groupColumn ||
+      previous.labelColumn ||
+      null
+    );
 
   const direction =
     nextDirection ||
@@ -8681,6 +9267,20 @@ function cleanAnalyticalLabel(
     .replace(
       /\s+/g,
       " "
+    )
+    /*
+     * Strip presentation-only Markdown that may have been stored in a
+     * previous conversational result. This prevents labels such as
+     * "*2024*" from becoming "***2024***" when rendered again.
+     * Real inner punctuation is preserved.
+     */
+    .replace(
+      /^(?:\*{1,3}|_{1,3}|`+)\s*/,
+      ""
+    )
+    .replace(
+      /\s*(?:\*{1,3}|_{1,3}|`+)$/,
+      ""
     )
     .trim();
 }
@@ -11974,7 +12574,7 @@ function isSelfContainedAnalyticalQuestion({
    * This includes the main scalar operations and rankings.
    */
   const hasAnalyticalInstruction =
-    /\b(?:total|sum|average|avg|mean|median|minimum|maximum|min|max|highest|lowest|largest|smallest|count|how many|number of|difference|ratio|percentage|percent)\b/.test(
+    /\b(?:total|sum|average|avg|mean|median|minimum|maximum|min|max|highest|lowest|largest|smallest|top|bottom|count|how many|number of|difference|ratio|percentage|percent)\b/.test(
       text
     );
 
@@ -12876,6 +13476,31 @@ async function answerQuestion(
           plan
         );
       }
+
+      // ====================================================
+      // SEMANTIC PLAN GUARDS
+      // ====================================================
+      // 1) Align explicit aggregate wording with a verified numeric field.
+      // 2) Suppress weak/report-context substring filters.
+      // These run for Groq, local fallback, and conversational plans.
+      plan =
+        repairSemanticAggregatePlan({
+          datasets,
+          schema,
+          plan,
+          question: cleanQuestion,
+        });
+
+      plan =
+        sanitizeSemanticPlanFilters({
+          datasets,
+          plan,
+          question: cleanQuestion,
+          reportContext:
+            internalOptions?.report ||
+            internalOptions?.reportTitle ||
+            null,
+        });
 
       // ====================================================
       // QUERY VALIDATOR
@@ -14174,9 +14799,39 @@ async function answerQuestion(
       multiResultContext
     );
 
+  const explicitCurrentColumns =
+    findExplicitSchemaColumns({
+      schema,
+      question: cleanQuestion,
+      preferredDataset:
+        conversationContext?.lastDataset ||
+        null,
+    });
+
+  const explicitCurrentGroupOverride =
+    currentQuestionOverridesAnalyticalGroup({
+      datasets,
+      schema,
+      question: cleanQuestion,
+      previousGroupBy:
+        verifiedMultiResultSet?.groupBy,
+      preferredDataset:
+        conversationContext?.lastDataset ||
+        null,
+    });
+
+  const explicitSelfContainedAnalytics =
+    explicitCurrentColumns.length > 0 &&
+    isSelfContainedAnalyticalQuestion({
+      schema,
+      question: cleanQuestion,
+    });
+
   const looksLikeMultiResultAnalysis =
     verifiedMultiResultSet
       ?.count >= 3 &&
+    !explicitCurrentGroupOverride &&
+    !explicitSelfContainedAnalytics &&
     (
       /\b(?:explain|summarize|summary|interpret|describe|difference|range|spread|gap|closest|average|mean|median|highest|lowest|above average|below average|outlier|outliers|stand out|trend|pattern|distribution|compare|ratio|percent|percentage|top\s+\d+|bottom\s+\d+)\b/i.test(
         cleanQuestion
