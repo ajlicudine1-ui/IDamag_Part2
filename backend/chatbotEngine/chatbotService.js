@@ -2088,6 +2088,167 @@ function repairSemanticAggregatePlan({
   };
 }
 
+
+/**
+ * Recover ONLY high-confidence SUM/AVERAGE questions when a planner asks
+ * an unnecessary clarification even though the live schema already has a
+ * strongly matching numeric field.
+ *
+ * IMPORTANT REGRESSION GUARD:
+ * - This does NOT recover COUNT / "how many" questions.
+ * - It does NOT recover ranking questions.
+ * - It does NOT replace an already valid dataset plan.
+ *
+ * This keeps existing working beneficiary/count behavior untouched while
+ * allowing generic questions such as "total <numeric concept> ..." to be
+ * answered from any worksheet whose live schema provides a confident match.
+ */
+function recoverHighConfidenceAggregateClarification({
+  datasets,
+  schema,
+  plan,
+  question,
+}) {
+  if (
+    !plan ||
+    String(plan.route || "").trim().toLowerCase() !== "clarify"
+  ) {
+    return plan;
+  }
+
+  const aggregation = detectQuestionAggregation(question);
+
+  // Intentionally conservative: do not touch "how many" / count flows.
+  if (!["sum", "average"].includes(aggregation)) {
+    return plan;
+  }
+
+  // Ranking has separate, richer resolution logic.
+  if (detectRankingDirection(question)) {
+    return plan;
+  }
+
+  const normalizedQuestion = normalizeText(question);
+  const candidates = [];
+
+  for (const datasetSchema of schema || []) {
+    const datasetName = datasetSchema?.name;
+    const rows = datasets?.[datasetName];
+
+    if (!datasetName || !Array.isArray(rows) || !rows.length) {
+      continue;
+    }
+
+    for (const column of datasetSchema?.columns || []) {
+      if (
+        !column?.name ||
+        !isNumericLikeColumn({ column, rows })
+      ) {
+        continue;
+      }
+
+      const normalizedColumn = normalizeText(column.name);
+      if (!normalizedColumn) continue;
+
+      let score = scoreTargetToColumn(
+        normalizedQuestion,
+        normalizedColumn
+      );
+
+      // Strong phrase overlap: useful when the live header contains a unit
+      // suffix such as "(ha)", "%", "kg", etc. that the user omits.
+      const columnTokens = normalizedColumn
+        .split(/\s+/)
+        .filter(Boolean);
+      const questionTokens = new Set(
+        normalizedQuestion.split(/\s+/).filter(Boolean)
+      );
+      const overlap = columnTokens.length
+        ? columnTokens.filter((token) => questionTokens.has(token)).length /
+          columnTokens.length
+        : 0;
+
+      score += overlap * 0.75;
+
+      // Prefer fields with actual usable numeric observations.
+      const nonEmptyNumeric = rows.reduce((count, row) => {
+        return count + (looksNumericValue(row?.[column.name]) ? 1 : 0);
+      }, 0);
+      const coverage = rows.length
+        ? nonEmptyNumeric / rows.length
+        : 0;
+      score += Math.min(coverage, 1) * 0.1;
+
+      candidates.push({
+        dataset: datasetName,
+        column: column.name,
+        score,
+        overlap,
+      });
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+
+  const best = candidates[0] || null;
+  const second = candidates[1] || null;
+
+  if (!best) {
+    return plan;
+  }
+
+  // Require a strong semantic match. If two different fields are too close,
+  // keep the clarification instead of guessing.
+  const strongEnough =
+    best.score >= 1.15 ||
+    (best.overlap >= 0.66 && best.score >= 0.95);
+
+  const materiallyDifferentSecond =
+    second &&
+    (
+      normalizeText(second.column) !== normalizeText(best.column) ||
+      String(second.dataset) !== String(best.dataset)
+    );
+
+  const ambiguous =
+    materiallyDifferentSecond &&
+    second.score >= best.score - 0.12;
+
+  if (!strongEnough || ambiguous) {
+    return plan;
+  }
+
+  const rows = datasets?.[best.dataset] || [];
+
+  // Preserve genuine user narrowing (province, municipality, category, etc.)
+  // using the existing generic value-inference engine. The later semantic
+  // filter guard will remove weak accidental substring matches.
+  const inferredFilters = inferValueFilters(
+    rows,
+    question,
+    [best.column]
+  );
+
+  return {
+    route: "dataset",
+    dataset: best.dataset,
+    operation: aggregation,
+    column: best.column,
+    labelColumn: null,
+    groupBy: null,
+    aggregation: null,
+    filters: Array.isArray(inferredFilters)
+      ? inferredFilters
+      : [],
+    selectColumns: [best.column],
+    outputRequested: true,
+    showAll: false,
+    limit: 1,
+    recoveredFromClarification: true,
+    recoveryConfidence: Number(best.score.toFixed(4)),
+  };
+}
+
 function normalizePlannerPlan({
   datasets,
   schema,
@@ -15738,6 +15899,14 @@ async function answerQuestion(
 
   if (groqPlan) {
     groqPlan =
+      recoverHighConfidenceAggregateClarification({
+        datasets,
+        schema,
+        plan: groqPlan,
+        question: cleanQuestion,
+      });
+
+    groqPlan =
       applyConversationContext(
         groqPlan,
         conversationContext,
@@ -15963,6 +16132,14 @@ async function answerQuestion(
 
         context:
           conversationContext,
+      });
+
+    localPlan =
+      recoverHighConfidenceAggregateClarification({
+        datasets,
+        schema,
+        plan: localPlan,
+        question: cleanQuestion,
       });
 
     localPlan =
