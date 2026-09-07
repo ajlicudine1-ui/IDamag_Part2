@@ -1930,15 +1930,34 @@ function sanitizeSemanticPlanFilters({
         reportText.includes(valueText)
       );
 
+    const identityLikeColumn =
+      /\b(?:name|title|label|description)\b/.test(
+        normalizeText(columnName)
+      );
+
+    const escapedValueForIdentity =
+      valueText.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&"
+      );
+
+    const explicitIdentitySearch =
+      new RegExp(
+        `(?:\\b(?:name|title|label|called|named)\b[^.?!]{0,40}\\b${escapedValueForIdentity}\\b|\\b${escapedValueForIdentity}\\b[^.?!]{0,40}\\b(?:name|title|label|called|named|contains|containing)\b)`,
+        "u"
+      ).test(questionText);
+
     const weakContains =
       partialMatches.length > 0 &&
       valueTokens.length <= 3 &&
       !explicitNarrowing &&
+      !exactExists &&
       (
         representedByReportContext ||
+        looksLikeDescriptiveContext ||
         (
-          !exactExists &&
-          looksLikeDescriptiveContext
+          identityLikeColumn &&
+          !explicitIdentitySearch
         )
       );
 
@@ -1970,6 +1989,181 @@ function sanitizeSemanticPlanFilters({
         ? plan.semanticGuardChanges
         : []),
       ...removed,
+    ],
+  };
+}
+
+/**
+ * Recover strong categorical constraints that are explicitly present in
+ * the CURRENT question, after weak substring filters have been removed.
+ *
+ * This is intentionally dataset-agnostic. It does not know about AMIA,
+ * farmers, provinces, projects, or any other business-specific value.
+ * It asks the existing filter engine for candidate filters, then accepts
+ * only values that:
+ *   1) occur as an exact live value in the selected worksheet, and
+ *   2) are explicitly present as a whole word/phrase in the question.
+ *
+ * Example shape:
+ *   "How many <category> beneficiaries ...?"
+ * If <category> is a real categorical value in the live rows, it can be
+ * restored as an equality filter even when Groq supplied only a weak
+ * unrelated substring filter.
+ */
+function repairStrongQuestionValueFilters({
+  datasets,
+  plan,
+  question,
+}) {
+  if (
+    !plan ||
+    plan.route !== "dataset" ||
+    !plan.dataset
+  ) {
+    return plan;
+  }
+
+  const operation =
+    String(plan.operation || "")
+      .trim()
+      .toLowerCase();
+
+  const aggregateLike =
+    new Set([
+      "sum",
+      "average",
+      "count",
+      "non_empty_count",
+      "distinct_count",
+      "minimum",
+      "maximum",
+    ]).has(operation);
+
+  if (!aggregateLike) {
+    return plan;
+  }
+
+  const rows = datasets?.[plan.dataset];
+
+  if (!Array.isArray(rows) || !rows.length) {
+    return plan;
+  }
+
+  const questionText = normalizeText(question);
+
+  if (!questionText) {
+    return plan;
+  }
+
+  const inferred =
+    inferCoherentFilters(
+      rows,
+      questionText
+    );
+
+  if (!Array.isArray(inferred) || !inferred.length) {
+    return plan;
+  }
+
+  const currentFilters =
+    Array.isArray(plan.filters)
+      ? plan.filters.map((filter) => ({ ...filter }))
+      : [];
+
+  const existingKeys = new Set(
+    currentFilters.map((filter) =>
+      `${normalizeText(filter?.column)}::${normalizeText(
+        Array.isArray(filter?.value)
+          ? filter.value.join("|")
+          : filter?.value
+      )}`
+    )
+  );
+
+  const added = [];
+
+  for (const filter of inferred) {
+    const columnName = filter?.column;
+    const rawValues =
+      Array.isArray(filter?.value)
+        ? filter.value
+        : [filter?.value];
+
+    if (!columnName || rawValues.length !== 1) {
+      continue;
+    }
+
+    const requestedValue = rawValues[0];
+    const normalizedValue = normalizeText(requestedValue);
+
+    if (!normalizedValue) {
+      continue;
+    }
+
+    const escaped =
+      normalizedValue.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&"
+      );
+
+    const explicitlyMentioned =
+      new RegExp(
+        `(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`,
+        "u"
+      ).test(questionText);
+
+    if (!explicitlyMentioned) {
+      continue;
+    }
+
+    const exactLiveValue = rows
+      .map((row) => row?.[columnName])
+      .find(
+        (value) =>
+          value !== null &&
+          value !== undefined &&
+          String(value).trim() !== "" &&
+          normalizeText(value) === normalizedValue
+      );
+
+    if (exactLiveValue === undefined) {
+      continue;
+    }
+
+    const key =
+      `${normalizeText(columnName)}::${normalizedValue}`;
+
+    if (existingKeys.has(key)) {
+      continue;
+    }
+
+    const recovered = {
+      column: columnName,
+      operator: "equals",
+      value: exactLiveValue,
+      reason: "explicit-live-value",
+    };
+
+    currentFilters.push(recovered);
+    existingKeys.add(key);
+    added.push(recovered);
+  }
+
+  if (!added.length) {
+    return plan;
+  }
+
+  return {
+    ...plan,
+    filters: currentFilters,
+    semanticGuardChanges: [
+      ...(Array.isArray(plan.semanticGuardChanges)
+        ? plan.semanticGuardChanges
+        : []),
+      ...added.map((filter) => ({
+        ...filter,
+        reason: "strong-question-value-recovered",
+      })),
     ],
   };
 }
@@ -2085,167 +2279,6 @@ function repairSemanticAggregatePlan({
     labelColumn: null,
     selectColumns: [metricName],
     outputRequested: true,
-  };
-}
-
-
-/**
- * Recover ONLY high-confidence SUM/AVERAGE questions when a planner asks
- * an unnecessary clarification even though the live schema already has a
- * strongly matching numeric field.
- *
- * IMPORTANT REGRESSION GUARD:
- * - This does NOT recover COUNT / "how many" questions.
- * - It does NOT recover ranking questions.
- * - It does NOT replace an already valid dataset plan.
- *
- * This keeps existing working beneficiary/count behavior untouched while
- * allowing generic questions such as "total <numeric concept> ..." to be
- * answered from any worksheet whose live schema provides a confident match.
- */
-function recoverHighConfidenceAggregateClarification({
-  datasets,
-  schema,
-  plan,
-  question,
-}) {
-  if (
-    !plan ||
-    String(plan.route || "").trim().toLowerCase() !== "clarify"
-  ) {
-    return plan;
-  }
-
-  const aggregation = detectQuestionAggregation(question);
-
-  // Intentionally conservative: do not touch "how many" / count flows.
-  if (!["sum", "average"].includes(aggregation)) {
-    return plan;
-  }
-
-  // Ranking has separate, richer resolution logic.
-  if (detectRankingDirection(question)) {
-    return plan;
-  }
-
-  const normalizedQuestion = normalizeText(question);
-  const candidates = [];
-
-  for (const datasetSchema of schema || []) {
-    const datasetName = datasetSchema?.name;
-    const rows = datasets?.[datasetName];
-
-    if (!datasetName || !Array.isArray(rows) || !rows.length) {
-      continue;
-    }
-
-    for (const column of datasetSchema?.columns || []) {
-      if (
-        !column?.name ||
-        !isNumericLikeColumn({ column, rows })
-      ) {
-        continue;
-      }
-
-      const normalizedColumn = normalizeText(column.name);
-      if (!normalizedColumn) continue;
-
-      let score = scoreTargetToColumn(
-        normalizedQuestion,
-        normalizedColumn
-      );
-
-      // Strong phrase overlap: useful when the live header contains a unit
-      // suffix such as "(ha)", "%", "kg", etc. that the user omits.
-      const columnTokens = normalizedColumn
-        .split(/\s+/)
-        .filter(Boolean);
-      const questionTokens = new Set(
-        normalizedQuestion.split(/\s+/).filter(Boolean)
-      );
-      const overlap = columnTokens.length
-        ? columnTokens.filter((token) => questionTokens.has(token)).length /
-          columnTokens.length
-        : 0;
-
-      score += overlap * 0.75;
-
-      // Prefer fields with actual usable numeric observations.
-      const nonEmptyNumeric = rows.reduce((count, row) => {
-        return count + (looksNumericValue(row?.[column.name]) ? 1 : 0);
-      }, 0);
-      const coverage = rows.length
-        ? nonEmptyNumeric / rows.length
-        : 0;
-      score += Math.min(coverage, 1) * 0.1;
-
-      candidates.push({
-        dataset: datasetName,
-        column: column.name,
-        score,
-        overlap,
-      });
-    }
-  }
-
-  candidates.sort((a, b) => b.score - a.score);
-
-  const best = candidates[0] || null;
-  const second = candidates[1] || null;
-
-  if (!best) {
-    return plan;
-  }
-
-  // Require a strong semantic match. If two different fields are too close,
-  // keep the clarification instead of guessing.
-  const strongEnough =
-    best.score >= 1.15 ||
-    (best.overlap >= 0.66 && best.score >= 0.95);
-
-  const materiallyDifferentSecond =
-    second &&
-    (
-      normalizeText(second.column) !== normalizeText(best.column) ||
-      String(second.dataset) !== String(best.dataset)
-    );
-
-  const ambiguous =
-    materiallyDifferentSecond &&
-    second.score >= best.score - 0.12;
-
-  if (!strongEnough || ambiguous) {
-    return plan;
-  }
-
-  const rows = datasets?.[best.dataset] || [];
-
-  // Preserve genuine user narrowing (province, municipality, category, etc.)
-  // using the existing generic value-inference engine. The later semantic
-  // filter guard will remove weak accidental substring matches.
-  const inferredFilters = inferValueFilters(
-    rows,
-    question,
-    [best.column]
-  );
-
-  return {
-    route: "dataset",
-    dataset: best.dataset,
-    operation: aggregation,
-    column: best.column,
-    labelColumn: null,
-    groupBy: null,
-    aggregation: null,
-    filters: Array.isArray(inferredFilters)
-      ? inferredFilters
-      : [],
-    selectColumns: [best.column],
-    outputRequested: true,
-    showAll: false,
-    limit: 1,
-    recoveredFromClarification: true,
-    recoveryConfidence: Number(best.score.toFixed(4)),
   };
 }
 
@@ -3986,7 +4019,7 @@ function resolveDirectFilteredAggregatePlan({
 
   const match =
     text.match(
-      /^(?:what|which|show|give|tell me|get|find|calculate|compute)\s+(?:(?:is|are|was|were)\s+)?(?:the\s+)?(.+?)\s+(?:in|at|within|inside|under|for|from)\s+(.+?)\??$/
+      /^(?:(?:what|which|show|give|tell me|get|find|calculate|compute)\s+(?:(?:is|are|was|were)\s+)?(?:the\s+)?|how\s+many\s+)(.+?)\s+(?:in|at|within|inside|under|for|from)\s+(.+?)\??$/
     );
 
   if (
@@ -4000,6 +4033,13 @@ function resolveDirectFilteredAggregatePlan({
     match[1]
       .replace(
         /\b(?:total|sum|combined|overall|altogether|average|avg|mean|count|number of|how many)\b/g,
+        " "
+      )
+      // "How many associations are in Pangasinan?" leaves a trailing
+      // auxiliary verb in the captured subject. Remove only that
+      // grammatical tail; real schema words remain untouched.
+      .replace(
+        /\s+\b(?:is|are|was|were)\b\s*$/g,
         " "
       )
       .replace(
@@ -5996,6 +6036,114 @@ function repairConversationalListPlan({
         ) || 10,
         100
       ),
+  };
+}
+
+
+
+/**
+ * Recover short referential list follow-ups even when Groq/local planning
+ * returns a clarification instead of a dataset list plan.
+ *
+ * Examples:
+ *   "How many projects are in X?" -> "What are they?"
+ *   "How many employees are in Y?" -> "Who are those?"
+ *
+ * This is dataset-agnostic. The subject column, dataset, and filters come
+ * only from verified conversation state + the live schema.
+ */
+function recoverReferentialListPlan({
+  context,
+  question,
+  schema,
+}) {
+  if (
+    !context ||
+    context.isFollowUp !== true
+  ) {
+    return null;
+  }
+
+  const text =
+    normalizeText(question);
+
+  const isReferentialList =
+    /\b(?:what|which|who)\s+(?:are|were)\s+(?:those|these|they|them)\b/.test(text) ||
+    /\b(?:show|list|give|display|name)\s+(?:me\s+)?(?:those|these|them|they)\b/.test(text);
+
+  if (!isReferentialList) {
+    return null;
+  }
+
+  const datasetName =
+    context.lastDataset ||
+    context.lastPlan?.dataset ||
+    null;
+
+  if (!datasetName) {
+    return null;
+  }
+
+  const rememberedSubject =
+    inferRememberedSubjectColumn({
+      schema,
+      datasetName,
+      previousQuestion:
+        context.lastSubjectQuestion ||
+        context.lastQuestion,
+      context,
+    }) ||
+    (
+      Array.isArray(context.lastMetric)
+        ? (
+            context.lastMetric.length === 1
+              ? context.lastMetric[0]
+              : null
+          )
+        : context.lastMetric
+    ) ||
+    context.lastPlan?.labelColumn ||
+    context.lastPlan?.column ||
+    null;
+
+  if (!rememberedSubject) {
+    return null;
+  }
+
+  const filters =
+    Array.isArray(context.lastFilters) &&
+    context.lastFilters.length
+      ? context.lastFilters.map((filter) => ({
+          ...filter,
+          value: Array.isArray(filter?.value)
+            ? [...filter.value]
+            : filter?.value,
+        }))
+      : Array.isArray(context.lastPlan?.filters)
+        ? context.lastPlan.filters.map((filter) => ({
+            ...filter,
+            value: Array.isArray(filter?.value)
+              ? [...filter.value]
+              : filter?.value,
+          }))
+        : [];
+
+  return {
+    route: "dataset",
+    dataset: datasetName,
+    operation: "list",
+    column: rememberedSubject,
+    labelColumn: rememberedSubject,
+    groupBy: null,
+    aggregation: null,
+    direction: null,
+    filters,
+    selectColumns: [rememberedSubject],
+    outputRequested: true,
+    transform: null,
+    limit: 100,
+    showAll: true,
+    referentialListRecovered: true,
   };
 }
 
@@ -13663,6 +13811,13 @@ async function answerQuestion(
             null,
         });
 
+      plan =
+        repairStrongQuestionValueFilters({
+          datasets,
+          plan,
+          question: cleanQuestion,
+        });
+
       // ====================================================
       // QUERY VALIDATOR
       // ====================================================
@@ -14171,6 +14326,57 @@ async function answerQuestion(
 
 
   // ========================================================
+  // REFERENTIAL LIST FOLLOW-UP — PLANNER INDEPENDENT
+  // ========================================================
+  //
+  // A verified count/list result must remain usable even if the next
+  // Groq response is a clarification. This also makes behavior consistent
+  // across browsers/laptops because the follow-up is resolved from the
+  // verified session state, not from a fresh LLM guess.
+  //
+  const referentialListPlan =
+    recoverReferentialListPlan({
+      context:
+        conversationContext,
+      question:
+        cleanQuestion,
+      schema,
+    });
+
+  if (referentialListPlan) {
+    const referentialListResult =
+      await executeResolvedPlan(
+        referentialListPlan
+      );
+
+    updateConversation(
+      sessionId,
+      {
+        question:
+          cleanQuestion,
+        plan:
+          referentialListPlan,
+        result:
+          referentialListResult,
+      }
+    );
+
+    return {
+      ...referentialListResult,
+      answer:
+        buildVerifiedListAnswer({
+          result:
+            referentialListResult,
+          subjectColumn:
+            referentialListPlan.column,
+        }),
+      plannerSource:
+        "conversation-referential-list",
+    };
+  }
+
+
+  // ========================================================
   // DIRECT FILTERED NUMERIC AGGREGATE — PLANNER INDEPENDENT
   // ========================================================
   //
@@ -14212,6 +14418,20 @@ async function answerQuestion(
       await executeResolvedPlan(
         directFilteredAggregatePlan
       );
+
+    // Preserve verified state so short follow-ups such as
+    // "what are they?" can deterministically reuse the same subject/filter.
+    updateConversation(
+      sessionId,
+      {
+        question:
+          cleanQuestion,
+        plan:
+          directFilteredAggregatePlan,
+        result:
+          directFilteredAggregateResult,
+      }
+    );
 
     return {
       ...directFilteredAggregateResult,
@@ -14262,6 +14482,18 @@ async function answerQuestion(
       await executeResolvedPlan(
         directFilteredFieldPlan
       );
+
+    updateConversation(
+      sessionId,
+      {
+        question:
+          cleanQuestion,
+        plan:
+          directFilteredFieldPlan,
+        result:
+          directFilteredFieldResult,
+      }
+    );
 
     return {
       ...directFilteredFieldResult,
@@ -15874,38 +16106,60 @@ async function answerQuestion(
    * If Groq successfully returns a plan, execution errors must
    * not silently cause a second planner to choose another field.
    */
-  try {
-    groqPlan =
-      await createSchemaAwarePlan({
-        question:
-          cleanQuestion,
+  // Groq occasionally returns malformed JSON even for a question it can
+  // normally understand. Retry planning before falling back to the more
+  // conservative local parser. This is generic and prevents two devices
+  // asking the same question from behaving differently due to one transient
+  // malformed planner response.
+  const maxGroqPlanningAttempts = 3;
 
-        schema,
+  for (
+    let planningAttempt = 1;
+    planningAttempt <=
+      maxGroqPlanningAttempts;
+    planningAttempt += 1
+  ) {
+    try {
+      groqPlan =
+        await createSchemaAwarePlan({
+          question:
+            cleanQuestion,
 
-        context:
-          conversationContext,
+          schema,
 
-        retrievalContext,
-      });
-  } catch (error) {
-    groqPlanningError =
-      error;
+          context:
+            conversationContext,
 
+          retrievalContext,
+        });
+
+      if (groqPlan) {
+        groqPlanningError = null;
+        break;
+      }
+
+      groqPlanningError =
+        new Error(
+          "Groq returned no query plan."
+        );
+    } catch (error) {
+      groqPlanningError = error;
+
+      console.error(
+        `Groq planning attempt ${planningAttempt}/${maxGroqPlanningAttempts} failed:`,
+        error
+      );
+    }
+  }
+
+  if (!groqPlan && groqPlanningError) {
     console.error(
-      "Groq planning failed; local fallback will be used:",
-      error
+      "Groq planning failed after retries; local fallback will be used:",
+      groqPlanningError
     );
   }
 
   if (groqPlan) {
-    groqPlan =
-      recoverHighConfidenceAggregateClarification({
-        datasets,
-        schema,
-        plan: groqPlan,
-        question: cleanQuestion,
-      });
-
     groqPlan =
       applyConversationContext(
         groqPlan,
@@ -16132,14 +16386,6 @@ async function answerQuestion(
 
         context:
           conversationContext,
-      });
-
-    localPlan =
-      recoverHighConfidenceAggregateClarification({
-        datasets,
-        schema,
-        plan: localPlan,
-        question: cleanQuestion,
       });
 
     localPlan =
