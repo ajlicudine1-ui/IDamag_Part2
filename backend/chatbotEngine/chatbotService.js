@@ -13065,6 +13065,122 @@ function hydrateContinuousConversationContext({
   return context;
 }
 
+
+/**
+ * Resolve a NEW output field explicitly requested by a conversational
+ * follow-up while preserving the last VERIFIED row scope.
+ *
+ * Examples of the shape handled:
+ *   "what municipalities are they from?"
+ *   "what barangays are those in?"
+ *   "what commodities do they have?"
+ *   "show their status"
+ *
+ * This is fully schema-driven. No worksheet, field, or business value is
+ * hardcoded. It intentionally handles non-analytical field/list follow-ups
+ * only; totals, averages, rankings, comparisons, etc. continue through the
+ * richer analytical pipeline.
+ */
+function buildExplicitReferentialFieldPlan({
+  schema,
+  context,
+  question,
+}) {
+  if (
+    !context ||
+    context.isFollowUp !== true ||
+    !context.lastDataset ||
+    !looksLikeContinuousFollowUp(question)
+  ) {
+    return null;
+  }
+
+  const text = normalizeText(question);
+
+  if (!text) {
+    return null;
+  }
+
+  // Do not steal analytical follow-ups from their dedicated handlers.
+  if (
+    detectQuestionAggregation(question) ||
+    detectRankingDirection(question) ||
+    /\b(?:compare|comparison|difference|ratio|percentage|percent|median|range|spread|trend|increase|decrease|growth)\b/.test(
+      text
+    )
+  ) {
+    return null;
+  }
+
+  // Require an actual conversational reference to the prior verified scope.
+  if (
+    !/\b(?:they|them|their|theirs|those|these|there|therein|same|ones?|it|its|that|this)\b/.test(
+      text
+    )
+  ) {
+    return null;
+  }
+
+  const requested =
+    findExplicitSchemaColumn({
+      schema,
+      question,
+      preferredDataset:
+        context.lastDataset,
+    }) ||
+    inferRequestedColumnFromQuestion({
+      schema,
+      question,
+      preferredDataset:
+        context.lastDataset,
+      excludedColumns: [],
+    });
+
+  if (
+    !requested?.column ||
+    String(requested.dataset || context.lastDataset) !==
+      String(context.lastDataset)
+  ) {
+    return null;
+  }
+
+  const filters =
+    Array.isArray(context.lastFilters)
+      ? context.lastFilters.map(
+          (filter) => ({
+            ...filter,
+            value:
+              Array.isArray(filter?.value)
+                ? [...filter.value]
+                : filter?.value,
+          })
+        )
+      : [];
+
+  return {
+    route: "dataset",
+    dataset:
+      context.lastDataset,
+    operation: "list",
+    column:
+      requested.column,
+    labelColumn:
+      requested.column,
+    groupBy: null,
+    aggregation: null,
+    direction: null,
+    filters,
+    selectColumns: [
+      requested.column,
+    ],
+    outputRequested: true,
+    transform: null,
+    showAll: true,
+    limit: 100,
+    explicitReferentialField: true,
+  };
+}
+
 /**
  * ==========================================================
  * MAIN CHATBOT ENTRY POINT
@@ -14466,6 +14582,18 @@ async function answerQuestion(
         directFilteredAggregatePlan
       );
 
+    updateConversation(
+      sessionId,
+      {
+        question:
+          cleanQuestion,
+        plan:
+          directFilteredAggregatePlan,
+        result:
+          directFilteredAggregateResult,
+      }
+    );
+
     return {
       ...directFilteredAggregateResult,
 
@@ -14516,6 +14644,18 @@ async function answerQuestion(
         directFilteredFieldPlan
       );
 
+    updateConversation(
+      sessionId,
+      {
+        question:
+          cleanQuestion,
+        plan:
+          directFilteredFieldPlan,
+        result:
+          directFilteredFieldResult,
+      }
+    );
+
     return {
       ...directFilteredFieldResult,
 
@@ -14539,6 +14679,81 @@ async function answerQuestion(
     };
   }
 
+
+
+  // ========================================================
+  // EXPLICIT REFERENTIAL FIELD FOLLOW-UP — PLANNER INDEPENDENT
+  // ========================================================
+  //
+  // Example:
+  //   "How many associations are in Pangasinan?"
+  //   "what municipalities are they from?"
+  //
+  // The current question's requested LIVE schema field wins, while the
+  // previous VERIFIED filters remain the row scope. This prevents a planner
+  // from returning an unrelated value column and merely using the requested
+  // field as a label.
+  //
+  const explicitReferentialFieldPlan =
+    buildExplicitReferentialFieldPlan({
+      schema,
+      context:
+        conversationContext,
+      question:
+        cleanQuestion,
+    });
+
+  if (explicitReferentialFieldPlan) {
+    if (
+      process.env.NODE_ENV !==
+        "production"
+    ) {
+      console.log(
+        "Chatbot explicit referential-field plan:",
+        JSON.stringify(
+          explicitReferentialFieldPlan,
+          null,
+          2
+        )
+      );
+    }
+
+    const explicitReferentialFieldResult =
+      await executeResolvedPlan(
+        explicitReferentialFieldPlan
+      );
+
+    updateConversation(
+      sessionId,
+      {
+        question:
+          cleanQuestion,
+        plan:
+          explicitReferentialFieldPlan,
+        result:
+          explicitReferentialFieldResult,
+      }
+    );
+
+    return {
+      ...explicitReferentialFieldResult,
+      answer:
+        buildVerifiedListAnswer({
+          result:
+            explicitReferentialFieldResult,
+          subjectColumn:
+            explicitReferentialFieldPlan.column,
+        }),
+      responseStyle:
+        "natural",
+      debugPlan:
+        explicitReferentialFieldPlan,
+      debugEntityChanges:
+        [],
+      plannerSource:
+        "conversation",
+    };
+  }
 
   // ========================================================
   // SAME QUERY — NEW FILTER VALUE FOLLOW-UP
@@ -14883,6 +15098,18 @@ async function answerQuestion(
             sameQueryPlan
           );
 
+        updateConversation(
+          sessionId,
+          {
+            question:
+              cleanQuestion,
+            plan:
+              sameQueryPlan,
+            result:
+              sameQueryResult,
+          }
+        );
+
         let sameQueryAnswer =
           sameQueryResult
             .answer;
@@ -15131,6 +15358,18 @@ async function answerQuestion(
         await executeResolvedPlan(
           referentialListPlan
         );
+
+      updateConversation(
+        sessionId,
+        {
+          question:
+            cleanQuestion,
+          plan:
+            referentialListPlan,
+          result:
+            referentialListResult,
+        }
+      );
 
       /**
        * calculationEngine may return a list as primitive strings:
