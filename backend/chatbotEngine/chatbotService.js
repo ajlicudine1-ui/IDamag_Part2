@@ -5957,6 +5957,104 @@ function buildVerifiedListAnswer({
 }
 
 
+/**
+ * Format a VERIFIED conversational list as:
+ *
+ *   <previous conversational subject> - <current answer>
+ *
+ * The label is derived from verified context, never from a hardcoded
+ * dataset/field. For the first referential list after a filtered count,
+ * the single verified scope value is used (for example a province value).
+ * Later chained field questions use the immediately previous subject field.
+ */
+function buildContextAwareContinuousListAnswer({
+  result,
+  subjectColumn = null,
+  context = null,
+  preferScopeValue = false,
+}) {
+  const rawItems =
+    Array.isArray(result?.results)
+      ? result.results
+          .map((item) => {
+            if (item === null || item === undefined) return "";
+            if (typeof item !== "object") return String(item).trim();
+            if (subjectColumn && item?.[subjectColumn] !== null && item?.[subjectColumn] !== undefined) {
+              return String(item[subjectColumn]).trim();
+            }
+            if (item.value !== null && item.value !== undefined) return String(item.value).trim();
+            if (item.label !== null && item.label !== undefined) return String(item.label).trim();
+            return "";
+          })
+          .filter(Boolean)
+      : [];
+
+  if (!rawItems.length) {
+    return result?.answer || "No matching results were found.";
+  }
+
+  // Generic multi-value-cell normalization. Split comma-delimited values only
+  // when multiple rows share at least one token, which is a strong signal that
+  // the cells contain categories rather than prose/names. Semicolon/pipe are
+  // treated as explicit multi-value delimiters.
+  let items = [...rawItems];
+  const explicitMulti = rawItems.some((v) => /[;|]/.test(v));
+  const commaRows = rawItems.filter((v) => v.includes(","));
+  let sharedCommaToken = false;
+  if (commaRows.length >= 2) {
+    const tokenSets = commaRows.map((v) => new Set(v.split(",").map((x) => normalizeText(x)).filter(Boolean)));
+    const seen = new Set();
+    for (const set of tokenSets) {
+      for (const token of set) {
+        if (seen.has(token)) sharedCommaToken = true;
+        seen.add(token);
+      }
+    }
+  }
+  if (explicitMulti || sharedCommaToken) {
+    items = rawItems
+      .flatMap((v) => v.split(explicitMulti ? /[;|]/ : /,/))
+      .map((v) => v.trim())
+      .filter(Boolean);
+  }
+
+  // Case-insensitive de-duplication while preserving first-seen spelling.
+  const unique = [];
+  const seen = new Set();
+  for (const item of items) {
+    const key = normalizeText(item);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+  }
+
+  const filters = Array.isArray(context?.lastFilters) ? context.lastFilters : [];
+  const singleScopeValue =
+    filters.length === 1 && !Array.isArray(filters[0]?.value)
+      ? String(filters[0]?.value ?? "").trim()
+      : "";
+
+  const humanizeSubject = (value) => {
+    let label = String(value || "").trim();
+    if (!label) return "";
+    label = label.replace(/^name\s+of\s+/i, "").replace(/^list\s+of\s+/i, "").trim();
+    return label;
+  };
+
+  const previousSubject = humanizeSubject(context?.lastSubjectColumn);
+  const prefix =
+    preferScopeValue && singleScopeValue
+      ? singleScopeValue
+      : previousSubject || singleScopeValue;
+
+  if (!prefix) {
+    return unique.join("\n");
+  }
+
+  return unique.map((value) => `${prefix} - ${value}`).join("\n");
+}
+
+
 function repairConversationalListPlan({
   plan,
   context,
@@ -14858,11 +14956,15 @@ async function answerQuestion(
     return {
       ...explicitReferentialFieldResult,
       answer:
-        buildVerifiedListAnswer({
+        buildContextAwareContinuousListAnswer({
           result:
             explicitReferentialFieldResult,
           subjectColumn:
             explicitReferentialFieldPlan.column,
+          context:
+            conversationContext,
+          preferScopeValue:
+            false,
         }),
       responseStyle:
         "natural",
@@ -15513,12 +15615,18 @@ async function answerQuestion(
         ...referentialListResult,
 
         answer:
-          buildVerifiedListAnswer({
+          buildContextAwareContinuousListAnswer({
             result:
               referentialListResult,
 
             subjectColumn:
               rememberedSubject,
+
+            context:
+              conversationContext,
+
+            preferScopeValue:
+              true,
           }),
 
         plannerSource:
