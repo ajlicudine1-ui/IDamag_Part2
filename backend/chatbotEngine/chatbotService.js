@@ -2875,6 +2875,50 @@ if (
  * This prevents a planner/fallback parser from replacing an
  * explicitly requested real field with a similar field.
  */
+function singularizeSchemaToken(value) {
+  const token = String(value || "").trim().toLowerCase();
+
+  if (token.length <= 3) {
+    return token;
+  }
+
+  // Generic English plural normalization for schema labels / user wording.
+  // Examples: municipalities -> municipality, categories -> category,
+  // statuses -> status, classes -> class, projects -> project.
+  if (token.length > 4 && token.endsWith("ies")) {
+    return `${token.slice(0, -3)}y`;
+  }
+
+  if (
+    token.length > 4 &&
+    token.endsWith("es") &&
+    /(?:s|x|z|ch|sh)es$/.test(token)
+  ) {
+    return token.slice(0, -2);
+  }
+
+  if (
+    token.length > 4 &&
+    token.endsWith("s") &&
+    !token.endsWith("ss") &&
+    !token.endsWith("us") &&
+    !token.endsWith("is")
+  ) {
+    return token.slice(0, -1);
+  }
+
+  return token;
+}
+
+function normalizeSchemaPhraseMorphology(value) {
+  return normalizeExplicitColumnText(value)
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(singularizeSchemaToken)
+    .join(" " )
+    .trim();
+}
+
 function findExplicitSchemaColumn({
   schema,
   question,
@@ -2885,6 +2929,9 @@ function findExplicitSchemaColumn({
 
   const compactQuestion =
     compactExplicitColumnText(question);
+
+  const morphologicalQuestion =
+    normalizeSchemaPhraseMorphology(question);
 
   if (
     !normalizedQuestion ||
@@ -2917,6 +2964,9 @@ function findExplicitSchemaColumn({
 
       const compactColumn =
         compactExplicitColumnText(name);
+
+      const morphologicalColumn =
+        normalizeSchemaPhraseMorphology(name);
 
       if (
         !normalizedColumn ||
@@ -2953,6 +3003,20 @@ function findExplicitSchemaColumn({
         score =
           94 +
           compactColumn.length / 10000;
+      } else if (
+        morphologicalQuestion &&
+        morphologicalColumn &&
+        (
+          morphologicalQuestion === morphologicalColumn ||
+          morphologicalQuestion.includes(morphologicalColumn)
+        )
+      ) {
+        // Handle ordinary singular/plural wording without relying on fuzzy
+        // similarity. Current-question field wording therefore beats an
+        // unrelated short schema label.
+        score =
+          93 +
+          morphologicalColumn.length / 10000;
       }
 
       if (score > 0) {
@@ -13178,6 +13242,7 @@ function buildExplicitReferentialFieldPlan({
     showAll: true,
     limit: 100,
     explicitReferentialField: true,
+    explicitReferentialFieldMatch: "morphology-aware",
   };
 }
 
