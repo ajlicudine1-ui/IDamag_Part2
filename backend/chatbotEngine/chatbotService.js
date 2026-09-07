@@ -2987,36 +2987,91 @@ function findExplicitSchemaColumn({
         compactColumn
       ) {
         score = 99;
-      } else if (
-        normalizedQuestion.includes(
+      } else {
+        /**
+         * Explicit field matching must respect WORD / PHRASE boundaries.
+         *
+         * Without this guard a short schema field such as "IP" can be
+         * found inside an unrelated word such as "municipalities":
+         *
+         *   municIPalities
+         *
+         * That previously caused a conversational question such as
+         * "what municipalities are they from?" to select IP instead of
+         * Municipality.
+         *
+         * This remains completely schema-driven: no field name is
+         * hardcoded. Single-word schema labels require token boundaries;
+         * compact matching is reserved for multi-word labels where it is
+         * needed only to bridge spacing/punctuation differences.
+         */
+        const escapedNormalized =
+          normalizedColumn.replace(
+            /[.*+?^${}()|[\]\\]/g,
+            "\\$&"
+          );
+
+        const normalizedPhraseRegex =
+          new RegExp(
+            `(^|[^\\p{L}\\p{N}])${escapedNormalized}(?=$|[^\\p{L}\\p{N}])`,
+            "u"
+          );
+
+        const normalizedWordCount =
           normalizedColumn
-        )
-      ) {
-        score =
-          95 +
-          normalizedColumn.length / 10000;
-      } else if (
-        compactQuestion.includes(
-          compactColumn
-        )
-      ) {
-        score =
-          94 +
-          compactColumn.length / 10000;
-      } else if (
-        morphologicalQuestion &&
-        morphologicalColumn &&
-        (
-          morphologicalQuestion === morphologicalColumn ||
-          morphologicalQuestion.includes(morphologicalColumn)
-        )
-      ) {
-        // Handle ordinary singular/plural wording without relying on fuzzy
-        // similarity. Current-question field wording therefore beats an
-        // unrelated short schema label.
-        score =
-          93 +
-          morphologicalColumn.length / 10000;
+            .split(/\s+/)
+            .filter(Boolean)
+            .length;
+
+        const escapedMorphological =
+          morphologicalColumn
+            ? morphologicalColumn.replace(
+                /[.*+?^${}()|[\]\\]/g,
+                "\\$&"
+              )
+            : "";
+
+        const morphologicalPhraseRegex =
+          escapedMorphological
+            ? new RegExp(
+                `(^|[^\\p{L}\\p{N}])${escapedMorphological}(?=$|[^\\p{L}\\p{N}])`,
+                "u"
+              )
+            : null;
+
+        if (
+          normalizedPhraseRegex.test(
+            normalizedQuestion
+          )
+        ) {
+          score =
+            95 +
+            normalizedColumn.length / 10000;
+        } else if (
+          normalizedWordCount >= 2 &&
+          compactQuestion.includes(
+            compactColumn
+          )
+        ) {
+          score =
+            94 +
+            compactColumn.length / 10000;
+        } else if (
+          morphologicalQuestion &&
+          morphologicalColumn &&
+          (
+            morphologicalQuestion === morphologicalColumn ||
+            morphologicalPhraseRegex?.test(
+              morphologicalQuestion
+            )
+          )
+        ) {
+          // Singular/plural normalization still works, but only as a real
+          // phrase match, never as a substring hidden inside another word.
+          score =
+            93 +
+            morphologicalColumn.length / 10000;
+        }
       }
 
       if (score > 0) {
