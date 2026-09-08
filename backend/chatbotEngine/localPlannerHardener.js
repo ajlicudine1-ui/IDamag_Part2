@@ -224,6 +224,96 @@ function chooseLabelColumn(selectColumns, datasetSchema) {
   return text || columns[0];
 }
 
+
+function detectLocalRankingDirection(question) {
+  const q = normalizeText(question);
+  if (!q) return null;
+  if (/\b(?:lowest|smallest|least|minimum|min|bottom)\b/.test(q)) return 'asc';
+  if (/\b(?:highest|largest|biggest|greatest|most|maximum|max|top)\b/.test(q)) return 'desc';
+  return null;
+}
+
+function detectLocalRankingLimit(question) {
+  const q = normalizeText(question);
+  if (!q) return 1;
+  const match =
+    q.match(/\b(?:top|bottom|first|last)\s+(\d{1,3})\b/) ||
+    q.match(/\b(\d{1,3})\s+(?:highest|lowest|largest|smallest)\b/);
+  if (!match?.[1]) return 1;
+  const n = Number(match[1]);
+  return Number.isInteger(n) ? Math.min(Math.max(n, 1), 100) : 1;
+}
+
+function repairLocalRankingPlan(plan, question, datasetSchema, rows) {
+  if (!plan || normalizeText(plan.route) !== 'dataset') return plan;
+
+  const direction = detectLocalRankingDirection(question);
+  if (!direction) return plan;
+
+  const metric = plan.column;
+  if (!metric) return plan;
+
+  const metricSchema = (datasetSchema?.columns || []).find(
+    c => String(c?.name || '') === String(metric)
+  );
+  const metricIsNumeric = Boolean(
+    metricSchema && (
+      metricSchema.type === 'number' ||
+      (rows || []).some(row => parseNumber(row?.[metric]) !== null)
+    )
+  );
+  if (!metricIsNumeric) return plan;
+
+  const selected = [...new Set(
+    (Array.isArray(plan.selectColumns) ? plan.selectColumns : [])
+      .filter(Boolean)
+      .filter(name => (datasetSchema?.columns || []).some(
+        c => String(c?.name || '') === String(name)
+      ))
+  )];
+
+  // A ranking needs a display/group identity distinct from the numeric metric.
+  // Prefer an already selected real text field so questions like
+  // "top N <entities> by <metric>" stay completely schema-driven.
+  let label = plan.labelColumn || plan.groupBy || null;
+  if (!label || String(label) === String(metric)) {
+    label = selected.find(name => {
+      if (String(name) === String(metric)) return false;
+      const col = (datasetSchema?.columns || []).find(
+        c => String(c?.name || '') === String(name)
+      );
+      return col && col.type !== 'number';
+    }) || null;
+  }
+
+  if (!label) return plan;
+
+  const aggregation = detectExplicitAggregate(question, metric);
+
+  // If the user explicitly asks to aggregate groups (e.g. "highest average
+  // salary by division"), rank groups. If the metric itself is a stored field
+  // such as a column literally named Average and the wording only names that
+  // field, rank rows instead of averaging it again.
+  const grouped = Boolean(
+    aggregation &&
+    !ANALYTIC_WORDS.has(normalizeText(metric))
+  );
+
+  return {
+    ...plan,
+    operation: grouped ? 'rank_groups' : 'rank_rows',
+    column: metric,
+    labelColumn: label,
+    groupBy: grouped ? label : null,
+    aggregation: grouped ? aggregation : null,
+    direction,
+    limit: detectLocalRankingLimit(question),
+    selectColumns: [...new Set([label, metric])],
+    outputRequested: true,
+    showAll: false,
+  };
+}
+
 function repairMultiFieldList(plan, datasetSchema) {
   const op = normalizeText(plan?.operation);
   const selected = [...new Set((Array.isArray(plan?.selectColumns) ? plan.selectColumns : []).filter(Boolean))];
@@ -423,6 +513,11 @@ function hardenLocalPlan({ plan, question, datasets, schema, context = null }) {
     // Header named Average/Total/etc used as a field, not necessarily as an operation.
     next.operation = 'lookup';
   }
+
+  // Ranking intent must win over a generic multi-field LOOKUP recovered by
+  // the local fallback. This keeps Groq outages from changing "top N ... by"
+  // questions into unsorted lookups.
+  next = repairLocalRankingPlan(next, question, datasetSchema, rows);
 
   next = repairMultiFieldList(next, datasetSchema);
   return next;
