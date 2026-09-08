@@ -297,6 +297,59 @@ function hardenLocalPlan({ plan, question, datasets, schema, context = null }) {
   // keep real Province filters because they are valid and useful.
 
   const aggregate = next.column ? detectExplicitAggregate(question, next.column) : null;
+
+  /**
+   * Promote a weak local CLARIFY plan only when the CURRENT question itself
+   * supplies enough deterministic evidence to execute safely.
+   *
+   * This fixes a common fallback shape where the local parser says
+   * `route: clarify` but the hardener has already recovered:
+   *   - a real live worksheet,
+   *   - a real live column explicitly named by the user, and
+   *   - one or more exact/range filters from live row values.
+   *
+   * The rule is schema/data driven. No worksheet, field, province, commodity,
+   * month, status, or business value is hardcoded. Genuine ambiguity remains
+   * a clarification because we require an explicit current-question column.
+   */
+  const routeIsClarify = normalizeText(next.route) === 'clarify';
+  const explicitColumnChosen = Boolean(
+    next.column && explicit.some(name => String(name) === String(next.column))
+  );
+  const realChosenColumn = Boolean(
+    next.column && (datasetSchema.columns || []).some(
+      c => String(c?.name) === String(next.column)
+    )
+  );
+  const hasRecoveredScope = Array.isArray(next.filters) && next.filters.length > 0;
+
+  if (
+    routeIsClarify &&
+    datasetName &&
+    realChosenColumn &&
+    explicitColumnChosen &&
+    hasRecoveredScope
+  ) {
+    next.route = 'dataset';
+    next.question = undefined;
+    next.confidence = Math.max(Number(next.confidence) || 0, 0.9);
+    next.outputRequested = true;
+    next.selectColumns = [
+      ...new Set([
+        ...(Array.isArray(next.selectColumns) ? next.selectColumns : []),
+        next.column,
+      ].filter(Boolean)),
+    ];
+
+    // If the wording explicitly requests a calculation, use it. Otherwise an
+    // operation-looking header such as Average/Total/Count is just a field
+    // lookup and must not be mistaken for the calculation itself.
+    next.operation = aggregate || 'lookup';
+    next.groupBy = null;
+    next.aggregation = null;
+    if (!aggregate) next.labelColumn = next.labelColumn || null;
+  }
+
   if (aggregate) {
     next.operation = aggregate;
     next.groupBy = null;
