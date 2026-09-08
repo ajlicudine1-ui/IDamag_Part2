@@ -515,6 +515,66 @@ function getRelationship(
   };
 }
 
+
+function relationshipConfidence(item) {
+  if (!item) return 0;
+  const overlap = Number(item.overlapRatio || 0);
+  const uniqueness = Math.max(
+    Number(item.leftUniqueness ?? item.sourceUniqueness ?? 0),
+    Number(item.rightUniqueness ?? item.targetUniqueness ?? 0)
+  );
+  return Math.max(0, Math.min(1, overlap * 0.75 + uniqueness * 0.25));
+}
+
+function discoverWorksheetRelationships({ datasets } = {}) {
+  return buildRelationshipMap(datasets).map((item) => ({
+    ...item,
+    confidence: relationshipConfidence(item),
+    relationshipType: "shared-key",
+  }));
+}
+
+function joinRelatedRows({ sourceRows, targetRows, sourceColumn, targetColumn }) {
+  const index = new Map();
+  for (const row of targetRows || []) {
+    const key = normalizeJoinValue(row?.[targetColumn]);
+    if (!key) continue;
+    if (!index.has(key)) index.set(key, []);
+    index.get(key).push(row);
+  }
+
+  const joined = [];
+  for (const sourceRow of sourceRows || []) {
+    const key = normalizeJoinValue(sourceRow?.[sourceColumn]);
+    if (!key) continue;
+    for (const targetRow of index.get(key) || []) {
+      joined.push({ sourceRow, targetRow, joinKey: key });
+    }
+  }
+  return joined;
+}
+
+function buildRelationshipScope({ sourceRows, targetRows, relationship, filters = [] }) {
+  if (!relationship) return null;
+  const sourceColumn = relationship.sourceColumn || relationship.leftColumn;
+  const targetColumn = relationship.targetColumn || relationship.rightColumn;
+  if (!sourceColumn || !targetColumn) return null;
+
+  const pairs = joinRelatedRows({ sourceRows, targetRows, sourceColumn, targetColumn });
+  const entityValues = [...new Set(
+    pairs.map((item) => String(item.sourceRow?.[sourceColumn] ?? "").trim()).filter(Boolean)
+  )];
+
+  return {
+    sourceColumn,
+    targetColumn,
+    filters,
+    entityValues,
+    matchedPairs: pairs.length,
+    confidence: relationshipConfidence(relationship),
+  };
+}
+
 module.exports = {
   normalizeJoinValue,
   getUniqueStats,
@@ -524,4 +584,8 @@ module.exports = {
   findBestRelationship,
   buildRelationshipMap,
   getRelationship,
+  relationshipConfidence,
+  discoverWorksheetRelationships,
+  joinRelatedRows,
+  buildRelationshipScope,
 };

@@ -4,6 +4,11 @@ const {
   normalizeText,
 } = require("./utils");
 
+const {
+  inferMetricSemantics,
+  inferUnitFromColumn,
+} = require("./semanticDictionary");
+
 function uniqueExamples(rows, column, limit = 8) {
   const result = [];
   const seen = new Set();
@@ -77,11 +82,16 @@ function buildSchema(datasets) {
     return {
       name,
       rowCount: rows.length,
-      columns: columns.map((column) => ({
-        name: column,
-        type: inferType(rows, column),
-        examples: uniqueExamples(rows, column),
-      })),
+      columns: columns.map((column) => {
+        const semantic = inferMetricSemantics({ column });
+        return {
+          name: column,
+          type: inferType(rows, column),
+          examples: uniqueExamples(rows, column),
+          semanticType: semantic.type,
+          unit: semantic.unit || inferUnitFromColumn(column),
+        };
+      }),
     };
   });
 }

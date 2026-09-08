@@ -210,6 +210,43 @@ function findSharedColumns(leftRows, rightRows) {
   return shared;
 }
 
+
+/**
+ * Conservative ambiguity guard. It only interrupts a dataset plan when the
+ * chosen field is not explicitly named and two live columns are nearly tied.
+ */
+function detectColumnAmbiguity({ plan, datasets, question, minScore = 0.9, maxGap = 0.08 }) {
+  if (!plan || plan.route !== "dataset" || !plan.dataset || !plan.column) return plan;
+  const rows = datasets?.[plan.dataset];
+  if (!Array.isArray(rows) || !rows.length) return plan;
+
+  const normalizedQuestion = normalizeText(question);
+  const chosenText = normalizeText(plan.column);
+  if (chosenText && normalizedQuestion.includes(chosenText)) return plan;
+
+  const ranked = rankColumns(rows, question).slice(0, 2);
+  if (ranked.length < 2) return plan;
+  const [first, second] = ranked;
+
+  if (
+    first.score >= minScore &&
+    second.score >= minScore &&
+    Math.abs(first.score - second.score) <= maxGap &&
+    normalizeText(first.column) !== normalizeText(second.column)
+  ) {
+    return {
+      route: "clarify",
+      question: `Did you mean "${first.column}" or "${second.column}"?`,
+      ambiguity: {
+        dataset: plan.dataset,
+        candidates: ranked.map((item) => ({ column: item.column, score: Number(item.score.toFixed(4)) })),
+      },
+    };
+  }
+
+  return plan;
+}
+
 module.exports = {
   cleanTargetText,
   compactMatchText,
@@ -220,4 +257,5 @@ module.exports = {
   rankColumns,
   findDatasetsContainingColumn,
   findSharedColumns,
+  detectColumnAmbiguity,
 };

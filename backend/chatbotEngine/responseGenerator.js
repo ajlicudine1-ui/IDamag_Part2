@@ -6,6 +6,10 @@ const {
   formatVerifiedResultAnswer,
 } = require("./responseFormatter");
 
+const {
+  formatNumber,
+} = require("./utils");
+
 
 /**
  * ============================================================
@@ -57,16 +61,38 @@ function shouldNaturalize(
 }
 
 
+
+function decorateVerifiedAnswer(answer, plan, result) {
+  let text = String(answer || "").trim();
+  if (!text) return text;
+
+  const unit = result?.unit || plan?.unit || null;
+  const scalarValue = result?.value;
+  if (unit && scalarValue !== null && scalarValue !== undefined) {
+    const formatted = formatNumber(scalarValue);
+    if (formatted && !text.toLowerCase().includes(String(unit).toLowerCase())) {
+      const escaped = String(formatted).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      text = text.replace(new RegExp(`\\b${escaped}\\b`), `${formatted} ${unit}`);
+    }
+  }
+
+  const quality = result?.dataQuality;
+  if (quality && quality.missingCount > 0 && quality.missingRate >= 0.05) {
+    text += `\n\nNote: ${quality.missingCount} of ${quality.totalRows} matching record(s) had no value for this field.`;
+  }
+  return text;
+}
+
 function buildLocalNaturalAnswer({
   question,
   plan,
   result,
 }) {
-  return formatVerifiedResultAnswer({
-    question,
+  return decorateVerifiedAnswer(
+    formatVerifiedResultAnswer({ question, plan, result }),
     plan,
-    result,
-  });
+    result
+  );
 }
 
 
@@ -140,6 +166,12 @@ function buildCompactVerifiedPayload({
 
     winner:
       result?.winner,
+
+    unit:
+      result?.unit || plan?.unit || undefined,
+
+    dataQuality:
+      result?.dataQuality || undefined,
 
     results:
       Array.isArray(
@@ -238,6 +270,8 @@ STRICT RULES:
 - For grouped calculations, describe the aggregation naturally.
 - For rankings, preserve the exact verified order.
 - For follow-ups, be concise and conversational.
+- Preserve and naturally include the verified unit when one is provided.
+- Preserve any missing-data note when dataQuality says it is material.
 - Return ONLY the final answer.
 
 The LOCAL ANSWER is already fact-safe. Prefer making only small stylistic improvements.

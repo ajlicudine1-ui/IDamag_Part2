@@ -1406,6 +1406,33 @@ function executeCrossDatasetGroupedAggregation({
 }
 
 
+
+function buildDataQualitySummary({ datasets, plan }) {
+  if (!plan || plan.route !== "dataset" || !plan.dataset || !plan.column) return null;
+  const rows = datasets?.[plan.dataset];
+  if (!Array.isArray(rows) || !rows.length) return null;
+
+  const column = findColumn(rows, plan.column);
+  if (!column) return null;
+  const filters = resolveFilters(rows, Array.isArray(plan.filters) ? plan.filters : []);
+  const scopedRows = applyFilters(rows, filters);
+  if (!scopedRows.length) {
+    return { totalRows: 0, missingCount: 0, nonMissingCount: 0, missingRate: 0 };
+  }
+
+  const missingCount = scopedRows.reduce((count, row) => {
+    const value = row?.[column];
+    return count + (value === null || value === undefined || String(value).trim() === "" ? 1 : 0);
+  }, 0);
+
+  return {
+    totalRows: scopedRows.length,
+    missingCount,
+    nonMissingCount: scopedRows.length - missingCount,
+    missingRate: missingCount / scopedRows.length,
+  };
+}
+
 function executePlan({
   datasets,
   plan,
@@ -2286,4 +2313,5 @@ function executePlan({
 
 module.exports = {
   executePlan,
+  buildDataQualitySummary,
 };

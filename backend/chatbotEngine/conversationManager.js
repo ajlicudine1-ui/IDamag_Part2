@@ -64,6 +64,9 @@ function createEmptyContext() {
     // Used for comparison follow-ups.
     recentResults: [],
 
+    // Verified entity/key scope used for longer relationship-aware chains.
+    relationshipScope: null,
+
     history: [],
   };
 }
@@ -690,6 +693,84 @@ function buildAnalyticalContext({
 }
 
 
+
+function isCorrectionQuestion(question) {
+  const text = String(question || "").trim().toLowerCase();
+  return /^(?:no[, ]+)?(?:i\s+)?meant\b|\bnot\s+.+\b(?:but|instead|rather)\b|\binstead of\b|\brather than\b/.test(text);
+}
+
+function findExplicitSchemaColumnInQuestion(schema, question) {
+  const text = String(question || "").toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
+  const matches = [];
+  for (const dataset of schema || []) {
+    for (const column of dataset?.columns || []) {
+      const normalized = String(column?.name || "").toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
+      if (normalized && text.includes(normalized)) {
+        matches.push({ dataset: dataset.name, column: column.name, length: normalized.length });
+      }
+    }
+  }
+  return matches.sort((a, b) => b.length - a.length)[0] || null;
+}
+
+function applyConversationCorrection({ question, context, schema }) {
+  if (!context || !isCorrectionQuestion(question)) return context;
+  const explicit = findExplicitSchemaColumnInQuestion(schema, question);
+  if (!explicit) return context;
+
+  const next = { ...context };
+  next.isFollowUp = true;
+  next.lastDataset = explicit.dataset || next.lastDataset;
+  next.lastMetric = explicit.column;
+  next.lastSubjectColumn = explicit.column;
+  if (next.lastPlan && typeof next.lastPlan === "object") {
+    next.lastPlan = {
+      ...next.lastPlan,
+      dataset: explicit.dataset || next.lastPlan.dataset,
+      column: explicit.column,
+      selectColumns: [explicit.column],
+    };
+  }
+  next.correctionApplied = true;
+  next.correctedColumn = explicit.column;
+  return next;
+}
+
+function preserveRelationshipScope({ sessionId = "default", plan, result }) {
+  const context = getConversation(sessionId);
+  if (!plan || !result || result.success === false) return context.relationshipScope;
+
+  const entityValues = [];
+  if (Array.isArray(result.results)) {
+    for (const item of result.results) {
+      if (item === null || item === undefined) continue;
+      if (typeof item !== "object") {
+        const value = String(item).trim();
+        if (value) entityValues.push(value);
+      } else {
+        const preferred = plan.column || plan.labelColumn || plan.groupBy;
+        const value = preferred ? item?.[preferred] : null;
+        if (value !== null && value !== undefined && String(value).trim()) {
+          entityValues.push(String(value).trim());
+        }
+      }
+    }
+  }
+
+  const joins = Array.isArray(result.joins) ? result.joins : [];
+  context.relationshipScope = {
+    sourceDataset: joins[0]?.sourceDataset || plan.dataset || null,
+    targetDataset: joins[0]?.targetDataset || null,
+    sourceColumn: joins[0]?.sourceColumn || plan.column || plan.labelColumn || null,
+    targetColumn: joins[0]?.targetColumn || null,
+    entityValues: [...new Set(entityValues)].slice(0, 250),
+    joins: joins.map((item) => ({ ...item })),
+    crossDataset: result.crossDataset === true,
+    timestamp: Date.now(),
+  };
+  return context.relationshipScope;
+}
+
 /**
  * Update conversation after a successfully
  * planned/executed question.
@@ -935,6 +1016,10 @@ function updateConversation(
   // NORMAL CONVERSATION HISTORY
   // ========================================================
 
+  if (plan && result && result.success !== false) {
+    preserveRelationshipScope({ sessionId, plan, result });
+  }
+
   if (question) {
     context.history.push({
       question,
@@ -1019,6 +1104,11 @@ function getRelevantContext(
         ? context.analyticalContext
         : null,
 
+    relationshipScope:
+      isFollowUp
+        ? context.relationshipScope
+        : null,
+
     /**
      * Used by Step 10.
      *
@@ -1093,6 +1183,9 @@ module.exports = {
   getRecentResults,
   getHistory,
   isFollowUpQuestion,
+  isCorrectionQuestion,
+  applyConversationCorrection,
+  preserveRelationshipScope,
   clearConversation,
   clearAllConversations,
 };

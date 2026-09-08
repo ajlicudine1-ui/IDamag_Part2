@@ -199,10 +199,86 @@ function buildSemanticHints(schema = []) {
   return hints;
 }
 
+
+/**
+ * Generic metric families. These describe common analytical meanings rather
+ * than any one dashboard's schema.
+ */
+const METRIC_SEMANTICS = {
+  currency: ["cost", "amount", "value", "budget", "price", "expense", "revenue", "salary", "peso", "php"],
+  count: ["count", "number", "members", "beneficiaries", "persons", "people", "employees", "farmers", "clients", "respondents"],
+  area: ["area", "hectare", "hectares", "ha"],
+  weight: ["weight", "kg", "kilogram", "kilograms", "mt", "metric ton", "metric tons", "ton", "tons"],
+  percentage: ["percentage", "percent", "rate", "%"],
+  quantity: ["quantity", "qty", "volume", "units"],
+  time: ["duration", "hours", "hour", "minutes", "minute", "days", "day"],
+};
+
+function inferUnitFromColumn(columnName) {
+  const raw = String(columnName || "").trim();
+  const name = normalizeSemanticText(raw);
+  if (!name) return null;
+
+  if (/₱|\bphp\b|\bpeso(?:s)?\b/i.test(raw)) return "₱";
+  if (/%|\bpercent(?:age)?\b/i.test(raw)) return "%";
+  if (/\(\s*ha\s*\)|\bhectares?\b|\bha\b/i.test(raw)) return "ha";
+  if (/\bkg\b|\bkilograms?\b/i.test(raw)) return "kg";
+  if (/\bmt\b|\bmetric\s+tons?\b/i.test(raw)) return "MT";
+  if (/\bhours?\b|\bhrs?\b/i.test(raw)) return "hours";
+  if (/\bminutes?\b|\bmins?\b/i.test(raw)) return "minutes";
+  if (/\bdays?\b/i.test(raw)) return "days";
+  return null;
+}
+
+function inferMetricSemantics({ column, schema = [], dataset = null } = {}) {
+  const columnName = String(column || "").trim();
+  if (!columnName) return { type: null, unit: null, confidence: 0 };
+
+  const text = normalizeSemanticText(columnName);
+  const tokens = new Set(text.split(/\s+/).filter(Boolean));
+  let bestType = null;
+  let bestScore = 0;
+
+  for (const [type, words] of Object.entries(METRIC_SEMANTICS)) {
+    let score = 0;
+    for (const word of words) {
+      const normalizedWord = normalizeSemanticText(word);
+      if (!normalizedWord) continue;
+      if (text === normalizedWord) score += 2;
+      else if (text.includes(normalizedWord)) score += normalizedWord.includes(" ") ? 1.4 : 1;
+      else if (tokens.has(normalizedWord)) score += 1;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestType = type;
+    }
+  }
+
+  // Reuse schema metadata when available.
+  const datasetSchema = (schema || []).find(
+    (item) => !dataset || String(item?.name || "") === String(dataset)
+  );
+  const schemaColumn = datasetSchema?.columns?.find(
+    (item) => String(item?.name || "") === columnName
+  );
+
+  if (schemaColumn?.semanticType) bestType = schemaColumn.semanticType;
+  const unit = schemaColumn?.unit || inferUnitFromColumn(columnName);
+
+  return {
+    type: bestType,
+    unit,
+    confidence: bestScore > 0 ? Math.min(1, 0.45 + bestScore * 0.12) : 0,
+  };
+}
+
 module.exports = {
   SEMANTIC_ALIASES,
   normalizeSemanticText,
   getAliasesForColumn,
   findSemanticColumn,
   buildSemanticHints,
+  METRIC_SEMANTICS,
+  inferMetricSemantics,
+  inferUnitFromColumn,
 };

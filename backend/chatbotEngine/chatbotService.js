@@ -8,6 +8,7 @@ const {
 
 const {
   executePlan,
+  buildDataQualitySummary,
 } = require("./calculationEngine");
 
 const {
@@ -30,6 +31,7 @@ const {
   getRelevantContext,
   updateConversation,
   getRecentResults,
+  applyConversationCorrection,
 } = require("./conversationManager");
 
 const {
@@ -65,6 +67,19 @@ const {
   retrieveRelevantData,
   buildRetrievalContext,
 } = require("./dataRetriever");
+
+const {
+  detectColumnAmbiguity,
+} = require("./columnMatcher");
+
+const {
+  inferMetricSemantics,
+  inferUnitFromColumn,
+} = require("./semanticDictionary");
+
+const {
+  discoverWorksheetRelationships,
+} = require("./relationshipEngine");
 
 
 function normalizeExplicitColumnText(value) {
@@ -13831,6 +13846,9 @@ async function answerQuestion(
       datasets
     );
 
+  const worksheetRelationships =
+    discoverWorksheetRelationships({ datasets, schema });
+
   // ========================================================
   // LOAD CONVERSATION CONTEXT
   // ========================================================
@@ -13840,6 +13858,18 @@ async function answerQuestion(
       sessionId,
       cleanQuestion
     );
+
+  Object.assign(
+    conversationContext,
+    applyConversationCorrection({
+      question: cleanQuestion,
+      context: conversationContext,
+      schema,
+    })
+  );
+
+  conversationContext.worksheetRelationships =
+    worksheetRelationships;
 
   /**
    * Recover short referential follow-ups from the latest VERIFIED turn even
@@ -14411,6 +14441,26 @@ async function answerQuestion(
             null,
         });
 
+      plan = detectColumnAmbiguity({
+        plan,
+        datasets,
+        question: cleanQuestion,
+      });
+
+      if (plan?.route === "dataset" && plan?.column) {
+        const semantic = inferMetricSemantics({
+          column: plan.column,
+          dataset: plan.dataset,
+          schema,
+          datasets,
+        });
+        plan = {
+          ...plan,
+          metricSemantics: semantic.type,
+          unit: semantic.unit || inferUnitFromColumn(plan.column),
+        };
+      }
+
       // ====================================================
       // QUERY VALIDATOR
       // ====================================================
@@ -14592,6 +14642,16 @@ async function answerQuestion(
 
       result =
         resultValidation.result;
+
+      if (plan?.route === "dataset") {
+        const dataQuality = buildDataQualitySummary({ datasets, plan });
+        result = {
+          ...result,
+          unit: result?.unit || plan?.unit || null,
+          metricSemantics: result?.metricSemantics || plan?.metricSemantics || null,
+          dataQuality: result?.dataQuality || dataQuality || null,
+        };
+      }
 
       // ====================================================
       // CONVERSATIONAL ANALYTICS ORDINAL SELECTION

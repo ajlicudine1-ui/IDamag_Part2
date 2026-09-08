@@ -12,6 +12,11 @@ const {
   inferType,
 } = require("./schemaBuilder");
 
+const {
+  splitMultiValueCell,
+  valueMatchesToken,
+} = require("./valueNormalizer");
+
 /**
  * ==========================================================
  * NORMALIZE FILTER VALUE
@@ -91,8 +96,8 @@ function compare(
     const matches =
       expectedValues.some(
         (value) =>
-          leftText ===
-          normalizeText(value)
+          leftText === normalizeText(value) ||
+          valueMatchesToken(actual, value)
       );
 
     return normalizedOperator ===
@@ -114,9 +119,9 @@ function compare(
     normalizedOperator
   ) {
     case "not_equals":
-      return (
-        leftText !==
-        rightText
+      return !(
+        leftText === rightText ||
+        valueMatchesToken(actual, expected)
       );
 
     case "contains":
@@ -169,8 +174,8 @@ function compare(
     case "equals":
     default:
       return (
-        leftText ===
-        rightText
+        leftText === rightText ||
+        valueMatchesToken(actual, expected)
       );
   }
 }

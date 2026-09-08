@@ -236,12 +236,38 @@ function validateFilters(
   };
 }
 
+
+function validateRelationship(datasets, relationship) {
+  if (!relationship) return { valid: true, relationship: null };
+  const sourceDataset = relationship.sourceDataset || relationship.leftDataset;
+  const targetDataset = relationship.targetDataset || relationship.rightDataset;
+  const sourceColumn = relationship.sourceColumn || relationship.leftColumn;
+  const targetColumn = relationship.targetColumn || relationship.rightColumn;
+
+  if (!datasets?.[sourceDataset] || !datasets?.[targetDataset]) {
+    return makeError("RELATIONSHIP_DATASET_NOT_FOUND", "A worksheet required by the cross-worksheet relationship was not found.");
+  }
+  if (!findColumn(datasets[sourceDataset], sourceColumn) || !findColumn(datasets[targetDataset], targetColumn)) {
+    return makeError("RELATIONSHIP_COLUMN_NOT_FOUND", "A relationship key column was not found in the connected worksheets.");
+  }
+  if (relationship.confidence !== undefined && Number(relationship.confidence) < 0.6) {
+    return makeError("RELATIONSHIP_AMBIGUOUS", "The worksheets do not have a strong enough shared key to answer this safely.", { relationship });
+  }
+  return { valid: true, relationship };
+}
+
 function validateDatasetPlan({
   datasets,
   plan,
 }) {
   const operationCheck =
     validateDatasetOperation(plan);
+
+  const relationshipCheck = validateRelationship(
+    datasets,
+    plan.relationship || null
+  );
+  if (!relationshipCheck.valid) return relationshipCheck;
 
   if (operationCheck) {
     return operationCheck;
