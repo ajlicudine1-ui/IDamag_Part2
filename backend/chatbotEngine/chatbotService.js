@@ -2249,6 +2249,92 @@ function recoverHighConfidenceAggregateClarification({
   };
 }
 
+
+/**
+ * Repair LIST plans that already contain exactly one requested output field
+ * in selectColumns but leave the primary column empty.
+ *
+ * Example planner shape:
+ *   operation: "list"
+ *   column: null
+ *   selectColumns: ["<real live field>"]
+ *
+ * The calculation engine expects plan.column for list operations. Resolve it
+ * only when the planner has supplied one unambiguous selected field and that
+ * field actually exists in the selected worksheet's live schema.
+ *
+ * This is fully dataset/schema agnostic. No report, worksheet, field, or
+ * business value is hardcoded.
+ */
+function repairListOutputColumn({
+  schema,
+  plan,
+}) {
+  if (
+    !plan ||
+    plan.route !== "dataset" ||
+    String(plan.operation || "")
+      .trim()
+      .toLowerCase() !== "list" ||
+    plan.column
+  ) {
+    return plan;
+  }
+
+  const selectColumns =
+    Array.isArray(plan.selectColumns)
+      ? [
+          ...new Set(
+            plan.selectColumns
+              .filter(Boolean)
+              .map((value) =>
+                String(value).trim()
+              )
+              .filter(Boolean)
+          ),
+        ]
+      : [];
+
+  // More than one selected field is genuinely ambiguous for a plain LIST.
+  if (selectColumns.length !== 1) {
+    return plan;
+  }
+
+  const candidate = selectColumns[0];
+
+  const datasetSchema =
+    (schema || []).find(
+      (dataset) =>
+        String(dataset?.name || "") ===
+        String(plan.dataset || "")
+    ) || null;
+
+  if (!datasetSchema) {
+    return plan;
+  }
+
+  const realColumn =
+    (datasetSchema.columns || []).find(
+      (column) =>
+        String(column?.name || "") ===
+        candidate
+    )?.name || null;
+
+  if (!realColumn) {
+    return plan;
+  }
+
+  return {
+    ...plan,
+    column: realColumn,
+    labelColumn:
+      plan.labelColumn ||
+      realColumn,
+    selectColumns: [realColumn],
+  };
+}
+
+
 function normalizePlannerPlan({
   datasets,
   schema,
@@ -2851,11 +2937,18 @@ if (
         );
   }
 
+  const listOutputRepaired =
+    repairListOutputColumn({
+      schema,
+      plan:
+        normalized,
+    });
+
   return repairRankingIdentityPlan({
     datasets,
     schema,
     plan:
-      normalized,
+      listOutputRepaired,
     question,
   });
 }
