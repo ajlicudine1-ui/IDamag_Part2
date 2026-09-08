@@ -225,12 +225,54 @@ function extractScalar(result) {
   return null;
 }
 
+function findExplicitDatasetMentions({ datasets, question }) {
+  const q = normalizeText(question);
+  if (!q) return [];
+
+  const names = Object.keys(datasets || {}).filter((name) => Array.isArray(datasets[name]));
+  return names.filter((name) => {
+    const normalizedName = normalizeText(name);
+    if (!normalizedName) return false;
+
+    const escaped = normalizedName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, 'u').test(q);
+  });
+}
+
+function hasExplicitCrossWorksheetCue(question) {
+  const q = normalizeText(question);
+
+  // When exactly one live worksheet is explicitly named, only unmistakable
+  // cross-worksheet wording may expand the query beyond that worksheet.
+  // This prevents "top 5 commodities ... in <worksheet>" from being
+  // mistaken for a worksheet ranking.
+  if (/\b(?:each|every|all|across)\b/.test(q)) return true;
+  if (/\b(?:compare|comparison|versus|vs\.?)\b/.test(q)) return true;
+
+  return false;
+}
+
 function buildDistributedWorksheetResolution({ datasets, schema, question }) {
   const datasetNames = Object.keys(datasets || {}).filter((name) => Array.isArray(datasets[name]));
   if (datasetNames.length < 2) return null;
 
+  const explicitDatasetMentions = findExplicitDatasetMentions({ datasets, question });
+
   const partition = discoverPartitionColumn({ datasets, schema, question });
   if (!partition || !hasDistributedScopeCue(question, partition.column)) return null;
+
+  // If the question explicitly names exactly one live worksheet, keep the
+  // request scoped to that worksheet unless the wording ALSO clearly asks
+  // for a cross-worksheet comparison/distribution. This prevents queries like:
+  //   "top 5 commodities by average price in Pangasinan"
+  // from being misread as a ranking of worksheets simply because "top" and
+  // "commodities" are present. No worksheet names are hardcoded here.
+  if (
+    explicitDatasetMentions.length === 1 &&
+    !hasExplicitCrossWorksheetCue(question)
+  ) {
+    return null;
+  }
 
   const metricColumn = chooseMetricColumn({ datasets, schema, question });
   if (!metricColumn) return null;
