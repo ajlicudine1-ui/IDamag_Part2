@@ -87,6 +87,8 @@ const {
 } = require("./localPlannerHardener");
 
 const {
+  buildCrossWorksheetGroupedRankingResolution,
+  executeCrossWorksheetGroupedPlan,
   buildDistributedWorksheetResolution,
   buildDistributedWorksheetFollowUpResolution,
   executeDistributedWorksheetPlan,
@@ -5136,17 +5138,24 @@ async function answerQuestion(
        */
       if (
         plan.route === "dataset" &&
-        ["rank_worksheets", "multi_worksheet"].includes(
+        ["rank_worksheets", "multi_worksheet", "rank_across_worksheets"].includes(
           String(plan.operation || "").trim().toLowerCase()
         )
       ) {
-        const distributedResult =
-          executeDistributedWorksheetPlan({
-            datasets,
-            schema,
-            plan,
-            question: cleanQuestion,
-          });
+        const operationName = String(plan.operation || "").trim().toLowerCase();
+        const distributedResult = operationName === "rank_across_worksheets"
+          ? executeCrossWorksheetGroupedPlan({
+              datasets,
+              schema,
+              plan,
+              question: cleanQuestion,
+            })
+          : executeDistributedWorksheetPlan({
+              datasets,
+              schema,
+              plan,
+              question: cleanQuestion,
+            });
 
         if (distributedResult) {
           updateConversation(sessionId, {
@@ -7750,6 +7759,39 @@ async function answerQuestion(
       ),
       debugPlan: distributedWorksheetFollowUp.plan,
       plannerSource: "conversation-multi-worksheet",
+    };
+  }
+
+
+  // ========================================================
+  // DETERMINISTIC CROSS-WORKSHEET GROUPED RANKING
+  // ========================================================
+  //
+  // Handles questions that rank a shared row dimension ACROSS all same-schema
+  // worksheets, e.g. "Which commodity had the highest average ...?". This is
+  // different from ranking the worksheets themselves. A single explicitly
+  // named worksheet still stays single-sheet.
+  //
+  const crossWorksheetGroupedRanking =
+    buildCrossWorksheetGroupedRankingResolution({
+      datasets,
+      schema,
+      question: cleanQuestion,
+    });
+
+  if (crossWorksheetGroupedRanking) {
+    updateConversation(sessionId, {
+      question: cleanQuestion,
+      plan: crossWorksheetGroupedRanking.plan,
+      result: crossWorksheetGroupedRanking.result,
+    });
+
+    return {
+      ...crossWorksheetGroupedRanking.result,
+      answer: formatUserFacingAnswer(
+        crossWorksheetGroupedRanking.result?.answer
+      ),
+      plannerSource: "deterministic-cross-worksheet-group-ranking",
     };
   }
 

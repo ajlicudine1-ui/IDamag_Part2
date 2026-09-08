@@ -505,6 +505,204 @@ function executeDistributedWorksheetPlan({ datasets, schema, plan, question = ''
   };
 }
 
+
+function discoverPhysicalPartitionColumn({ datasets, schema }) {
+  const shared = getSharedColumns(schema);
+  const candidates = [];
+
+  for (const column of shared) {
+    let singletonCount = 0;
+    let distinctAcrossDatasets = true;
+    const seen = new Set();
+
+    for (const datasetSchema of schema || []) {
+      const rows = datasets?.[datasetSchema?.name];
+      if (!Array.isArray(rows) || !rows.length) continue;
+
+      const values = getDistinctNonEmpty(rows, column, 3);
+      if (values.length !== 1) continue;
+
+      singletonCount += 1;
+      const key = normalizeText(values[0]);
+      if (seen.has(key)) distinctAcrossDatasets = false;
+      seen.add(key);
+    }
+
+    if (singletonCount >= 2 && distinctAcrossDatasets) {
+      candidates.push({ column, singletonCount });
+    }
+  }
+
+  return candidates.sort((a, b) => b.singletonCount - a.singletonCount)[0] || null;
+}
+
+function chooseExplicitGroupingColumn({ datasets, schema, question, metricColumn, partitionColumn }) {
+  const shared = getSharedColumns(schema);
+  const candidates = [];
+
+  for (const name of shared) {
+    if (normalizeText(name) === normalizeText(metricColumn)) continue;
+    if (normalizeText(name) === normalizeText(partitionColumn)) continue;
+    if (!questionMentionsColumnConcept(question, name)) continue;
+
+    let numericVotes = 0;
+    let usableVotes = 0;
+    for (const datasetSchema of schema || []) {
+      const rows = datasets?.[datasetSchema?.name];
+      const column = datasetSchema?.columns?.find((c) => String(c?.name) === String(name));
+      if (!column || !Array.isArray(rows)) continue;
+      usableVotes += 1;
+      if (isNumericLikeColumn({ column, rows })) numericVotes += 1;
+    }
+
+    if (usableVotes && numericVotes / usableVotes < 0.5) {
+      candidates.push({ name, length: normalizeText(name).length });
+    }
+  }
+
+  return candidates.sort((a, b) => b.length - a.length)[0]?.name || null;
+}
+
+function executeCrossWorksheetGroupedPlan({ datasets, schema, plan, question = '' }) {
+  if (normalizeText(plan?.operation) !== 'rank_across_worksheets') return null;
+
+  const datasetNames = Object.keys(datasets || {}).filter((name) => Array.isArray(datasets[name]));
+  if (datasetNames.length < 2) return null;
+
+  const metricColumn = plan?.column || null;
+  const groupColumn = plan?.groupBy || plan?.labelColumn || null;
+  if (!metricColumn || !groupColumn) return null;
+
+  const combinedRows = [];
+  for (const datasetName of datasetNames) {
+    const datasetSchema = (schema || []).find((d) => String(d?.name) === String(datasetName));
+    const rows = datasets?.[datasetName];
+    if (!datasetSchema || !Array.isArray(rows)) continue;
+
+    const hasMetric = datasetSchema.columns?.some((c) => String(c?.name) === String(metricColumn));
+    const hasGroup = datasetSchema.columns?.some((c) => String(c?.name) === String(groupColumn));
+    if (!hasMetric || !hasGroup) continue;
+
+    for (const row of rows) combinedRows.push({ ...row, __worksheet: datasetName });
+  }
+
+  if (!combinedRows.length) return null;
+
+  const syntheticDataset = '__combined_worksheets__';
+  const direction = normalizeText(plan?.direction) === 'asc' ? 'asc' : 'desc';
+  const aggregation = ['sum', 'average', 'count'].includes(normalizeText(plan?.aggregation))
+    ? normalizeText(plan.aggregation)
+    : 'average';
+  const limit = Math.max(1, Number(plan?.limit) || 1);
+
+  const childPlan = {
+    route: 'dataset',
+    dataset: syntheticDataset,
+    operation: 'rank_groups',
+    column: metricColumn,
+    labelColumn: groupColumn,
+    groupBy: groupColumn,
+    aggregation,
+    direction,
+    filters: Array.isArray(plan?.filters) ? plan.filters.map(cloneFilter) : [],
+    selectColumns: [groupColumn, metricColumn],
+    outputRequested: true,
+    limit,
+    showAll: false,
+  };
+
+  let ranked;
+  try {
+    ranked = executePlan({ datasets: { [syntheticDataset]: combinedRows }, plan: childPlan, question });
+  } catch (error) {
+    return null;
+  }
+
+  const results = Array.isArray(ranked?.results) ? ranked.results : [];
+  const answer = results.length
+    ? `${direction === 'asc' ? 'Lowest' : 'Highest'} ${groupColumn} by ${aggregation} ${metricColumn} across worksheets:\n` +
+      results.map((item, index) => `${index + 1}. ${item.label}: ${formatNumber(item.value)}`).join('\n')
+    : `I couldn't find enough matching values to rank ${groupColumn} across worksheets.`;
+
+  return {
+    success: true,
+    source: 'dataset',
+    dataset: null,
+    datasets: datasetNames,
+    operation: 'rank_across_worksheets',
+    column: metricColumn,
+    groupBy: groupColumn,
+    aggregation,
+    direction,
+    results,
+    filters: childPlan.filters,
+    answer,
+    debugPlan: plan,
+  };
+}
+
+function buildCrossWorksheetGroupedRankingResolution({ datasets, schema, question }) {
+  const datasetNames = Object.keys(datasets || {}).filter((name) => Array.isArray(datasets[name]));
+  if (datasetNames.length < 2) return null;
+
+  const direction = detectRankingDirection(question);
+  if (!direction) return null;
+
+  const explicitDatasetMentions = findExplicitDatasetMentions({ datasets, question });
+  if (explicitDatasetMentions.length === 1) return null;
+
+  const metricColumn = chooseMetricColumn({ datasets, schema, question });
+  if (!metricColumn) return null;
+
+  const physicalPartition = discoverPhysicalPartitionColumn({ datasets, schema });
+  const partitionColumn = physicalPartition?.column || null;
+  const groupColumn = chooseExplicitGroupingColumn({
+    datasets,
+    schema,
+    question,
+    metricColumn,
+    partitionColumn,
+  });
+
+  if (!groupColumn) return null;
+
+  const combinedRows = datasetNames.flatMap((name) => Array.isArray(datasets[name]) ? datasets[name] : []);
+  const inferredFilters = inferValueFilters(
+    combinedRows,
+    question,
+    [metricColumn, groupColumn, partitionColumn].filter(Boolean)
+  );
+  const filters = cleanInferredFilters(inferredFilters, partitionColumn, metricColumn)
+    .filter((filter) => normalizeText(filter?.column) !== normalizeText(groupColumn));
+
+  const requestedAggregation = detectQuestionAggregation(question);
+  const aggregation = ['sum', 'average', 'count'].includes(requestedAggregation)
+    ? requestedAggregation
+    : 'average';
+
+  const plan = {
+    route: 'dataset',
+    dataset: null,
+    operation: 'rank_across_worksheets',
+    column: metricColumn,
+    labelColumn: groupColumn,
+    groupBy: groupColumn,
+    aggregation,
+    direction,
+    filters,
+    selectColumns: [groupColumn, metricColumn],
+    outputRequested: true,
+    showAll: false,
+    limit: detectRankingLimit(question) || 1,
+    distributedWorksheetQuery: true,
+    crossWorksheetGroupedRanking: true,
+    worksheets: datasetNames,
+  };
+
+  const result = executeCrossWorksheetGroupedPlan({ datasets, schema, plan, question });
+  return result ? { plan, result } : null;
+}
+
 function buildDistributedWorksheetFollowUpResolution({
   datasets,
   schema,
@@ -514,7 +712,7 @@ function buildDistributedWorksheetFollowUpResolution({
   if (!previousPlan || typeof previousPlan !== 'object') return null;
 
   const previousOperation = normalizeText(previousPlan.operation);
-  if (!['rank_worksheets', 'multi_worksheet'].includes(previousOperation)) {
+  if (!['rank_worksheets', 'multi_worksheet', 'rank_across_worksheets'].includes(previousOperation)) {
     return null;
   }
 
@@ -541,7 +739,7 @@ function buildDistributedWorksheetFollowUpResolution({
     ...previousPlan,
     route: 'dataset',
     dataset: null,
-    operation: 'rank_worksheets',
+    operation: previousOperation === 'rank_across_worksheets' ? 'rank_across_worksheets' : 'rank_worksheets',
     column: metricColumn,
     groupBy: partitionColumn,
     aggregation: previousPlan.aggregation || 'lookup',
@@ -558,12 +756,9 @@ function buildDistributedWorksheetFollowUpResolution({
     reconstructedDistributedFollowUp: true,
   };
 
-  const result = executeDistributedWorksheetPlan({
-    datasets,
-    schema,
-    plan: reconstructedPlan,
-    question,
-  });
+  const result = previousOperation === 'rank_across_worksheets'
+    ? executeCrossWorksheetGroupedPlan({ datasets, schema, plan: reconstructedPlan, question })
+    : executeDistributedWorksheetPlan({ datasets, schema, plan: reconstructedPlan, question });
 
   if (!result) return null;
 
@@ -574,6 +769,8 @@ function buildDistributedWorksheetFollowUpResolution({
 }
 
 module.exports = {
+  buildCrossWorksheetGroupedRankingResolution,
+  executeCrossWorksheetGroupedPlan,
   buildDistributedWorksheetResolution,
   buildDistributedWorksheetFollowUpResolution,
   executeDistributedWorksheetPlan,
