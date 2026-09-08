@@ -13467,6 +13467,162 @@ function buildExplicitReferentialFieldPlan({
   };
 }
 
+
+
+/**
+ * ==========================================================
+ * CONVERSATIONAL RELIABILITY LAYER (v7.28)
+ * ==========================================================
+ * Generic/schema-driven safeguards for:
+ * - correction turns ("No, I meant <field>")
+ * - metric ambiguity detection
+ * - result null/missing-data metadata
+ * - unit inference from live schema labels
+ *
+ * No dashboard, worksheet, field, or business value is hardcoded.
+ */
+function detectConversationCorrection(question) {
+  const text = normalizeText(question);
+  if (!text) return false;
+  return /^(?:no|not quite|correction|sorry)\b/.test(text) ||
+    /\b(?:i meant|i mean|rather than|instead of|not .+ but)\b/.test(text);
+}
+
+function buildConversationCorrectionPlan({ schema, context, question }) {
+  if (!detectConversationCorrection(question) || !context?.lastPlan) return null;
+
+  const previous = context.lastPlan;
+  if (previous.route !== "dataset" || !previous.dataset) return null;
+
+  const explicit = findExplicitSchemaColumns({
+    schema,
+    question,
+    preferredDataset: previous.dataset,
+  });
+
+  const oldColumn = previous.column || previous.groupBy || previous.labelColumn || null;
+  const replacement = explicit.find((item) =>
+    item?.column && normalizeText(item.column) !== normalizeText(oldColumn || "")
+  );
+
+  if (!replacement?.column) return null;
+
+  const next = {
+    ...previous,
+    dataset: previous.dataset,
+    column: replacement.column,
+    filters: Array.isArray(previous.filters)
+      ? previous.filters.map((f) => ({ ...f, value: Array.isArray(f?.value) ? [...f.value] : f?.value }))
+      : [],
+    correctedFromPreviousTurn: true,
+    correctedPreviousColumn: oldColumn,
+  };
+
+  if (Array.isArray(previous.selectColumns)) {
+    next.selectColumns = previous.selectColumns
+      .map((c) => normalizeText(c) === normalizeText(oldColumn || "") ? replacement.column : c)
+      .filter(Boolean);
+    if (!next.selectColumns.includes(replacement.column)) next.selectColumns.push(replacement.column);
+  } else {
+    next.selectColumns = [replacement.column];
+  }
+
+  // If the previous metric also acted as a grouping/label field, replace only
+  // that same role. Otherwise preserve the previous row identity/grouping.
+  if (previous.groupBy && normalizeText(previous.groupBy) === normalizeText(oldColumn || "")) {
+    next.groupBy = replacement.column;
+  }
+  if (previous.labelColumn && normalizeText(previous.labelColumn) === normalizeText(oldColumn || "")) {
+    next.labelColumn = replacement.column;
+  }
+
+  return next;
+}
+
+function inferUnitFromColumnName(columnName) {
+  const raw = String(columnName || "").trim();
+  if (!raw) return null;
+  const paren = raw.match(/\(([^()]{1,20})\)\s*$/);
+  if (paren?.[1]) return paren[1].trim();
+  const text = normalizeText(raw);
+  const rules = [
+    [/\b(percent|percentage|rate)\b/, "%"],
+    [/\b(peso|php|amount|cost|budget|value|salary|price)\b/, "₱"],
+    [/\b(hectare|hectares|ha)\b/, "ha"],
+    [/\b(kilogram|kilograms|kg)\b/, "kg"],
+    [/\b(metric ton|metric tons|mt)\b/, "MT"],
+  ];
+  for (const [pattern, unit] of rules) if (pattern.test(text)) return unit;
+  return null;
+}
+
+function attachResultQualityMetadata({ datasets, plan, result }) {
+  if (!result || plan?.route !== "dataset" || !plan?.dataset) return result;
+  const rows = datasets?.[plan.dataset];
+  if (!Array.isArray(rows)) return result;
+
+  const columns = [...new Set([
+    plan.column,
+    plan.groupBy,
+    plan.labelColumn,
+    ...(Array.isArray(plan.selectColumns) ? plan.selectColumns : []),
+  ].filter(Boolean))];
+
+  const missingByColumn = {};
+  for (const column of columns) {
+    let missing = 0;
+    for (const row of rows) {
+      const value = row?.[column];
+      if (value === null || value === undefined || String(value).trim() === "") missing += 1;
+    }
+    if (missing > 0) missingByColumn[column] = missing;
+  }
+
+  const metricUnit = inferUnitFromColumnName(plan.column);
+  return {
+    ...result,
+    dataQuality: {
+      rowsAvailable: rows.length,
+      missingByColumn,
+      hasMissingValues: Object.keys(missingByColumn).length > 0,
+    },
+    ...(metricUnit ? { unit: metricUnit } : {}),
+  };
+}
+
+function buildAmbiguousMetricClarification({ datasets, schema, plan, question }) {
+  if (!plan || plan.route !== "dataset" || !plan.dataset || !plan.column) return null;
+  const op = String(plan.operation || "").toLowerCase();
+  if (!["sum","average","median","minimum","maximum","rank_rows","rank_groups","group_sum","group_average","group_minimum","group_maximum"].includes(op)) return null;
+
+  // Explicitly named real fields are not ambiguous.
+  const explicit = findExplicitSchemaColumns({ schema, question, preferredDataset: plan.dataset });
+  if (explicit.some((x) => normalizeText(x.column) === normalizeText(plan.column))) return null;
+
+  const ds = (schema || []).find((x) => String(x?.name || "") === String(plan.dataset));
+  const rows = datasets?.[plan.dataset];
+  if (!ds || !Array.isArray(rows)) return null;
+
+  const q = normalizeText(question);
+  const candidates = (ds.columns || [])
+    .filter((c) => isNumericLikeColumn({ column: c, rows }))
+    .map((c) => ({ name: c.name, score: scoreTargetToColumn(q, c.name) }))
+    .sort((a,b) => b.score-a.score);
+
+  if (candidates.length < 2) return null;
+  const best = candidates[0], second = candidates[1];
+  if (best.score < 0.55 || second.score < best.score - 0.10) return null;
+  if (normalizeText(best.name) === normalizeText(second.name)) return null;
+
+  return {
+    success: false,
+    source: "router",
+    operation: "clarify",
+    answer: `I found two plausible numeric fields: "${best.name}" and "${second.name}". Which one should I use?`,
+    ambiguity: { candidates: [best.name, second.name] },
+  };
+}
+
 /**
  * ==========================================================
  * MAIN CHATBOT ENTRY POINT
@@ -13771,6 +13927,13 @@ async function answerQuestion(
     question:
       cleanQuestion,
   });
+
+  const conversationCorrectionPlan =
+    buildConversationCorrectionPlan({
+      schema,
+      context: conversationContext,
+      question: cleanQuestion,
+    });
 
   /**
    * ========================================================
@@ -14319,6 +14482,25 @@ async function answerQuestion(
         });
 
       // ====================================================
+      // AMBIGUOUS METRIC GUARD
+      // ====================================================
+      const ambiguousMetric =
+        buildAmbiguousMetricClarification({
+          datasets,
+          schema,
+          plan,
+          question: cleanQuestion,
+        });
+
+      if (ambiguousMetric) {
+        return {
+          ...ambiguousMetric,
+          debugPlan: plan,
+          debugEntityChanges: [],
+        };
+      }
+
+      // ====================================================
       // QUERY VALIDATOR
       // ====================================================
 
@@ -14499,6 +14681,13 @@ async function answerQuestion(
 
       result =
         resultValidation.result;
+
+      result =
+        attachResultQualityMetadata({
+          datasets,
+          plan,
+          result,
+        });
 
       // ====================================================
       // CONVERSATIONAL ANALYTICS ORDINAL SELECTION
@@ -14752,6 +14941,24 @@ async function answerQuestion(
 
 
 
+
+  // ========================================================
+  // CONVERSATION CORRECTION — REVISE PREVIOUS VERIFIED PLAN
+  // ========================================================
+  // Example shape: "No, I meant <field B>, not <field A>."
+  if (conversationCorrectionPlan) {
+    const correctedResult =
+      await executeResolvedPlan(conversationCorrectionPlan);
+
+    return {
+      ...correctedResult,
+      answer: formatUserFacingAnswer(correctedResult?.answer),
+      responseStyle: "natural",
+      debugPlan: conversationCorrectionPlan,
+      debugEntityChanges: [],
+      plannerSource: "conversation-correction",
+    };
+  }
 
   // ========================================================
   // DETERMINISTIC LINKED MULTI-FIELD LOOKUP
