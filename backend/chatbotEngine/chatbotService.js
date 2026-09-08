@@ -4623,6 +4623,27 @@ function resolveDirectFilteredFieldPlan({
   }
 
   /**
+   * IMPORTANT: this shortcut is only for plain field lookups/lists.
+   * Analytical questions (ranking, totals, averages, counts, etc.) must
+   * continue through the normal planner/repair pipeline so the requested
+   * metric is not discarded.
+   *
+   * Example that MUST NOT be intercepted here:
+   *   "Which association in Pangasinan has the largest total land area?"
+   *
+   * Without this guard the direct lookup parser can incorrectly reduce the
+   * request to: Name of Association + Province=Pangasinan, losing the
+   * "largest Total Land Area (ha)" ranking instruction.
+   */
+  if (
+    detectRankingDirection(text) ||
+    detectQuestionAggregation(text) ||
+    /\b(?:median|minimum|maximum|min|max|difference|ratio|percentage|percent)\b/.test(text)
+  ) {
+    return null;
+  }
+
+  /**
    * Direct field + entity/location/value questions.
    *
    * Examples:
