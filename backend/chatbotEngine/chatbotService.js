@@ -88,6 +88,7 @@ const {
 
 const {
   buildDistributedWorksheetResolution,
+  buildDistributedWorksheetFollowUpResolution,
   executeDistributedWorksheetPlan,
 } = require("./multiWorksheetEngine");
 
@@ -7713,6 +7714,44 @@ async function answerQuestion(
       };
     };
 
+
+
+  // ========================================================
+  // DISTRIBUTED MULTI-WORKSHEET ANALYTICAL FOLLOW-UP
+  // ========================================================
+  //
+  // A previous cross-worksheet result may have dataset = null because it
+  // represents ALL worksheets. Short continuations such as:
+  //   "what about the lowest?"
+  // must therefore inherit the verified distributed plan itself rather than
+  // ask the user to choose one worksheet. This runs before Groq/local planning
+  // so a planner failure cannot collapse the multi-worksheet context.
+  //
+  const distributedWorksheetFollowUp =
+    buildDistributedWorksheetFollowUpResolution({
+      datasets,
+      schema,
+      question: cleanQuestion,
+      previousPlan:
+        conversationContext?.lastPlan || null,
+    });
+
+  if (distributedWorksheetFollowUp) {
+    updateConversation(sessionId, {
+      question: cleanQuestion,
+      plan: distributedWorksheetFollowUp.plan,
+      result: distributedWorksheetFollowUp.result,
+    });
+
+    return {
+      ...distributedWorksheetFollowUp.result,
+      answer: formatUserFacingAnswer(
+        distributedWorksheetFollowUp.result?.answer
+      ),
+      debugPlan: distributedWorksheetFollowUp.plan,
+      plannerSource: "conversation-multi-worksheet",
+    };
+  }
 
 
   // ========================================================

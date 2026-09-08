@@ -463,8 +463,77 @@ function executeDistributedWorksheetPlan({ datasets, schema, plan, question = ''
   };
 }
 
+function buildDistributedWorksheetFollowUpResolution({
+  datasets,
+  schema,
+  question,
+  previousPlan,
+}) {
+  if (!previousPlan || typeof previousPlan !== 'object') return null;
+
+  const previousOperation = normalizeText(previousPlan.operation);
+  if (!['rank_worksheets', 'multi_worksheet'].includes(previousOperation)) {
+    return null;
+  }
+
+  const q = normalizeText(question);
+  if (!q) return null;
+
+  // Only reconstruct genuinely short analytical continuations. A complete
+  // new question should go through normal deterministic/Groq/local planning.
+  const followUpCue =
+    /^(?:what|how)\s+about\b/.test(q) ||
+    /^(?:and|also|then|now)\b/.test(q) ||
+    /\b(?:lowest|highest|top|bottom|least|most|minimum|maximum)\b/.test(q);
+
+  if (!followUpCue) return null;
+
+  const direction = detectRankingDirection(question);
+  if (!direction) return null;
+
+  const metricColumn = previousPlan.column || null;
+  const partitionColumn = previousPlan.groupBy || null;
+  if (!metricColumn) return null;
+
+  const reconstructedPlan = {
+    ...previousPlan,
+    route: 'dataset',
+    dataset: null,
+    operation: 'rank_worksheets',
+    column: metricColumn,
+    groupBy: partitionColumn,
+    aggregation: previousPlan.aggregation || 'lookup',
+    direction,
+    limit: detectRankingLimit(question) || 1,
+    filters: Array.isArray(previousPlan.filters)
+      ? previousPlan.filters.map(cloneFilter)
+      : [],
+    selectColumns: Array.isArray(previousPlan.selectColumns)
+      ? [...previousPlan.selectColumns]
+      : [partitionColumn, metricColumn].filter(Boolean),
+    outputRequested: true,
+    distributedWorksheetQuery: true,
+    reconstructedDistributedFollowUp: true,
+  };
+
+  const result = executeDistributedWorksheetPlan({
+    datasets,
+    schema,
+    plan: reconstructedPlan,
+    question,
+  });
+
+  if (!result) return null;
+
+  return {
+    plan: reconstructedPlan,
+    result,
+  };
+}
+
 module.exports = {
   buildDistributedWorksheetResolution,
+  buildDistributedWorksheetFollowUpResolution,
   executeDistributedWorksheetPlan,
   discoverPartitionColumn,
 };
