@@ -87,6 +87,10 @@ const {
 } = require("./localPlannerHardener");
 
 const {
+  buildDistributedWorksheetResolution,
+} = require("./multiWorksheetEngine");
+
+const {
   normalizeExplicitColumnText,
   compactExplicitColumnText,
   expandExplicitColumnWords,
@@ -7676,6 +7680,42 @@ async function answerQuestion(
       };
     };
 
+
+
+  // ========================================================
+  // DETERMINISTIC DISTRIBUTED MULTI-WORKSHEET QUERY
+  // ========================================================
+  //
+  // Handles same-schema reports partitioned across worksheets when the user
+  // explicitly asks for a result in EACH/EVERY/ALL partition (for example,
+  // each province, every region, all branches, or each worksheet). The
+  // partition field is discovered from the live schema/data; no worksheet or
+  // business value is hardcoded. This runs before Groq/local planning so a
+  // fallback cannot accidentally collapse a multi-worksheet request to one
+  // arbitrary sheet.
+  //
+  const distributedWorksheetResolution =
+    buildDistributedWorksheetResolution({
+      datasets,
+      schema,
+      question: cleanQuestion,
+    });
+
+  if (distributedWorksheetResolution) {
+    updateConversation(sessionId, {
+      question: cleanQuestion,
+      plan: distributedWorksheetResolution.plan,
+      result: distributedWorksheetResolution.result,
+    });
+
+    return {
+      ...distributedWorksheetResolution.result,
+      answer: formatUserFacingAnswer(
+        distributedWorksheetResolution.result?.answer
+      ),
+      plannerSource: "deterministic-multi-worksheet",
+    };
+  }
 
 
   // ========================================================
