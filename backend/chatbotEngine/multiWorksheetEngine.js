@@ -350,7 +350,121 @@ function buildDistributedWorksheetResolution({ datasets, schema, question }) {
   };
 }
 
+function executeDistributedWorksheetPlan({ datasets, schema, plan, question = '' }) {
+  const operationName = normalizeText(plan?.operation);
+  if (!['rank_worksheets', 'multi_worksheet'].includes(operationName)) return null;
+
+  const datasetNames = Object.keys(datasets || {}).filter((name) => Array.isArray(datasets[name]));
+  if (datasetNames.length < 2) return null;
+
+  const partitionColumn = plan?.groupBy || discoverPartitionColumn({ datasets, schema, question })?.column || null;
+  const metricColumn = plan?.column || null;
+  if (!metricColumn) return null;
+
+  const requestedAggregation = normalizeText(plan?.aggregation);
+  const childOperation = ['sum', 'average', 'median', 'minimum', 'maximum', 'count', 'distinct_count', 'non_empty_count'].includes(requestedAggregation)
+    ? requestedAggregation
+    : 'lookup';
+
+  const baseFilters = (Array.isArray(plan?.filters) ? plan.filters : [])
+    .filter((filter) => filter?.column && normalizeText(filter.column) !== normalizeText(partitionColumn))
+    .map(cloneFilter);
+
+  const rowsOut = [];
+
+  for (const datasetName of datasetNames) {
+    const datasetSchema = (schema || []).find((d) => String(d?.name) === String(datasetName));
+    const rows = datasets[datasetName];
+    if (!datasetSchema || !Array.isArray(rows) || !rows.length) continue;
+
+    const realMetric = datasetSchema.columns?.find((c) => String(c?.name) === String(metricColumn))?.name;
+    if (!realMetric) continue;
+
+    const availableColumns = new Set((datasetSchema.columns || []).map((c) => String(c?.name || '')));
+    const filters = baseFilters.filter((filter) => availableColumns.has(String(filter.column)));
+
+    const childPlan = {
+      route: 'dataset',
+      dataset: datasetName,
+      operation: childOperation,
+      column: realMetric,
+      labelColumn: null,
+      groupBy: null,
+      aggregation: null,
+      direction: null,
+      filters,
+      selectColumns: [realMetric],
+      outputRequested: true,
+      transform: null,
+      limit: 1,
+      showAll: false,
+      distributedWorksheetQuery: true,
+      distributedBy: partitionColumn,
+    };
+
+    let result;
+    try {
+      result = executePlan({ datasets, schema, plan: childPlan, question });
+    } catch (error) {
+      result = { success: false, error: error?.message || String(error) };
+    }
+
+    const value = extractScalar(result);
+    rowsOut.push({
+      dataset: datasetName,
+      label: firstPartitionLabel(rows, partitionColumn, datasetName),
+      value,
+      filters,
+    });
+  }
+
+  if (rowsOut.length < 2) return null;
+
+  const direction = normalizeText(plan?.direction) === 'asc' ? 'asc' : 'desc';
+  const limit = Math.max(1, Number(plan?.limit) || 1);
+  let outputRows = [...rowsOut];
+
+  if (operationName === 'rank_worksheets') {
+    outputRows = outputRows
+      .filter((item) => item.value !== null && Number.isFinite(Number(item.value)))
+      .sort((a, b) => direction === 'asc' ? Number(a.value) - Number(b.value) : Number(b.value) - Number(a.value))
+      .slice(0, limit);
+  }
+
+  const aggregationLabel = requestedAggregation && requestedAggregation !== 'lookup'
+    ? `${requestedAggregation} ${metricColumn}`
+    : metricColumn;
+
+  const answer = operationName === 'rank_worksheets'
+    ? outputRows.length
+      ? `${outputRows[0].label} has the ${direction === 'asc' ? 'lowest' : 'highest'} ${aggregationLabel}: ${formatNumber(outputRows[0].value)}.`
+      : `I couldn't find enough matching values to compare the ${partitionColumn || 'worksheet'} groups.`
+    : `${aggregationLabel} by ${partitionColumn || 'worksheet'}:\n` +
+      outputRows.map((item, index) => `${index + 1}. ${item.label}: ${formatNumber(item.value)}`).join('\n');
+
+  return {
+    success: true,
+    source: 'dataset',
+    dataset: null,
+    datasets: rowsOut.map((item) => item.dataset),
+    operation: operationName,
+    column: metricColumn,
+    groupBy: partitionColumn,
+    aggregation: requestedAggregation || null,
+    direction: operationName === 'rank_worksheets' ? direction : null,
+    results: outputRows.map((item) => ({
+      dataset: item.dataset,
+      label: item.label,
+      value: item.value,
+      filters: item.filters,
+    })),
+    answer,
+    debugPlan: plan,
+  };
+}
+
 module.exports = {
   buildDistributedWorksheetResolution,
+  executeDistributedWorksheetPlan,
   discoverPartitionColumn,
 };

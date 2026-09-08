@@ -88,6 +88,7 @@ const {
 
 const {
   buildDistributedWorksheetResolution,
+  executeDistributedWorksheetPlan,
 } = require("./multiWorksheetEngine");
 
 const {
@@ -5123,6 +5124,38 @@ async function answerQuestion(
         return executeFilterGroupPlan(
           plan
         );
+      }
+
+      /**
+       * Synthetic multi-worksheet operations are produced by the
+       * deterministic engine and can also be reconstructed by Groq/local
+       * conversation follow-ups (for example, "what about the lowest?").
+       * calculationEngine intentionally does not own these cross-worksheet
+       * operations, so execute them here before ordinary dataset execution.
+       */
+      if (
+        plan.route === "dataset" &&
+        ["rank_worksheets", "multi_worksheet"].includes(
+          String(plan.operation || "").trim().toLowerCase()
+        )
+      ) {
+        const distributedResult =
+          executeDistributedWorksheetPlan({
+            datasets,
+            schema,
+            plan,
+            question: cleanQuestion,
+          });
+
+        if (distributedResult) {
+          updateConversation(sessionId, {
+            question: cleanQuestion,
+            plan,
+            result: distributedResult,
+          });
+
+          return distributedResult;
+        }
       }
 
       // ====================================================
