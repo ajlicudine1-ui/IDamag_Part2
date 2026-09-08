@@ -81,6 +81,11 @@ const {
   discoverWorksheetRelationships,
 } = require("./relationshipEngine");
 
+const {
+  hardenLocalPlan,
+} = require("./localPlannerHardener");
+
+
 
 function normalizeExplicitColumnText(value) {
   return String(value ?? "")
@@ -17216,6 +17221,22 @@ async function answerQuestion(
 
         question:
           cleanQuestion,
+      });
+
+    /**
+     * V7.30 LOCAL FALLBACK HARDENING
+     * Reconstruct high-confidence current-question meaning from live schema
+     * and live row values when Groq planning is unavailable. This is generic:
+     * no worksheet, province, metric, commodity, status, or business value is
+     * hardcoded.
+     */
+    localPlan =
+      hardenLocalPlan({
+        plan: localPlan,
+        question: cleanQuestion,
+        datasets,
+        schema,
+        context: conversationContext,
       });
 
     localPlan =
