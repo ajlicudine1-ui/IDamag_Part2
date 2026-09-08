@@ -215,10 +215,67 @@ function findSharedColumns(leftRows, rightRows) {
  * Conservative ambiguity guard. It only interrupts a dataset plan when the
  * chosen field is not explicitly named and two live columns are nearly tied.
  */
+function singularizeToken(token) {
+  const value = String(token || "").trim().toLowerCase();
+  if (!value) return "";
+
+  // Conservative English morphology used only for detecting an EXPLICIT
+  // schema-field mention in the user's wording. This prevents questions such
+  // as "what municipalities are they from?" from being treated as ambiguous
+  // when the live field is "Municipality".
+  if (value.length > 4 && value.endsWith("ies")) {
+    return `${value.slice(0, -3)}y`;
+  }
+
+  if (value.length > 4 && value.endsWith("ses")) {
+    return value.slice(0, -2);
+  }
+
+  if (value.length > 3 && value.endsWith("s") && !value.endsWith("ss")) {
+    return value.slice(0, -1);
+  }
+
+  return value;
+}
+
+function morphologyAwareFieldText(value) {
+  return normalizeMatchTokens(value)
+    .map(singularizeToken)
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+}
+
+function questionExplicitlyNamesColumn(question, column) {
+  const questionText = morphologyAwareFieldText(question);
+  const columnText = morphologyAwareFieldText(column);
+
+  if (!questionText || !columnText) return false;
+
+  const escaped = columnText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const phrase = new RegExp(`(^|\\s)${escaped}(?=$|\\s)`, "u");
+
+  return phrase.test(questionText);
+}
+
 function detectColumnAmbiguity({ plan, datasets, question, minScore = 0.9, maxGap = 0.08 }) {
   if (!plan || plan.route !== "dataset" || !plan.dataset || !plan.column) return plan;
   const rows = datasets?.[plan.dataset];
   if (!Array.isArray(rows) || !rows.length) return plan;
+
+  // Explicit live-schema wording ALWAYS wins over fuzzy ambiguity scoring.
+  // Examples:
+  //   Municipality  <-> municipalities
+  //   Commodity     <-> commodities
+  //   Association   <-> associations
+  // This is generic and based only on the selected worksheet's live columns.
+  const explicitlyNamedLiveColumn = getColumns(rows).find((column) =>
+    questionExplicitlyNamesColumn(question, column)
+  );
+
+  if (explicitlyNamedLiveColumn) {
+    return plan;
+  }
 
   const normalizedQuestion = normalizeText(question);
   const chosenText = normalizeText(plan.column);
@@ -257,5 +314,6 @@ module.exports = {
   rankColumns,
   findDatasetsContainingColumn,
   findSharedColumns,
+  questionExplicitlyNamesColumn,
   detectColumnAmbiguity,
 };
