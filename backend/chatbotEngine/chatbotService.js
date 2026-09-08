@@ -2310,12 +2310,9 @@ function repairListOutputColumn({
         ]
       : [];
 
-  // More than one selected field is genuinely ambiguous for a plain LIST.
-  if (selectColumns.length !== 1) {
+  if (!selectColumns.length) {
     return plan;
   }
-
-  const candidate = selectColumns[0];
 
   const datasetSchema =
     (schema || []).find(
@@ -2328,24 +2325,100 @@ function repairListOutputColumn({
     return plan;
   }
 
-  const realColumn =
-    (datasetSchema.columns || []).find(
-      (column) =>
-        String(column?.name || "") ===
-        candidate
-    )?.name || null;
+  const realColumns =
+    selectColumns
+      .map((candidate) =>
+        (datasetSchema.columns || []).find(
+          (column) =>
+            String(column?.name || "") ===
+            candidate
+        )?.name || null
+      )
+      .filter(Boolean);
 
-  if (!realColumn) {
+  // Never repair against invented/non-schema output fields.
+  if (
+    realColumns.length !==
+    selectColumns.length
+  ) {
     return plan;
   }
 
+  // Existing one-field LIST repair.
+  if (realColumns.length === 1) {
+    const realColumn =
+      realColumns[0];
+
+    return {
+      ...plan,
+      column: realColumn,
+      labelColumn:
+        plan.labelColumn ||
+        realColumn,
+      selectColumns: [realColumn],
+    };
+  }
+
+  /**
+   * A planner may correctly preserve row identity plus a newly requested
+   * follow-up field, but still emit a plain LIST with column = null:
+   *
+   *   selectColumns: ["<identity field>", "<requested field>"]
+   *
+   * A LIST is a single-column operation in calculationEngine. For 2+
+   * requested fields the intended operation is a row-preserving LOOKUP.
+   *
+   * Choose the label generically from identity/display semantics already
+   * used elsewhere in this service (name/title/id/code/number). If none is
+   * identifiable, keep every requested field and let LOOKUP render the row.
+   * The current requested value is the last non-label selected field, which
+   * matches planner ordering for chained requests while remaining schema
+   * agnostic. No worksheet, project, association, or metric is hardcoded.
+   */
+  const explicitLabel =
+    plan.labelColumn &&
+    realColumns.includes(
+      plan.labelColumn
+    )
+      ? plan.labelColumn
+      : null;
+
+  const semanticLabel =
+    realColumns.find(
+      (column) =>
+        isLikelyIdentityOutputColumn(
+          column
+        )
+    ) || null;
+
+  const labelColumn =
+    explicitLabel ||
+    semanticLabel ||
+    null;
+
+  const valueCandidates =
+    realColumns.filter(
+      (column) =>
+        !labelColumn ||
+        normalizeText(column) !==
+          normalizeText(labelColumn)
+    );
+
+  const requestedColumn =
+    valueCandidates[
+      valueCandidates.length - 1
+    ] ||
+    realColumns[
+      realColumns.length - 1
+    ];
+
   return {
     ...plan,
-    column: realColumn,
-    labelColumn:
-      plan.labelColumn ||
-      realColumn,
-    selectColumns: [realColumn],
+    operation: "lookup",
+    column: requestedColumn,
+    labelColumn,
+    selectColumns: realColumns,
+    outputRequested: true,
   };
 }
 
