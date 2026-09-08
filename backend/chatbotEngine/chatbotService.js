@@ -83,6 +83,7 @@ const {
 
 const {
   hardenLocalPlan,
+  reconcileExplicitDatasetMention,
 } = require("./localPlannerHardener");
 
 
@@ -16985,6 +16986,19 @@ async function answerQuestion(
 
         question:
           cleanQuestion,
+      });
+
+    /**
+     * Explicit worksheet names in the CURRENT question outrank a planner's
+     * inherited/default worksheet choice. This is generic and is especially
+     * important for reports whose worksheets share the same schema.
+     */
+    groqPlan =
+      reconcileExplicitDatasetMention({
+        plan: groqPlan,
+        question: cleanQuestion,
+        datasets,
+        schema,
       });
 
     groqPlan =

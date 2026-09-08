@@ -244,6 +244,69 @@ function repairMultiFieldList(plan, datasetSchema) {
   };
 }
 
+
+function reconcileExplicitDatasetMention({ plan, question, datasets, schema }) {
+  if (!plan || typeof plan !== 'object') return plan;
+
+  const mentioned = exactDatasetMention(question, schema);
+  if (!mentioned) return plan;
+
+  const datasetSchema = (schema || []).find(
+    d => String(d?.name || '') === String(mentioned)
+  );
+  const rows = datasets?.[mentioned];
+
+  if (!datasetSchema || !Array.isArray(rows)) return plan;
+
+  const next = {
+    ...plan,
+    dataset: mentioned,
+    filters: cloneFilters(plan.filters),
+  };
+
+  // Re-resolve the explicit metric against the selected worksheet when the
+  // planner chose a different sheet. This matters for same-schema multi-sheet
+  // reports where every worksheet exposes the same headers.
+  const explicit = explicitColumns(question, datasetSchema);
+  if (explicit.length) {
+    const numericExplicit = explicit.find(name => {
+      const col = (datasetSchema.columns || []).find(
+        c => String(c?.name || '') === String(name)
+      );
+      return col?.type === 'number' || rows.some(r => parseNumber(r?.[name]) !== null);
+    });
+    const chosen = numericExplicit || explicit[0];
+    if (chosen) {
+      next.column = chosen;
+      next.selectColumns = [
+        ...new Set([
+          ...(Array.isArray(next.selectColumns) ? next.selectColumns : []),
+          chosen,
+        ].filter(Boolean)),
+      ];
+    }
+  }
+
+  // Recover exact current-question values from the selected worksheet so a
+  // wrong original worksheet cannot leave behind an incomplete scope.
+  const range = detectCategoricalRange(question, rows, datasetSchema);
+  const exactFilters = inferExactValueFilters(
+    question,
+    rows,
+    datasetSchema,
+    [next.column].filter(Boolean)
+  );
+  const additions = range
+    ? [range, ...exactFilters.filter(
+        f => normalizeText(f.column) !== normalizeText(range.column)
+      )]
+    : exactFilters;
+
+  next.filters = mergeStrongFilters(next.filters, additions);
+
+  return next;
+}
+
 function hardenLocalPlan({ plan, question, datasets, schema, context = null }) {
   if (!plan || typeof plan !== 'object') return plan;
 
@@ -368,4 +431,5 @@ function hardenLocalPlan({ plan, question, datasets, schema, context = null }) {
 module.exports = {
   hardenLocalPlan,
   repairMultiFieldList,
+  reconcileExplicitDatasetMention,
 };
