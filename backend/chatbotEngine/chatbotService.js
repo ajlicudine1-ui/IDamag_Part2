@@ -2273,6 +2273,48 @@ function formatUserFacingAnswer(answer) {
   return output;
 }
 
+
+function shouldUseSemanticReferentialNarrative(question) {
+  const text =
+    String(
+      question || ""
+    )
+      .replace(/\s+/g, " ")
+      .trim();
+
+  if (!text) {
+    return false;
+  }
+
+  /**
+   * Use the semantic/value-first formatter only when the CURRENT question
+   * contains a clear action relation.
+   *
+   * Examples:
+   *   "What commodities do they produce?"
+   *   "What services do they provide?"
+   *   "What crops do they grow?"
+   *   "What systems are they using?"
+   *
+   * Do NOT force the semantic formatter for copular/prepositional relations
+   * such as:
+   *   "What municipalities are they from?"
+   *   "Which office are they under?"
+   *
+   * Those keep the older verified pair formatter.
+   *
+   * This is generic and does not name any dataset, worksheet, field, or value.
+   */
+  return (
+    /\b(?:do|does|did)\s+(?:they|these|those|them)\s+[a-z][a-z-]*\b/i.test(
+      text
+    ) ||
+    /\b(?:are|were|is|was)\s+(?:they|these|those|it)\s+[a-z][a-z-]*ing\b/i.test(
+      text
+    )
+  );
+}
+
 function improveCompoundAnswerWording(subResults) {
   const answers = subResults
     .map((item) =>
@@ -4801,22 +4843,42 @@ async function answerQuestion(
       }
     );
 
+    const semanticReferentialAnswer =
+      (
+        explicitReferentialFieldPlan.conversationalPairColumn &&
+        shouldUseSemanticReferentialNarrative(
+          cleanQuestion
+        )
+      )
+        ? buildSemanticVerifiedAnswer({
+            question:
+              cleanQuestion,
+            plan:
+              explicitReferentialFieldPlan,
+            result:
+              explicitReferentialFieldResult,
+          })
+        : null;
+
     return {
       ...explicitReferentialFieldResult,
       answer:
-        buildContextAwareContinuousListAnswer({
-          result:
-            explicitReferentialFieldResult,
-          subjectColumn:
-            explicitReferentialFieldPlan.column,
-          pairColumn:
-            explicitReferentialFieldPlan.conversationalPairColumn ||
-            null,
-          context:
-            conversationContext,
-          preferScopeValue:
-            false,
-        }),
+        formatUserFacingAnswer(
+          semanticReferentialAnswer ||
+          buildContextAwareContinuousListAnswer({
+            result:
+              explicitReferentialFieldResult,
+            subjectColumn:
+              explicitReferentialFieldPlan.column,
+            pairColumn:
+              explicitReferentialFieldPlan.conversationalPairColumn ||
+              null,
+            context:
+              conversationContext,
+            preferScopeValue:
+              false,
+          })
+        ),
       responseStyle:
         "natural",
       debugPlan:
