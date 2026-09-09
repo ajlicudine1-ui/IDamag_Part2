@@ -547,6 +547,15 @@ function isAnalyticalOperation(
 
     "rank_rows",
     "rank_groups",
+
+    // Distributed analytical operations must also replace the previous
+    // analytical context. Otherwise a later short follow-up such as
+    // "what about the lowest?" can accidentally reuse an older
+    // single-worksheet ranking even though the latest verified answer
+    // came from multiple worksheets.
+    "rank_worksheets",
+    "rank_across_worksheets",
+    "multi_worksheet",
   ]).has(
     String(
       operation || ""

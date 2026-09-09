@@ -13,6 +13,7 @@ const { buildSemanticPlan, semanticPlanToExecutable } = require('./semanticPlan'
 const { currentQuestionRequiresReplan } = require('./currentQuestionOverrideEngine');
 const { buildSemanticVerifiedAnswer } = require('./responseNarrativeEngine');
 const { currentQuestionOverridesAnalyticalGroup } = require('./plannerNormalizer');
+const { updateConversation, getRelevantContext, clearConversation } = require('./conversationManager');
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
@@ -164,6 +165,49 @@ test('semantic response avoids awkward average Average wording', () => {
   assert.ok(/Hog had the highest average price/i.test(answer));
   assert.ok(/192\.26 per kg/.test(answer));
   assert.ok(!/average Average/i.test(answer));
+});
+
+
+test('distributed analytical result replaces stale single-sheet analytical memory', () => {
+  const sessionId = '__regression_distributed_memory__';
+  clearConversation(sessionId);
+
+  updateConversation(sessionId, {
+    question: 'Top 5 commodities by Average in North',
+    plan: {
+      route: 'dataset', dataset: 'North', operation: 'rank_groups',
+      column: 'Average', labelColumn: 'Commodity', groupBy: 'Commodity',
+      aggregation: 'average', direction: 'desc', limit: 5, filters: [],
+      selectColumns: ['Commodity', 'Average'],
+    },
+    result: {
+      success: true, dataset: 'North', operation: 'rank_groups',
+      column: 'Average', labelColumn: 'Commodity', aggregation: 'average',
+      direction: 'desc', results: [{ label: 'Hog', value: 200 }],
+    },
+  });
+
+  updateConversation(sessionId, {
+    question: 'Which province had the highest average price?',
+    plan: {
+      route: 'dataset', dataset: null, operation: 'rank_worksheets',
+      column: 'Average', labelColumn: 'Province', groupBy: 'Province',
+      aggregation: 'average', direction: 'desc', limit: 1, filters: [],
+      worksheets: ['North', 'South', 'East'], distributedWorksheetQuery: true,
+    },
+    result: {
+      success: true, dataset: null, datasets: ['North', 'South', 'East'],
+      operation: 'rank_worksheets', column: 'Average', groupBy: 'Province',
+      aggregation: 'average', direction: 'desc',
+      results: [{ dataset: 'South', label: 'South', value: 125 }],
+    },
+  });
+
+  const context = getRelevantContext(sessionId, 'What about the lowest?');
+  assert.equal(context.analyticalContext?.operation, 'rank_worksheets');
+  assert.equal(context.analyticalContext?.groupBy, 'Province');
+  assert.equal(context.analyticalContext?.dataset, null);
+  clearConversation(sessionId);
 });
 
 async function run() {
