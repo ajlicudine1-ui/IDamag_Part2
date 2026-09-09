@@ -7,6 +7,13 @@ function metricDisplayName({ plan, result, question } = {}) {
   const normalized = normalizeText(column);
   if (!column) return 'value';
   if (normalized === 'average' && /\bprice\b/i.test(String(question || ''))) return 'price';
+
+  // Avoid exposing implementation-style phrases such as "average Average".
+  // If a stored column itself is named Average and no stronger semantic label
+  // is known, describe it generically as a value rather than repeating the
+  // column name as both aggregation and metric.
+  if (normalized === 'average') return 'value';
+
   return column;
 }
 
@@ -65,7 +72,9 @@ function buildSemanticVerifiedAnswer({ question, plan, result } = {}) {
     const adjective = direction === 'asc' ? 'lowest' : 'highest';
     const month = extractFilterValue(plan, result, 'Month');
     const timePhrase = month ? ` in ${month}` : '';
-    const metricPhrase = aggregation === 'average' ? `average ${metric}` : metric;
+    const metricPhrase = aggregation === 'average'
+      ? (normalizeText(metric).startsWith('average ') ? metric : `average ${metric}`)
+      : metric;
     return `${item.label} has the ${adjective} ${metricPhrase}${timePhrase} at ${formatValue(item.value, displayUnit)}.${coverageNote(item, result)}`;
   }
 
@@ -74,7 +83,9 @@ function buildSemanticVerifiedAnswer({ question, plan, result } = {}) {
     const group = groupDisplayName(groupBy);
     const month = extractFilterValue(plan, result, 'Month');
     const timePhrase = month ? ` in ${month}` : '';
-    const metricPhrase = aggregation === 'average' ? `average ${metric}` : metric;
+    const metricPhrase = aggregation === 'average'
+      ? (normalizeText(metric).startsWith('average ') ? metric : `average ${metric}`)
+      : metric;
     const lines = results.map((item, index) => `${index + 1}. ${item.label}: ${formatValue(item.value, displayUnit)}${coverageNote(item, result)}`);
     if (results.length === 1) {
       const item = results[0];

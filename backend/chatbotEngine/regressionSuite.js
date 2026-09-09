@@ -210,6 +210,76 @@ test('distributed analytical result replaces stale single-sheet analytical memor
   clearConversation(sessionId);
 });
 
+
+test('follow-up narrative preserves inherited metric meaning', () => {
+  const { buildSemanticVerifiedAnswer } = require('./responseNarrativeEngine');
+  const answer = buildSemanticVerifiedAnswer({
+    question: 'What about January?',
+    plan: {
+      operation: 'rank_across_worksheets',
+      column: 'Average',
+      groupBy: 'Commodity',
+      aggregation: 'average',
+      direction: 'desc',
+      metricMeaning: 'price',
+      displayUnit: 'per kg',
+      filters: [{ column: 'Month', operator: 'equals', value: 'January' }],
+    },
+    result: {
+      success: true,
+      operation: 'rank_across_worksheets',
+      column: 'Average',
+      groupBy: 'Commodity',
+      aggregation: 'average',
+      direction: 'desc',
+      metricMeaning: 'price',
+      displayUnit: 'per kg',
+      filters: [{ column: 'Month', operator: 'equals', value: 'January' }],
+      results: [{
+        label: 'Example Item',
+        value: 123.456,
+        coverage: {
+          totalWorksheets: 4,
+          worksheetsUsed: 3,
+          missingWorksheets: ['Sheet D'],
+        },
+      }],
+    },
+  });
+
+  assert(answer.includes('highest average price'));
+  assert(answer.includes('January'));
+  assert(answer.includes('123.46 per kg'));
+  assert(!answer.includes('average Average'));
+});
+
+test('generic Average metric never renders average Average', () => {
+  const { buildSemanticVerifiedAnswer } = require('./responseNarrativeEngine');
+  const answer = buildSemanticVerifiedAnswer({
+    question: 'What about January?',
+    plan: {
+      operation: 'rank_across_worksheets',
+      column: 'Average',
+      groupBy: 'Category',
+      aggregation: 'average',
+      direction: 'desc',
+      filters: [{ column: 'Month', operator: 'equals', value: 'January' }],
+    },
+    result: {
+      success: true,
+      operation: 'rank_across_worksheets',
+      column: 'Average',
+      groupBy: 'Category',
+      aggregation: 'average',
+      direction: 'desc',
+      filters: [{ column: 'Month', operator: 'equals', value: 'January' }],
+      results: [{ label: 'A', value: 10 }],
+    },
+  });
+
+  assert(!answer.includes('average Average'));
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
@@ -224,7 +294,8 @@ async function run() {
       console.error(`  ${error?.stack || error}`);
     }
   }
-  console.log(`\n${passed}/${tests.length} regression tests passed.`);
+  
+console.log(`\n${passed}/${tests.length} regression tests passed.`);
   if (failures.length) process.exitCode = 1;
 }
 

@@ -680,12 +680,31 @@ function attachCrossWorksheetMetricMeaning({ result, plan, datasets, schema, que
     datasets,
     schema,
   });
+
+  // Prefer semantic meaning already carried by the conversation plan. A short
+  // follow-up such as "What about January?" may not repeat words like "price",
+  // so re-inferring from that short utterance alone can lose the verified
+  // metric meaning/unit from the previous turn.
+  const metricMeaning =
+    plan?.metricMeaning ||
+    plan?.metricSemantics ||
+    result?.metricMeaning ||
+    result?.metricSemantics ||
+    meaning.type ||
+    null;
+
+  const displayUnit =
+    plan?.displayUnit ||
+    result?.displayUnit ||
+    meaning.displayUnit ||
+    null;
+
   return {
     ...result,
-    metricMeaning: meaning.type || null,
-    metricSemantics: meaning.type || null,
-    displayUnit: meaning.displayUnit || null,
-    denominatorUnit: meaning.denominatorUnit || null,
+    metricMeaning,
+    metricSemantics: metricMeaning,
+    displayUnit,
+    denominatorUnit: meaning.denominatorUnit || result?.denominatorUnit || null,
   };
 }
 
@@ -887,8 +906,26 @@ function buildDistributedWorksheetFollowUpResolution({
   previousSemanticPlan = null,
 }) {
   const semanticExecutable = semanticPlanToExecutable(previousSemanticPlan);
+
+  // Backfill semantic fields from the verified semantic conversation plan.
+  // The raw previous executable plan may not contain response-enrichment
+  // fields such as metricMeaning/displayUnit, especially after a distributed
+  // execution. Preserve the executable structure, but let semantic memory fill
+  // only missing fields. This keeps follow-ups generic across datasets.
   previousPlan = previousPlan && typeof previousPlan === 'object'
-    ? previousPlan
+    ? {
+        ...(semanticExecutable || {}),
+        ...previousPlan,
+        metricMeaning: previousPlan.metricMeaning || semanticExecutable?.metricMeaning || null,
+        metricSemantics: previousPlan.metricSemantics || semanticExecutable?.metricMeaning || null,
+        displayUnit: previousPlan.displayUnit || semanticExecutable?.displayUnit || null,
+        metricSource: previousPlan.metricSource || semanticExecutable?.metricSource || null,
+        worksheets: Array.isArray(previousPlan.worksheets) && previousPlan.worksheets.length
+          ? [...previousPlan.worksheets]
+          : Array.isArray(semanticExecutable?.worksheets)
+            ? [...semanticExecutable.worksheets]
+            : [],
+      }
     : semanticExecutable;
   if (!previousPlan || typeof previousPlan !== 'object') return null;
 
