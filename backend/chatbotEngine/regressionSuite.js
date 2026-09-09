@@ -10,7 +10,9 @@ const {
 } = require('./multiWorksheetEngine');
 const { evaluateLocalPlanConfidence } = require('./planConfidenceEngine');
 const { buildSemanticPlan, semanticPlanToExecutable } = require('./semanticPlan');
+const { currentQuestionRequiresReplan } = require('./currentQuestionOverrideEngine');
 const { buildSemanticVerifiedAnswer } = require('./responseNarrativeEngine');
+const { currentQuestionOverridesAnalyticalGroup } = require('./plannerNormalizer');
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
@@ -139,6 +141,20 @@ test('semantic conversation plan round-trips multi-sheet meaning', () => {
   assert.equal(executable.groupBy, 'Province');
 });
 
+
+test('current explicit grouping overrides stale conversation result set', () => {
+  const datasets = sampleDatasets();
+  const schema = buildSchema(datasets);
+  const overrides = currentQuestionOverridesAnalyticalGroup({
+    datasets,
+    schema,
+    question: 'Which Province had the highest average price?',
+    previousGroupBy: 'Commodity',
+    preferredDataset: 'North',
+  });
+  assert.equal(overrides, true);
+});
+
 test('semantic response avoids awkward average Average wording', () => {
   const answer = buildSemanticVerifiedAnswer({
     question:'Which Commodity had the highest average price?',
@@ -171,3 +187,39 @@ async function run() {
 if (require.main === module) run();
 
 module.exports = { run };
+
+
+test('current explicit filter change forces replan instead of stale result reuse', () => {
+  const datasets = {
+    SheetA: [
+      { Month: 'January', Commodity: 'A', Average: 10 },
+      { Month: 'February', Commodity: 'A', Average: 20 },
+    ],
+  };
+  const context = {
+    lastPlan: {
+      filters: [{ column: 'Month', operator: 'equals', value: 'January' }],
+    },
+    semanticPlan: {
+      filters: [{ column: 'Month', operator: 'equals', value: 'January' }],
+    },
+  };
+  const out = currentQuestionRequiresReplan({
+    datasets,
+    question: 'Which commodity had the highest average price in February?',
+    conversationContext: context,
+    explicitGroupOverride: false,
+  });
+  assert.equal(out.requiresReplan, true);
+  assert.equal(out.reasons.includes('filter_override'), true);
+});
+
+test('short lowest follow-up can still reuse prior verified analytical set', () => {
+  const out = currentQuestionRequiresReplan({
+    datasets: { SheetA: [{ Group: 'A', Value: 1 }] },
+    question: 'What about the lowest?',
+    conversationContext: { lastPlan: { filters: [] }, semanticPlan: { filters: [] } },
+    explicitGroupOverride: false,
+  });
+  assert.equal(out.requiresReplan, false);
+});

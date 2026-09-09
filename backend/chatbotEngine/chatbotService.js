@@ -195,6 +195,10 @@ const {
   normalizedEditSimilarity,
 } = require("./directQueryResolver");
 
+const {
+  currentQuestionRequiresReplan,
+} = require("./currentQuestionOverrideEngine");
+
 
 
 function normalizeFollowUpPhrase(
@@ -5778,10 +5782,23 @@ async function answerQuestion(
       question: cleanQuestion,
     });
 
+  // CURRENT question semantics always beat shortcuts over the previous
+  // verified result array. If the user changes group, worksheet scope,
+  // distributed scope, or any explicit filter/value, force normal planning
+  // so compatible semantic memory can be merged safely instead of ranking
+  // stale rows from the prior answer.
+  const currentSemanticOverride =
+    currentQuestionRequiresReplan({
+      datasets,
+      question: cleanQuestion,
+      conversationContext: multiResultContext,
+      explicitGroupOverride: explicitCurrentGroupOverride,
+    });
+
   const looksLikeMultiResultAnalysis =
     verifiedMultiResultSet
       ?.count >= 3 &&
-    !explicitCurrentGroupOverride &&
+    !currentSemanticOverride.requiresReplan &&
     !explicitSelfContainedAnalytics &&
     (
       /\b(?:explain|summarize|summary|interpret|describe|difference|range|spread|gap|closest|average|mean|median|highest|lowest|above average|below average|outlier|outliers|stand out|trend|pattern|distribution|compare|ratio|percent|percentage|top\s+\d+|bottom\s+\d+)\b/i.test(
