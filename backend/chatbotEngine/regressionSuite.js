@@ -337,6 +337,33 @@ test('lookup pair narrative keeps grouped format when grouping is explicit', () 
   assert(answer.includes('2. Beta: rice and sugarcane'));
 });
 
+
+test('paired lookup semantic answer is protected from LLM restructuring', () => {
+  const {
+    shouldPreserveDeterministicSemanticAnswer,
+  } = require('./responseGenerator');
+
+  const preserve = shouldPreserveDeterministicSemanticAnswer({
+    plan: {
+      operation: 'lookup',
+      column: 'Products',
+      labelColumn: 'Location',
+    },
+    result: {
+      success: true,
+      operation: 'lookup',
+      results: [
+        { Location: 'Alpha', Products: 'rice, corn, vegetables' },
+        { Location: 'Beta', Products: 'rice, sugarcane' },
+      ],
+    },
+    semanticAnswer:
+      'They produce rice, corn, vegetables, and sugarcane. Alpha produces rice, corn, and vegetables, while Beta produces rice and sugarcane.',
+  });
+
+  assert.strictEqual(preserve, true);
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
