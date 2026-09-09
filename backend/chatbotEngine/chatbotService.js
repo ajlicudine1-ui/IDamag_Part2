@@ -3542,11 +3542,43 @@ function buildExplicitReferentialFieldPlan({
         )
       : [];
 
+  /**
+   * Preserve the most recent VERIFIED relationship label when the user repeats
+   * the same referential field question.
+   *
+   * Example conversation shape:
+   *   previous plan: labelColumn = <location>, column = <multi-value field>
+   *   repeated question asks for the same <multi-value field>
+   *
+   * conversationManager may now expose lastSubjectColumn as the requested
+   * field itself. Without this recovery the plan degrades from:
+   *
+   *   lookup(label + value)
+   *
+   * to:
+   *
+   *   list(value only)
+   *
+   * and the response loses the row relationship. Prefer the immediately
+   * previous verified pair/label column when it is different from the current
+   * requested field. No dataset or field name is hardcoded.
+   */
+  const previousPairCandidates = [
+    context.lastSubjectColumn,
+    context.lastPlan?.conversationalPairColumn,
+    context.lastPlan?.labelColumn,
+    context.semanticPlan?.labelColumn,
+    context.semanticPlan?.groupBy,
+  ];
+
   const previousSubjectColumn =
-    context.lastSubjectColumn &&
-    normalizeText(context.lastSubjectColumn) !== normalizeText(requested.column)
-      ? context.lastSubjectColumn
-      : null;
+    previousPairCandidates.find(
+      (candidate) =>
+        candidate &&
+        normalizeText(candidate) !==
+          normalizeText(requested.column)
+    ) ||
+    null;
 
   const selectColumns = [];
   if (previousSubjectColumn) selectColumns.push(previousSubjectColumn);

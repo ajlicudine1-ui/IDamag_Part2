@@ -467,6 +467,21 @@ test('possessive referential lookup can render a compact have/has narrative', ()
   assert(answer.includes('Org C has one and three'));
 });
 
+
+test('repeated referential field requests preserve the previous verified pair column', () => {
+  const fs = require('fs');
+  const path = require('path');
+
+  const source = fs.readFileSync(
+    path.join(__dirname, 'chatbotService.js'),
+    'utf8'
+  );
+
+  assert(source.includes('context.lastPlan?.conversationalPairColumn'));
+  assert(source.includes('context.lastPlan?.labelColumn'));
+  assert(source.includes('previousPairCandidates.find'));
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
