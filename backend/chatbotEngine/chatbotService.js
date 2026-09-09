@@ -4801,37 +4801,22 @@ async function answerQuestion(
       }
     );
 
-    const semanticReferentialAnswer =
-      explicitReferentialFieldPlan.conversationalPairColumn
-        ? buildSemanticVerifiedAnswer({
-            question:
-              cleanQuestion,
-            plan:
-              explicitReferentialFieldPlan,
-            result:
-              explicitReferentialFieldResult,
-          })
-        : null;
-
     return {
       ...explicitReferentialFieldResult,
       answer:
-        formatUserFacingAnswer(
-          semanticReferentialAnswer ||
-          buildContextAwareContinuousListAnswer({
-            result:
-              explicitReferentialFieldResult,
-            subjectColumn:
-              explicitReferentialFieldPlan.column,
-            pairColumn:
-              explicitReferentialFieldPlan.conversationalPairColumn ||
-              null,
-            context:
-              conversationContext,
-            preferScopeValue:
-              false,
-          })
-        ),
+        buildContextAwareContinuousListAnswer({
+          result:
+            explicitReferentialFieldResult,
+          subjectColumn:
+            explicitReferentialFieldPlan.column,
+          pairColumn:
+            explicitReferentialFieldPlan.conversationalPairColumn ||
+            null,
+          context:
+            conversationContext,
+          preferScopeValue:
+            false,
+        }),
       responseStyle:
         "natural",
       debugPlan:
@@ -5700,45 +5685,23 @@ async function answerQuestion(
        * execution result so primitive-string lists and object lists both
        * render correctly.
        */
-      const semanticReferentialListAnswer =
-        referentialListPlan?.labelColumn &&
-        referentialListPlan?.column &&
-        normalizeText(
-          referentialListPlan.labelColumn
-        ) !==
-        normalizeText(
-          referentialListPlan.column
-        )
-          ? buildSemanticVerifiedAnswer({
-              question:
-                cleanQuestion,
-              plan:
-                referentialListPlan,
-              result:
-                referentialListResult,
-            })
-          : null;
-
       return {
         ...referentialListResult,
 
         answer:
-          formatUserFacingAnswer(
-            semanticReferentialListAnswer ||
-            buildContextAwareContinuousListAnswer({
-              result:
-                referentialListResult,
+          buildContextAwareContinuousListAnswer({
+            result:
+              referentialListResult,
 
-              subjectColumn:
-                rememberedSubject,
+            subjectColumn:
+              rememberedSubject,
 
-              context:
-                conversationContext,
+            context:
+              conversationContext,
 
-              preferScopeValue:
-                true,
-            })
-          ),
+            preferScopeValue:
+              true,
+          }),
 
         plannerSource:
           "conversation",
