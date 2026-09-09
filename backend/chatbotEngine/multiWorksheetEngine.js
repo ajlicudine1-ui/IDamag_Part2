@@ -3,6 +3,7 @@ const { inferValueFilters } = require('./filterEngine');
 const { executePlan } = require('./calculationEngine');
 const { inferMetricMeaning } = require('./metricMeaningEngine');
 const { semanticPlanToExecutable } = require('./semanticPlan');
+const { buildSemanticVerifiedAnswer } = require('./responseNarrativeEngine');
 const {
   findExplicitSchemaColumns,
   detectQuestionAggregation,
@@ -510,14 +511,14 @@ function executeDistributedWorksheetPlan({ datasets, schema, plan, question = ''
     ? `${requestedAggregation} ${metricColumn}`
     : metricColumn;
 
-  const answer = operationName === 'rank_worksheets'
+  const fallbackAnswer = operationName === 'rank_worksheets'
     ? outputRows.length
       ? `${outputRows[0].label} has the ${direction === 'asc' ? 'lowest' : 'highest'} ${aggregationLabel}: ${formatNumber(outputRows[0].value)}.`
       : `I couldn't find enough matching values to compare the ${partitionColumn || 'worksheet'} groups.`
     : `${aggregationLabel} by ${partitionColumn || 'worksheet'}:\n` +
       outputRows.map((item, index) => `${index + 1}. ${item.label}: ${formatNumber(item.value)}`).join('\n');
 
-  return attachCrossWorksheetMetricMeaning({
+  const enriched = attachCrossWorksheetMetricMeaning({
     result: {
       success: true,
       source: 'dataset',
@@ -547,7 +548,7 @@ function executeDistributedWorksheetPlan({ datasets, schema, plan, question = ''
         worksheetsWithValue: rowsOut.filter((item) => item.value !== null && Number.isFinite(Number(item.value))).length,
         worksheetsWithoutValue: rowsOut.filter((item) => item.value === null || !Number.isFinite(Number(item.value))).map((item) => item.label),
       },
-      answer,
+      answer: fallbackAnswer,
       debugPlan: plan,
     },
     plan,
@@ -555,6 +556,9 @@ function executeDistributedWorksheetPlan({ datasets, schema, plan, question = ''
     schema,
     question,
   });
+
+  const naturalAnswer = buildSemanticVerifiedAnswer({ question, plan, result: enriched });
+  return { ...enriched, answer: naturalAnswer || fallbackAnswer };
 }
 
 
@@ -767,7 +771,7 @@ function executeCrossWorksheetGroupedPlan({ datasets, schema, plan, question = '
     totalWorksheets: datasetNames.length,
   };
 
-  const answer = results.length
+  const fallbackAnswer = results.length
     ? `${direction === 'asc' ? 'Lowest' : 'Highest'} ${groupColumn} by ${aggregation} ${metricColumn} across worksheets:\n` +
       results.map((item, index) => {
         const coverage = item.coverage;
@@ -778,7 +782,7 @@ function executeCrossWorksheetGroupedPlan({ datasets, schema, plan, question = '
       }).join('\n')
     : `I couldn't find enough matching values to rank ${groupColumn} across worksheets.`;
 
-  return attachCrossWorksheetMetricMeaning({
+  const enriched = attachCrossWorksheetMetricMeaning({
     result: {
       success: true,
       source: 'dataset',
@@ -796,7 +800,7 @@ function executeCrossWorksheetGroupedPlan({ datasets, schema, plan, question = '
         totalWorksheets: datasetNames.length,
         groupsEvaluated: coverageByGroup.size,
       },
-      answer,
+      answer: fallbackAnswer,
       debugPlan: plan,
     },
     plan,
@@ -804,6 +808,9 @@ function executeCrossWorksheetGroupedPlan({ datasets, schema, plan, question = '
     schema,
     question,
   });
+
+  const naturalAnswer = buildSemanticVerifiedAnswer({ question, plan, result: enriched });
+  return { ...enriched, answer: naturalAnswer || fallbackAnswer };
 }
 
 function buildCrossWorksheetGroupedRankingResolution({ datasets, schema, question }) {

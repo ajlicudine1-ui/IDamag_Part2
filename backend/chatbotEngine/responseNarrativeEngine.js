@@ -29,6 +29,26 @@ function coverageNote(item, result) {
   return ` Based on ${used} of ${total} worksheets${missing.length ? `; no usable value in ${missing.join(', ')}` : ''}.`;
 }
 
+function extractFilterValue(plan, result, columnName) {
+  const filters = Array.isArray(result?.filters) && result.filters.length
+    ? result.filters
+    : Array.isArray(plan?.filters) ? plan.filters : [];
+  const target = normalizeText(columnName);
+  const match = filters.find((filter) => normalizeText(filter?.column) === target);
+  if (!match) return null;
+  if (Array.isArray(match.value)) return match.value.join(', ');
+  if (match.value === null || match.value === undefined || String(match.value).trim() === '') return null;
+  return String(match.value).trim();
+}
+
+function groupDisplayName(groupBy) {
+  const raw = String(groupBy || '').trim();
+  if (!raw) return 'group';
+  const normalized = normalizeText(raw);
+  const aliases = { commodity: 'commodity', province: 'province', municipality: 'municipality', office: 'office', division: 'division' };
+  return aliases[normalized] || raw;
+}
+
 function buildSemanticVerifiedAnswer({ question, plan, result } = {}) {
   if (!result || result.success === false) return null;
 
@@ -43,17 +63,24 @@ function buildSemanticVerifiedAnswer({ question, plan, result } = {}) {
   if (op === 'rank_worksheets' && results.length) {
     const item = results[0];
     const adjective = direction === 'asc' ? 'lowest' : 'highest';
-    return `${item.label} has the ${adjective} ${aggregation === 'average' ? 'average ' : ''}${metric}: ${formatValue(item.value, displayUnit)}.${coverageNote(item, result)}`;
+    const month = extractFilterValue(plan, result, 'Month');
+    const timePhrase = month ? ` in ${month}` : '';
+    const metricPhrase = aggregation === 'average' ? `average ${metric}` : metric;
+    return `${item.label} has the ${adjective} ${metricPhrase}${timePhrase} at ${formatValue(item.value, displayUnit)}.${coverageNote(item, result)}`;
   }
 
   if (op === 'rank_across_worksheets' && results.length) {
     const adjective = direction === 'asc' ? 'lowest' : 'highest';
+    const group = groupDisplayName(groupBy);
+    const month = extractFilterValue(plan, result, 'Month');
+    const timePhrase = month ? ` in ${month}` : '';
+    const metricPhrase = aggregation === 'average' ? `average ${metric}` : metric;
     const lines = results.map((item, index) => `${index + 1}. ${item.label}: ${formatValue(item.value, displayUnit)}${coverageNote(item, result)}`);
     if (results.length === 1) {
       const item = results[0];
-      return `${item.label} had the ${adjective} ${aggregation === 'average' ? 'average ' : ''}${metric} across the available worksheets at ${formatValue(item.value, displayUnit)}.${coverageNote(item, result)}`;
+      return `${item.label} had the ${adjective} ${metricPhrase}${timePhrase} across the available worksheets at ${formatValue(item.value, displayUnit)}.${coverageNote(item, result)}`;
     }
-    return `${adjective[0].toUpperCase()}${adjective.slice(1)} ${groupBy || 'group'} by ${aggregation || 'value'} ${metric}:\n${lines.join('\n')}`;
+    return `The ${results.length} ${group}${results.length === 1 ? '' : 's'} with the ${adjective} ${metricPhrase}${timePhrase} are:\n${lines.join('\n')}`;
   }
 
   if (op === 'multi_worksheet' && results.length) {
