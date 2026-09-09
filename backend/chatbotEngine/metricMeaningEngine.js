@@ -234,8 +234,77 @@ function inferMetricMeaning({ plan, question, datasets = {}, schema = [], report
   };
 }
 
+
+function shouldSkipMetricMeaningForPlan(plan) {
+  const operation =
+    normalizeText(
+      plan?.operation
+    );
+
+  if (
+    !plan?.column
+  ) {
+    return false;
+  }
+
+  /**
+   * A plain list is categorical/identity output, not a numeric metric.
+   * Do not attach percentage/currency/quantity semantics just because the
+   * worksheet contains another unit-bearing numeric column.
+   */
+  if (
+    operation ===
+      "list"
+  ) {
+    return true;
+  }
+
+  /**
+   * Plain lookups of obvious descriptive/identity fields are also not metrics.
+   * Numeric/measure-looking field names continue through normal inference.
+   */
+  if (
+    operation ===
+      "lookup" &&
+    !plan?.aggregation &&
+    !plan?.groupBy &&
+    !plan?.direction
+  ) {
+    const measureCue =
+      /\b(?:amount|cost|price|value|total|average|avg|mean|rate|percent|percentage|qty|quantity|count|number|area|yield|loss|salary|income|expense|weight|height|length|duration|time|age|volume|capacity|score|index)\b/i;
+
+    return !measureCue.test(
+      String(
+        plan.column || ""
+      )
+    );
+  }
+
+  return false;
+}
+
 function enrichPlanMetricMeaning({ plan, question, datasets, schema, reportContext } = {}) {
   if (!plan || plan.route !== 'dataset' || !plan.column) return plan;
+
+  if (
+    shouldSkipMetricMeaningForPlan(
+      plan
+    )
+  ) {
+    return {
+      ...plan,
+      metricMeaning: null,
+      metricSemantics: null,
+      metricSource: null,
+      displayUnit: null,
+      denominatorUnit: null,
+      unit: null,
+      unitColumn: null,
+      metricMeaningConfidence: 1,
+      metricMeaningSkipped: true,
+    };
+  }
+
   const meaning = inferMetricMeaning({ plan, question, datasets, schema, reportContext });
   return {
     ...plan,
@@ -249,6 +318,7 @@ function enrichPlanMetricMeaning({ plan, question, datasets, schema, reportConte
 }
 
 module.exports = {
+  shouldSkipMetricMeaningForPlan,
   exactColumnMention,
   hasExplicitCalculationCue,
   refineStoredMetricOperation,

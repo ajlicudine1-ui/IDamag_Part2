@@ -599,6 +599,95 @@ test('strong local semantic resolver supports distinct-count entity questions', 
   assert.strictEqual(plan.operation, 'distinct_count');
 });
 
+
+test('categorical list plans do not get numeric metric semantics', () => {
+  const {
+    enrichPlanMetricMeaning,
+  } = require('./metricMeaningEngine');
+
+  const plan = enrichPlanMetricMeaning({
+    plan: {
+      route: 'dataset',
+      dataset: 'Details',
+      operation: 'list',
+      column: 'Name of Organization',
+      metricSemantics: 'percentage',
+      unit: '%',
+    },
+    question: 'Which organizations received support?',
+    datasets: {
+      Details: [
+        { 'Name of Organization': 'Org A', Unit: '%' },
+      ],
+    },
+    schema: [
+      {
+        name: 'Details',
+        columns: [
+          { name: 'Name of Organization' },
+          { name: 'Unit' },
+        ],
+      },
+    ],
+  });
+
+  assert.strictEqual(plan.metricSemantics, null);
+  assert.strictEqual(plan.metricMeaning, null);
+  assert.strictEqual(plan.displayUnit, null);
+  assert.strictEqual(plan.unit, null);
+  assert.strictEqual(plan.metricMeaningSkipped, true);
+});
+
+test('plain list narrative uses the user question as a natural introduction', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer = buildSemanticVerifiedAnswer({
+    question: 'Which organizations received support?',
+    plan: {
+      operation: 'list',
+      column: 'Name of Organization',
+    },
+    result: {
+      success: true,
+      operation: 'list',
+      results: [
+        'Org A',
+        'Org B',
+        'Org C',
+      ],
+    },
+  });
+
+  assert(answer.startsWith('3 organizations received support:'));
+  assert(answer.includes('1. Org A'));
+  assert(answer.includes('3. Org C'));
+});
+
+test('list introduction avoids copying do-they grammar incorrectly', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer = buildSemanticVerifiedAnswer({
+    question: 'What commodities do they produce?',
+    plan: {
+      operation: 'list',
+      column: 'Commodities',
+    },
+    result: {
+      success: true,
+      operation: 'list',
+      results: ['rice', 'corn'],
+    },
+  });
+
+  assert(!answer.startsWith('2 commodities do they produce:'));
+  assert(answer.includes('1. rice'));
+  assert(answer.includes('2. corn'));
+});
+
 async function run() {
   let passed = 0;
   const failures = [];

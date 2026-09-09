@@ -7845,6 +7845,30 @@ async function answerQuestion(
     let finalAnswer =
       result.answer;
 
+    const semanticLocalListAnswer =
+      String(
+        localPlan.operation ||
+        ""
+      )
+        .trim()
+        .toLowerCase() ===
+        "list"
+        ? buildSemanticVerifiedAnswer({
+            question:
+              cleanQuestion,
+            plan:
+              localPlan,
+            result,
+          })
+        : null;
+
+    if (
+      semanticLocalListAnswer
+    ) {
+      finalAnswer =
+        semanticLocalListAnswer;
+    }
+
     /**
      * Keep local-fallback response semantics consistent with the normal
      * conversational path. Paired lookups should use the deterministic
@@ -7896,6 +7920,7 @@ async function answerQuestion(
      * Groq availability does not change conversational output semantics.
      */
     if (
+      !semanticLocalListAnswer &&
       String(
         localPlan.operation ||
         ""

@@ -320,10 +320,188 @@ function buildLookupPairNarrative({ question, plan, result } = {}) {
   return `${firstSentence} ${detailSentence}`;
 }
 
+
+function humanizeFieldLabel(value) {
+  return String(
+    value || ""
+  )
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function deriveNaturalListIntroduction({
+  question,
+  field,
+  count,
+}) {
+  const cleanQuestion =
+    String(
+      question || ""
+    )
+      .replace(/[?.!]+$/, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  /**
+   * Turn simple entity-list questions into a sentence-shaped introduction.
+   *
+   * "Which organizations received support?"
+   * -> "14 organizations received support:"
+   *
+   * "What associations are in Region A?"
+   * -> "4 associations are in Region A:"
+   *
+   * Avoid copying "do/does/did <subject> <verb>" questions directly because
+   * removing "what/which" would produce ungrammatical text such as
+   * "4 commodities do they produce".
+   */
+  const match =
+    cleanQuestion.match(
+      /^(?:which|what)\s+(.+)$/i
+    );
+
+  if (
+    match?.[1] &&
+    !/\b(?:do|does|did)\s+(?:they|them|these|those|it|he|she|we|you)\b/i.test(
+      match[1]
+    )
+  ) {
+    const remainder =
+      match[1]
+        .replace(/^\s+|\s+$/g, "");
+
+    if (
+      remainder
+    ) {
+      return `${count} ${remainder}:`;
+    }
+  }
+
+  const label =
+    humanizeFieldLabel(
+      field
+    );
+
+  if (
+    label
+  ) {
+    return `${count} ${label}${count === 1 ? "" : ""} ${count === 1 ? "was" : "were"} found:`;
+  }
+
+  return `${count} matching ${count === 1 ? "record was" : "records were"} found:`;
+}
+
+function buildNaturalListNarrative({
+  question,
+  plan,
+  result,
+}) {
+  const rawItems =
+    Array.isArray(
+      result?.results
+    )
+      ? result.results
+      : [];
+
+  const items =
+    rawItems
+      .map(
+        (item) => {
+          if (
+            item === null ||
+            item === undefined
+          ) {
+            return "";
+          }
+
+          if (
+            typeof item !==
+              "object"
+          ) {
+            return String(
+              item
+            ).trim();
+          }
+
+          const value =
+            item?.[
+              plan?.column
+            ] ??
+            item?.value ??
+            item?.label ??
+            null;
+
+          return value === null ||
+            value === undefined
+              ? ""
+              : String(
+                  value
+                ).trim();
+        }
+      )
+      .filter(Boolean);
+
+  const unique =
+    [
+      ...new Map(
+        items.map(
+          (value) => [
+            normalizeText(
+              value
+            ),
+            value,
+          ]
+        )
+      ).values(),
+    ];
+
+  if (
+    !unique.length
+  ) {
+    return null;
+  }
+
+  const intro =
+    deriveNaturalListIntroduction({
+      question,
+      field:
+        plan?.column,
+      count:
+        unique.length,
+    });
+
+  const lines =
+    unique
+      .map(
+        (value, index) =>
+          `${index + 1}. ${value}`
+      )
+      .join(
+        "\n"
+      );
+
+  return `${intro}\n${lines}`;
+}
+
 function buildSemanticVerifiedAnswer({ question, plan, result } = {}) {
   if (!result || result.success === false) return null;
 
   const op = normalizeText(result.operation || plan?.operation);
+
+  if (op === 'list') {
+    const listNarrative =
+      buildNaturalListNarrative({
+        question,
+        plan,
+        result,
+      });
+
+    if (listNarrative) {
+      return listNarrative;
+    }
+  }
+
   const metric = metricDisplayName({ plan, result, question });
   const displayUnit = result?.displayUnit || plan?.displayUnit || result?.unit || plan?.unit || null;
   const aggregation = normalizeText(result?.aggregation || plan?.aggregation);
@@ -394,6 +572,7 @@ function buildSemanticVerifiedAnswer({ question, plan, result } = {}) {
 }
 
 module.exports = {
+  buildNaturalListNarrative,
   buildSemanticVerifiedAnswer,
   metricDisplayName,
   formatValue,
