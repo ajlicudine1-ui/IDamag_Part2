@@ -2403,6 +2403,27 @@ function normalizeSemanticReferentialQuestion(question) {
   }
 
   /**
+   * 4. Possessive field paraphrase.
+   *
+   * Examples:
+   *   "Tell me their commodities."
+   *   "Show me their activities."
+   *   "What are their services?"
+   *
+   * At this stage the explicit referential-field resolver has already
+   * identified the real live-schema field. We only normalize the grammatical
+   * relation so the deterministic narrative can render a compact natural
+   * answer instead of raw "<label> - <value>" pairs.
+   */
+  if (
+    /\btheir\b/i.test(
+      original
+    )
+  ) {
+    return "What values do they have?";
+  }
+
+  /**
    * 4. Passive paraphrase.
    *
    * Examples:
@@ -2429,6 +2450,264 @@ function shouldUseSemanticReferentialNarrative(question) {
   return Boolean(
     normalizeSemanticReferentialQuestion(
       question
+    )
+  );
+}
+
+
+function recoverLocalReferentialPlanFromConversation({
+  plan,
+  question,
+  context,
+  schema,
+}) {
+  if (
+    !plan ||
+    typeof plan !== "object" ||
+    context?.isFollowUp !== true ||
+    !normalizeSemanticReferentialQuestion(
+      question
+    )
+  ) {
+    return plan;
+  }
+
+  // A valid local dataset plan already has enough information.
+  if (
+    plan.route === "dataset" &&
+    plan.dataset &&
+    plan.column
+  ) {
+    return plan;
+  }
+
+  const datasetName =
+    context.lastDataset ||
+    context.semanticPlan?.dataset ||
+    null;
+
+  if (!datasetName) {
+    return plan;
+  }
+
+  const datasetSchema =
+    Array.isArray(schema)
+      ? schema.find(
+          (item) =>
+            normalizeText(
+              item?.name
+            ) ===
+            normalizeText(
+              datasetName
+            )
+        )
+      : null;
+
+  const liveColumns =
+    Array.isArray(
+      datasetSchema?.columns
+    )
+      ? datasetSchema.columns
+          .map(
+            (item) =>
+              typeof item === "string"
+                ? item
+                : item?.name
+          )
+          .filter(Boolean)
+      : [];
+
+  const findLiveColumn =
+    (candidate) => {
+      const normalized =
+        normalizeText(
+          candidate
+        );
+
+      if (!normalized) {
+        return null;
+      }
+
+      return liveColumns.find(
+        (column) =>
+          normalizeText(
+            column
+          ) ===
+          normalized
+      ) || null;
+    };
+
+  // Prefer the immediately previous verified output/metric field.
+  // This is conversation-derived, not domain hardcoding.
+  const valueColumn =
+    findLiveColumn(
+      context.lastMetric
+    ) ||
+    findLiveColumn(
+      context.lastSubjectColumn
+    ) ||
+    findLiveColumn(
+      context.lastPlan?.column
+    ) ||
+    findLiveColumn(
+      context.semanticPlan?.metricColumn
+    ) ||
+    findLiveColumn(
+      context.semanticPlan?.column
+    ) ||
+    null;
+
+  if (!valueColumn) {
+    return plan;
+  }
+
+  const pairColumnCandidates = [
+    context.lastPlan?.conversationalPairColumn,
+    context.lastPlan?.labelColumn,
+    context.semanticPlan?.labelColumn,
+    context.semanticPlan?.groupBy,
+  ];
+
+  let pairColumn = null;
+
+  for (
+    const candidate
+    of pairColumnCandidates
+  ) {
+    const live =
+      findLiveColumn(
+        candidate
+      );
+
+    if (
+      live &&
+      normalizeText(
+        live
+      ) !==
+      normalizeText(
+        valueColumn
+      )
+    ) {
+      pairColumn =
+        live;
+      break;
+    }
+  }
+
+  const filters =
+    Array.isArray(
+      context.lastFilters
+    )
+      ? context.lastFilters.map(
+          (filter) => ({
+            ...filter,
+            value:
+              Array.isArray(
+                filter?.value
+              )
+                ? [
+                    ...filter.value,
+                  ]
+                : filter?.value,
+          })
+        )
+      : [];
+
+  const selectColumns =
+    [
+      pairColumn,
+      valueColumn,
+    ]
+      .filter(Boolean)
+      .filter(
+        (column, index, all) =>
+          all.findIndex(
+            (item) =>
+              normalizeText(
+                item
+              ) ===
+              normalizeText(
+                column
+              )
+          ) === index
+      );
+
+  return {
+    ...plan,
+    route:
+      "dataset",
+    dataset:
+      datasetName,
+    operation:
+      "lookup",
+    column:
+      valueColumn,
+    labelColumn:
+      pairColumn ||
+      valueColumn,
+    groupBy:
+      null,
+    aggregation:
+      null,
+    direction:
+      null,
+    filters,
+    selectColumns,
+    outputRequested:
+      true,
+    transform:
+      null,
+    showAll:
+      true,
+    limit:
+      Math.max(
+        Number(
+          plan.limit
+        ) || 10,
+        100
+      ),
+    conversationalPairColumn:
+      pairColumn ||
+      null,
+    localReferentialRecovery:
+      true,
+  };
+}
+
+function isExternalLanguageServiceError(error) {
+  const message =
+    String(
+      error?.message ||
+      error ||
+      ""
+    )
+      .toLowerCase();
+
+  if (!message) {
+    return false;
+  }
+
+  return (
+    message.includes(
+      "rate limit"
+    ) ||
+    message.includes(
+      "tokens per day"
+    ) ||
+    message.includes(
+      "too many requests"
+    ) ||
+    message.includes(
+      "quota"
+    ) ||
+    message.includes(
+      "service unavailable"
+    ) ||
+    message.includes(
+      "temporarily unavailable"
+    ) ||
+    /\b429\b/.test(
+      message
     )
   );
 }
@@ -7388,6 +7667,28 @@ async function answerQuestion(
         context: conversationContext,
       });
 
+    /**
+     * If Groq is unavailable and the current turn is an elliptical
+     * referential follow-up, reuse the previous VERIFIED dataset/output field
+     * when it is still valid in the live schema.
+     *
+     * Example pattern:
+     *   explicit field turn -> "Tell me what they <action>."
+     *
+     * This allows the local fallback to remain useful during provider
+     * rate limits instead of routing the question back to a general LLM call.
+     */
+    localPlan =
+      recoverLocalReferentialPlanFromConversation({
+        plan:
+          localPlan,
+        question:
+          cleanQuestion,
+        context:
+          conversationContext,
+        schema,
+      });
+
     localPlan =
       repairMultiEntityFilters({
         datasets,
@@ -7463,6 +7764,49 @@ async function answerQuestion(
 
     let finalAnswer =
       result.answer;
+
+    /**
+     * Keep local-fallback response semantics consistent with the normal
+     * conversational path. Paired lookups should use the deterministic
+     * natural narrative rather than raw repeated "<label> - <value>" lines.
+     * No external language-model call is required here.
+     */
+    if (
+      String(
+        localPlan.operation ||
+        ""
+      )
+        .trim()
+        .toLowerCase() ===
+        "lookup" &&
+      localPlan.column &&
+      localPlan.labelColumn &&
+      normalizeText(
+        localPlan.column
+      ) !==
+      normalizeText(
+        localPlan.labelColumn
+      )
+    ) {
+      const semanticLocalAnswer =
+        buildSemanticVerifiedAnswer({
+          question:
+            normalizeSemanticReferentialQuestion(
+              cleanQuestion
+            ) ||
+            cleanQuestion,
+          plan:
+            localPlan,
+          result,
+        });
+
+      if (
+        semanticLocalAnswer
+      ) {
+        finalAnswer =
+          semanticLocalAnswer;
+      }
+    }
 
     let oneToManyResolved =
       undefined;
@@ -7570,8 +7914,20 @@ async function answerQuestion(
         null,
 
       answer:
-        localError.message ||
-        "The chatbot could not process the question.",
+        isExternalLanguageServiceError(
+          localError
+        )
+          ? (
+              normalizeSemanticReferentialQuestion(
+                cleanQuestion
+              )
+                ? "I couldn't resolve that follow-up locally from the available conversation context. Please mention the field you want, and I can answer it directly from the dataset."
+                : "The language service is temporarily unavailable, and this question could not be completed locally. Please try again shortly."
+            )
+          : (
+              localError.message ||
+              "The chatbot could not process the question."
+            ),
     };
   }
 

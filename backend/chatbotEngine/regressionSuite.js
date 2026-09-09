@@ -438,6 +438,35 @@ test('grammar finalizer fixes safe spacing and duplicate-function-word artifacts
   assert.equal(answer, 'The result is correct, and verified!');
 });
 
+
+test('possessive referential lookup can render a compact have/has narrative', () => {
+  const { buildSemanticVerifiedAnswer } = require('./responseNarrativeEngine');
+
+  const answer = buildSemanticVerifiedAnswer({
+    question: 'What values do they have?',
+    plan: {
+      operation: 'lookup',
+      column: 'Offerings',
+      labelColumn: 'Organization',
+    },
+    result: {
+      success: true,
+      operation: 'lookup',
+      column: 'Offerings',
+      labelColumn: 'Organization',
+      results: [
+        { Organization: 'Org A', Offerings: 'one, two' },
+        { Organization: 'Org B', Offerings: 'one, two' },
+        { Organization: 'Org C', Offerings: 'one, three' },
+      ],
+    },
+  });
+
+  assert(answer.startsWith('They have one, two, and three.'));
+  assert(answer.includes('Org A and Org B have one and two'));
+  assert(answer.includes('Org C has one and three'));
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
