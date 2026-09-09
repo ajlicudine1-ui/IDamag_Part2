@@ -909,12 +909,56 @@ function buildDistributedWorksheetFollowUpResolution({
 
   if (!followUpCue) return null;
 
-  const direction = detectRankingDirection(question);
-  if (!direction) return null;
-
   const metricColumn = previousPlan.column || null;
   const partitionColumn = previousPlan.groupBy || null;
   if (!metricColumn) return null;
+
+  // A short distributed follow-up can change more than ranking direction.
+  // Example: "What about January?" after a February cross-worksheet ranking.
+  // Infer any values explicitly mentioned in the CURRENT question from the
+  // live shared rows, then replace only filters on the same columns. This is
+  // generic and works for Month, Year, Stage, Status, Category, etc.
+  const combinedRows = Object.keys(datasets || {})
+    .filter((name) => Array.isArray(datasets?.[name]))
+    .flatMap((name) => datasets[name]);
+
+  const currentInferredFilters = cleanInferredFilters(
+    inferValueFilters(
+      combinedRows,
+      question,
+      [metricColumn, partitionColumn, previousPlan.labelColumn].filter(Boolean)
+    ),
+    partitionColumn,
+    metricColumn
+  );
+
+  const explicitCurrentFilters = currentInferredFilters.filter((filter) => {
+    const column = normalizeText(filter?.column);
+    return column && column !== normalizeText(partitionColumn);
+  });
+
+  const direction = detectRankingDirection(question) || previousPlan.direction || null;
+  const hasDirectionOverride = Boolean(detectRankingDirection(question));
+  const hasFilterOverride = explicitCurrentFilters.length > 0;
+
+  // Do not reconstruct arbitrary "what about ..." turns unless the current
+  // question actually changes a supported analytical slot.
+  if (!hasDirectionOverride && !hasFilterOverride) return null;
+
+  const previousFilters = Array.isArray(previousPlan.filters)
+    ? previousPlan.filters.map(cloneFilter)
+    : [];
+
+  const overriddenColumns = new Set(
+    explicitCurrentFilters.map((filter) => normalizeText(filter?.column))
+  );
+
+  const mergedFilters = [
+    ...previousFilters.filter(
+      (filter) => !overriddenColumns.has(normalizeText(filter?.column))
+    ),
+    ...explicitCurrentFilters.map(cloneFilter),
+  ];
 
   const reconstructedPlan = {
     ...previousPlan,
@@ -925,10 +969,8 @@ function buildDistributedWorksheetFollowUpResolution({
     groupBy: partitionColumn,
     aggregation: previousPlan.aggregation || 'lookup',
     direction,
-    limit: detectRankingLimit(question) || 1,
-    filters: Array.isArray(previousPlan.filters)
-      ? previousPlan.filters.map(cloneFilter)
-      : [],
+    limit: detectRankingLimit(question) || previousPlan.limit || 1,
+    filters: mergedFilters,
     selectColumns: Array.isArray(previousPlan.selectColumns)
       ? [...previousPlan.selectColumns]
       : [partitionColumn, metricColumn].filter(Boolean),
