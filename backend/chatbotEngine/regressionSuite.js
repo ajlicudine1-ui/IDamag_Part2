@@ -280,6 +280,63 @@ test('generic Average metric never renders average Average', () => {
   assert(!answer.includes('average Average'));
 });
 
+
+test('lookup pair narrative answers requested values first and compresses shared groups', () => {
+  const { buildSemanticVerifiedAnswer } = require('./responseNarrativeEngine');
+
+  const answer = buildSemanticVerifiedAnswer({
+    question: 'What products do they produce?',
+    plan: {
+      operation: 'lookup',
+      column: 'Products',
+      labelColumn: 'Location',
+    },
+    result: {
+      success: true,
+      operation: 'lookup',
+      column: 'Products',
+      labelColumn: 'Location',
+      results: [
+        { Location: 'Alpha', Products: 'rice, corn, vegetables' },
+        { Location: 'Beta', Products: 'rice, corn, vegetables' },
+        { Location: 'Gamma', Products: 'rice, sugarcane' },
+      ],
+    },
+  });
+
+  assert(answer.startsWith('They produce rice, corn, vegetables, and sugarcane.'));
+  assert(answer.includes('Alpha and Beta produce rice, corn, and vegetables'));
+  assert(answer.includes('Gamma produces rice and sugarcane'));
+  assert(!answer.includes('Products by location:'));
+});
+
+test('lookup pair narrative keeps grouped format when grouping is explicit', () => {
+  const { buildSemanticVerifiedAnswer } = require('./responseNarrativeEngine');
+
+  const answer = buildSemanticVerifiedAnswer({
+    question: 'What products do they produce by location?',
+    plan: {
+      operation: 'lookup',
+      column: 'Products',
+      labelColumn: 'Location',
+    },
+    result: {
+      success: true,
+      operation: 'lookup',
+      column: 'Products',
+      labelColumn: 'Location',
+      results: [
+        { Location: 'Alpha', Products: 'rice, corn' },
+        { Location: 'Beta', Products: 'rice, sugarcane' },
+      ],
+    },
+  });
+
+  assert(answer.includes('Products by location:'));
+  assert(answer.includes('1. Alpha: rice and corn'));
+  assert(answer.includes('2. Beta: rice and sugarcane'));
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
