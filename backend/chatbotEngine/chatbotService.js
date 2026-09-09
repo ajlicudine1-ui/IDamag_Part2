@@ -203,6 +203,11 @@ const {
   currentQuestionRequiresReplan,
 } = require("./currentQuestionOverrideEngine");
 
+const {
+  resolveStrongLocalSemanticPlan,
+} = require("./localSemanticResolver");
+
+
 
 
 function normalizeFollowUpPhrase(
@@ -7698,6 +7703,49 @@ async function answerQuestion(
         schema,
         context: conversationContext,
       });
+
+    /**
+     * V7.33 STRONG LOCAL SEMANTIC RESOLVER
+     *
+     * When Groq is unavailable, independently scan every live worksheet and
+     * score the CURRENT question against live schema names, worksheet names,
+     * row structure, and explicit row-value filters.
+     *
+     * The current question wins. Previous conversation filters are inherited
+     * only for genuinely referential wording and only when those filter
+     * columns exist in the selected live worksheet.
+     */
+    const strongLocalSemanticPlan =
+      resolveStrongLocalSemanticPlan({
+        question:
+          cleanQuestion,
+        schema,
+        datasets,
+        context:
+          conversationContext,
+      });
+
+    if (
+      strongLocalSemanticPlan &&
+      (
+        localPlan?.route !==
+          "dataset" ||
+        !localPlan?.dataset ||
+        !localPlan?.column ||
+        Number(
+          strongLocalSemanticPlan.localSemanticConfidence ||
+          0
+        ) >=
+          Number(
+            localPlan.localConfidence ||
+            localPlan.confidence ||
+            0
+          )
+      )
+    ) {
+      localPlan =
+        strongLocalSemanticPlan;
+    }
 
     /**
      * If Groq is unavailable and the current turn is an elliptical

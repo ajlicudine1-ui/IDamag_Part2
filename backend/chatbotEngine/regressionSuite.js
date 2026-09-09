@@ -482,6 +482,123 @@ test('repeated referential field requests preserve the previous verified pair co
   assert(source.includes('previousPairCandidates.find'));
 });
 
+
+test('strong local semantic resolver selects a detail worksheet for received-entity questions', () => {
+  const {
+    resolveStrongLocalSemanticPlan,
+  } = require('./localSemanticResolver');
+
+  const datasets = {
+    Profile: [
+      { 'Name of Organization': 'Org A', Region: 'North', Products: 'rice' },
+      { 'Name of Organization': 'Org B', Region: 'South', Products: 'corn' },
+    ],
+    Organization: [
+      { 'Name of Organization': 'Org A', Year: 2025, Item: 'Tool', QTY: 1 },
+      { 'Name of Organization': 'Org A', Year: 2024, Item: 'Seed', QTY: 2 },
+      { 'Name of Organization': 'Org B', Year: 2025, Item: 'Machine', QTY: 1 },
+    ],
+  };
+
+  const schema = [
+    {
+      name: 'Profile',
+      columns: Object.keys(datasets.Profile[0]).map((name) => ({ name })),
+    },
+    {
+      name: 'Organization',
+      columns: Object.keys(datasets.Organization[0]).map((name) => ({ name })),
+    },
+  ];
+
+  const plan = resolveStrongLocalSemanticPlan({
+    question: 'Which organizations received interventions?',
+    schema,
+    datasets,
+    context: null,
+  });
+
+  assert(plan);
+  assert.strictEqual(plan.route, 'dataset');
+  assert.strictEqual(plan.dataset, 'Organization');
+  assert.strictEqual(plan.column, 'Name of Organization');
+  assert.strictEqual(plan.operation, 'list');
+  assert.strictEqual(plan.localSemanticResolved, true);
+});
+
+test('strong local semantic resolver handles new semantic questions without sticky previous query memory', () => {
+  const {
+    resolveStrongLocalSemanticPlan,
+  } = require('./localSemanticResolver');
+
+  const datasets = {
+    Main: [
+      { 'Name of Group': 'Group A', Products: 'rice', Province: 'North' },
+      { 'Name of Group': 'Group B', Products: 'corn', Province: 'North' },
+    ],
+    Transactions: [
+      { 'Project Name': 'Project X', 'Funding Source': 'Fund A', Amount: 100 },
+      { 'Project Name': 'Project Y', 'Funding Source': 'Fund B', Amount: 200 },
+    ],
+  };
+
+  const schema = Object.entries(datasets).map(([name, rows]) => ({
+    name,
+    columns: Object.keys(rows[0]).map((column) => ({ name: column })),
+  }));
+
+  const context = {
+    isFollowUp: true,
+    lastDataset: 'Main',
+    lastMetric: 'Products',
+    lastFilters: [
+      { column: 'Province', operator: 'equals', value: 'North' },
+    ],
+  };
+
+  const plan = resolveStrongLocalSemanticPlan({
+    question: 'Which projects received funding?',
+    schema,
+    datasets,
+    context,
+  });
+
+  assert(plan);
+  assert.strictEqual(plan.dataset, 'Transactions');
+  assert.strictEqual(plan.column, 'Project Name');
+  assert.strictEqual(plan.operation, 'list');
+  assert.strictEqual(plan.filters.length, 0);
+});
+
+test('strong local semantic resolver supports distinct-count entity questions', () => {
+  const {
+    resolveStrongLocalSemanticPlan,
+  } = require('./localSemanticResolver');
+
+  const datasets = {
+    Attendance: [
+      { 'Employee Name': 'A', Training: 'T1' },
+      { 'Employee Name': 'A', Training: 'T2' },
+      { 'Employee Name': 'B', Training: 'T1' },
+    ],
+  };
+
+  const schema = [{
+    name: 'Attendance',
+    columns: Object.keys(datasets.Attendance[0]).map((name) => ({ name })),
+  }];
+
+  const plan = resolveStrongLocalSemanticPlan({
+    question: 'How many employees attended training?',
+    schema,
+    datasets,
+  });
+
+  assert(plan);
+  assert.strictEqual(plan.column, 'Employee Name');
+  assert.strictEqual(plan.operation, 'distinct_count');
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
