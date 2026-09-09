@@ -6971,6 +6971,7 @@ async function answerQuestion(
 
   let groqPlan = null;
   let groqPlanningError = null;
+  let groqReferentialRecovery = false;
 
   /**
    * IMPORTANT:
@@ -7000,6 +7001,71 @@ async function answerQuestion(
       "Groq planning failed; local fallback will be used:",
       error
     );
+  }
+
+
+  /**
+   * ========================================================
+   * REFERENTIAL PARAPHRASE SEMANTIC RECOVERY
+   * ========================================================
+   *
+   * A follow-up may omit the actual schema field:
+   *
+   *   "Tell me what they produce."
+   *   "Show what they provide."
+   *   "Which things are they using?"
+   *
+   * The deterministic explicit-field resolver cannot select a column when the
+   * field name itself is absent. If the normal Groq planner also fails to
+   * return valid JSON, do ONE constrained semantic re-plan before falling back
+   * to the generic local parser.
+   *
+   * This does not hardcode a worksheet, field, domain noun, or data value.
+   * Groq still chooses only from the live schema, while conversation memory
+   * supplies the verified referent/scope.
+   */
+  if (
+    !groqPlan &&
+    conversationContext?.isFollowUp === true &&
+    normalizeSemanticReferentialQuestion(
+      cleanQuestion
+    )
+  ) {
+    try {
+      const recoveryQuestion =
+        [
+          "This is a referential follow-up data question.",
+          "Use the previous verified conversation subject and filters.",
+          "Resolve the live schema field whose meaning best answers the user's action.",
+          "Return a dataset lookup plan rather than a general explanation.",
+          `User question: ${cleanQuestion}`,
+        ].join(" ");
+
+      groqPlan =
+        await createSchemaAwarePlan({
+          question:
+            recoveryQuestion,
+          schema,
+          context:
+            conversationContext,
+          retrievalContext,
+        });
+
+      if (groqPlan) {
+        groqReferentialRecovery =
+          true;
+      }
+    } catch (recoveryError) {
+      if (
+        process.env.NODE_ENV !==
+          "production"
+      ) {
+        console.warn(
+          "Referential semantic recovery planner failed; continuing to local fallback:",
+          recoveryError
+        );
+      }
+    }
   }
 
   if (groqPlan) {
@@ -7201,7 +7267,9 @@ async function answerQuestion(
         oneToManyResolved,
 
         plannerSource:
-          "groq",
+          groqReferentialRecovery
+            ? "groq-referential-recovery"
+            : "groq",
       };
     } catch (groqExecutionError) {
       console.error(
