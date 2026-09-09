@@ -1,6 +1,8 @@
 const { normalizeText, parseNumber } = require('./utils');
 const { inferValueFilters } = require('./filterEngine');
 const { executePlan } = require('./calculationEngine');
+const { inferMetricMeaning } = require('./metricMeaningEngine');
+const { semanticPlanToExecutable } = require('./semanticPlan');
 const {
   findExplicitSchemaColumns,
   detectQuestionAggregation,
@@ -114,7 +116,8 @@ function discoverPartitionColumn({ datasets, schema, question }) {
 function hasDistributedScopeCue(question, partitionColumn) {
   const q = normalizeText(question);
   if (/\b(?:each|every|all)\b/.test(q)) return true;
-  if (/\b(?:across|by)\b/.test(q) && questionMentionsColumnConcept(question, partitionColumn)) return true;
+  if (/\b(?:across|throughout|regionwide|systemwide|nationwide|overall)\b/.test(q)) return true;
+  if (/\b(?:by)\b/.test(q) && questionMentionsColumnConcept(question, partitionColumn)) return true;
 
   // Cross-partition superlatives are distributed by definition:
   // "which province has the highest ...", "which branch has the lowest ...".
@@ -357,38 +360,66 @@ function buildDistributedWorksheetResolution({ datasets, schema, question }) {
     : `${operationLabel} by ${partition.column}:\n` +
       rowsOut.map((item, index) => `${index + 1}. ${item.label}: ${formatNumber(item.value)}`).join('\n');
 
+  const distributedPlan = {
+    route: 'dataset',
+    dataset: null,
+    operation: rankingDirection ? 'rank_worksheets' : 'multi_worksheet',
+    column: metricColumn,
+    groupBy: partition.column,
+    aggregation: operation,
+    direction: rankingDirection || null,
+    limit: rankingDirection ? Math.max(1, rankingLimit || 1) : rowsOut.length,
+    filters: [],
+    selectColumns: [partition.column, metricColumn],
+    outputRequested: true,
+    distributedWorksheetQuery: true,
+    worksheets: datasetNames,
+    aggregationPolicy: {
+      mode: 'available_values',
+      requireCompleteCoverage: false,
+    },
+  };
+
+  const rawResult = {
+    success: true,
+    source: 'dataset',
+    dataset: null,
+    datasets: rowsOut.map((item) => item.dataset),
+    operation: rankingDirection ? 'rank_worksheets' : 'multi_worksheet',
+    column: metricColumn,
+    groupBy: partition.column,
+    aggregation: operation,
+    results: (rankingDirection ? ordered : rowsOut).map((item) => ({
+      dataset: item.dataset,
+      label: item.label,
+      value: item.value,
+      filters: item.filters,
+      recordsUsed: item.result?.recordsUsed ?? null,
+      dataQuality: item.result?.dataQuality || null,
+    })),
+    aggregationPolicy: {
+      mode: 'available_values',
+      description: 'Each worksheet is evaluated independently using available non-missing metric values.',
+      requireCompleteCoverage: false,
+      totalWorksheets: rowsOut.length,
+    },
+    crossWorksheetDataQuality: {
+      totalWorksheets: rowsOut.length,
+      worksheetsWithValue: rowsOut.filter((item) => item.value !== null && Number.isFinite(Number(item.value))).length,
+      worksheetsWithoutValue: rowsOut.filter((item) => item.value === null || !Number.isFinite(Number(item.value))).map((item) => item.label),
+    },
+    answer,
+  };
+
   return {
-    plan: {
-      route: 'dataset',
-      operation: rankingDirection ? 'rank_worksheets' : 'multi_worksheet',
-      column: metricColumn,
-      groupBy: partition.column,
-      aggregation: operation,
-      direction: rankingDirection || null,
-      limit: rankingDirection ? Math.max(1, rankingLimit || 1) : rowsOut.length,
-      filters: [],
-      selectColumns: [partition.column, metricColumn],
-      outputRequested: true,
-      distributedWorksheetQuery: true,
-      worksheets: datasetNames,
-    },
-    result: {
-      success: true,
-      source: 'dataset',
-      dataset: null,
-      datasets: rowsOut.map((item) => item.dataset),
-      operation: rankingDirection ? 'rank_worksheets' : 'multi_worksheet',
-      column: metricColumn,
-      groupBy: partition.column,
-      aggregation: operation,
-      results: (rankingDirection ? ordered : rowsOut).map((item) => ({
-        dataset: item.dataset,
-        label: item.label,
-        value: item.value,
-        filters: item.filters,
-      })),
-      answer,
-    },
+    plan: distributedPlan,
+    result: attachCrossWorksheetMetricMeaning({
+      result: rawResult,
+      plan: distributedPlan,
+      datasets,
+      schema,
+      question,
+    }),
   };
 }
 
@@ -457,6 +488,8 @@ function executeDistributedWorksheetPlan({ datasets, schema, plan, question = ''
       label: firstPartitionLabel(rows, partitionColumn, datasetName),
       value,
       filters,
+      dataQuality: result?.dataQuality || null,
+      recordsUsed: result?.recordsUsed ?? null,
     });
   }
 
@@ -484,25 +517,44 @@ function executeDistributedWorksheetPlan({ datasets, schema, plan, question = ''
     : `${aggregationLabel} by ${partitionColumn || 'worksheet'}:\n` +
       outputRows.map((item, index) => `${index + 1}. ${item.label}: ${formatNumber(item.value)}`).join('\n');
 
-  return {
-    success: true,
-    source: 'dataset',
-    dataset: null,
-    datasets: rowsOut.map((item) => item.dataset),
-    operation: operationName,
-    column: metricColumn,
-    groupBy: partitionColumn,
-    aggregation: requestedAggregation || null,
-    direction: operationName === 'rank_worksheets' ? direction : null,
-    results: outputRows.map((item) => ({
-      dataset: item.dataset,
-      label: item.label,
-      value: item.value,
-      filters: item.filters,
-    })),
-    answer,
-    debugPlan: plan,
-  };
+  return attachCrossWorksheetMetricMeaning({
+    result: {
+      success: true,
+      source: 'dataset',
+      dataset: null,
+      datasets: rowsOut.map((item) => item.dataset),
+      operation: operationName,
+      column: metricColumn,
+      groupBy: partitionColumn,
+      aggregation: requestedAggregation || null,
+      direction: operationName === 'rank_worksheets' ? direction : null,
+      results: outputRows.map((item) => ({
+        dataset: item.dataset,
+        label: item.label,
+        value: item.value,
+        filters: item.filters,
+        recordsUsed: item.recordsUsed,
+        dataQuality: item.dataQuality,
+      })),
+      aggregationPolicy: {
+        mode: 'available_values',
+        description: 'Each worksheet is evaluated independently using non-missing metric values.',
+        requireCompleteCoverage: false,
+        totalWorksheets: rowsOut.length,
+      },
+      crossWorksheetDataQuality: {
+        totalWorksheets: rowsOut.length,
+        worksheetsWithValue: rowsOut.filter((item) => item.value !== null && Number.isFinite(Number(item.value))).length,
+        worksheetsWithoutValue: rowsOut.filter((item) => item.value === null || !Number.isFinite(Number(item.value))).map((item) => item.label),
+      },
+      answer,
+      debugPlan: plan,
+    },
+    plan,
+    datasets,
+    schema,
+    question,
+  });
 }
 
 
@@ -563,6 +615,76 @@ function chooseExplicitGroupingColumn({ datasets, schema, question, metricColumn
   return candidates.sort((a, b) => b.length - a.length)[0]?.name || null;
 }
 
+
+function rowMatchesFilter(row, filter) {
+  if (!filter?.column) return true;
+  const actual = normalizeText(row?.[filter.column]);
+  const op = normalizeText(filter.operator || 'equals');
+  const expected = filter.value;
+  if (op === 'equals') return actual === normalizeText(expected);
+  if (op === 'contains') return actual.includes(normalizeText(expected));
+  if (op === 'in') {
+    const list = Array.isArray(expected) ? expected : [expected];
+    return list.some((value) => actual === normalizeText(value));
+  }
+  return true;
+}
+
+function buildCrossWorksheetCoverage({ combinedRows, groupColumn, metricColumn, filters, datasetNames }) {
+  const map = new Map();
+  const normalizedFilters = Array.isArray(filters) ? filters : [];
+  for (const row of combinedRows || []) {
+    if (!normalizedFilters.every((filter) => rowMatchesFilter(row, filter))) continue;
+    const label = row?.[groupColumn];
+    if (label === null || label === undefined || String(label).trim() === '') continue;
+    const key = normalizeText(label);
+    if (!key) continue;
+    if (!map.has(key)) {
+      map.set(key, { label: String(label).trim(), worksheets: new Set(), usableValues: 0, missingValues: 0 });
+    }
+    const item = map.get(key);
+    const parsed = parseNumber(row?.[metricColumn]);
+    if (parsed === null) {
+      item.missingValues += 1;
+    } else {
+      item.usableValues += 1;
+      if (row?.__worksheet) item.worksheets.add(String(row.__worksheet));
+    }
+  }
+
+  const totalWorksheets = datasetNames.length;
+  return new Map([...map.entries()].map(([key, item]) => {
+    const used = [...item.worksheets];
+    const missingWorksheets = datasetNames.filter((name) => !item.worksheets.has(name));
+    return [key, {
+      totalWorksheets,
+      worksheetsUsed: used.length,
+      coverageRate: totalWorksheets ? used.length / totalWorksheets : 0,
+      usedWorksheets: used,
+      missingWorksheets,
+      usableValues: item.usableValues,
+      missingValues: item.missingValues,
+    }];
+  }));
+}
+
+function attachCrossWorksheetMetricMeaning({ result, plan, datasets, schema, question }) {
+  const firstDataset = Object.keys(datasets || {}).find((name) => Array.isArray(datasets[name]));
+  const meaning = inferMetricMeaning({
+    plan: { ...plan, dataset: firstDataset },
+    question,
+    datasets,
+    schema,
+  });
+  return {
+    ...result,
+    metricMeaning: meaning.type || null,
+    metricSemantics: meaning.type || null,
+    displayUnit: meaning.displayUnit || null,
+    denominatorUnit: meaning.denominatorUnit || null,
+  };
+}
+
 function executeCrossWorksheetGroupedPlan({ datasets, schema, plan, question = '' }) {
   if (normalizeText(plan?.operation) !== 'rank_across_worksheets') return null;
 
@@ -618,27 +740,70 @@ function executeCrossWorksheetGroupedPlan({ datasets, schema, plan, question = '
     return null;
   }
 
-  const results = Array.isArray(ranked?.results) ? ranked.results : [];
+  const rawResults = Array.isArray(ranked?.results) ? ranked.results : [];
+  const coverageByGroup = buildCrossWorksheetCoverage({
+    combinedRows,
+    groupColumn,
+    metricColumn,
+    filters: childPlan.filters,
+    datasetNames,
+  });
+
+  const results = rawResults.map((item) => ({
+    ...item,
+    coverage: coverageByGroup.get(normalizeText(item?.label)) || {
+      totalWorksheets: datasetNames.length,
+      worksheetsUsed: 0,
+      coverageRate: 0,
+      usedWorksheets: [],
+      missingWorksheets: [...datasetNames],
+    },
+  }));
+
+  const aggregationPolicy = {
+    mode: 'available_values',
+    description: 'Aggregate only non-missing values and report worksheet coverage.',
+    requireCompleteCoverage: false,
+    totalWorksheets: datasetNames.length,
+  };
+
   const answer = results.length
     ? `${direction === 'asc' ? 'Lowest' : 'Highest'} ${groupColumn} by ${aggregation} ${metricColumn} across worksheets:\n` +
-      results.map((item, index) => `${index + 1}. ${item.label}: ${formatNumber(item.value)}`).join('\n')
+      results.map((item, index) => {
+        const coverage = item.coverage;
+        const note = coverage && coverage.worksheetsUsed < coverage.totalWorksheets
+          ? ` (based on ${coverage.worksheetsUsed}/${coverage.totalWorksheets} worksheets)`
+          : '';
+        return `${index + 1}. ${item.label}: ${formatNumber(item.value)}${note}`;
+      }).join('\n')
     : `I couldn't find enough matching values to rank ${groupColumn} across worksheets.`;
 
-  return {
-    success: true,
-    source: 'dataset',
-    dataset: null,
-    datasets: datasetNames,
-    operation: 'rank_across_worksheets',
-    column: metricColumn,
-    groupBy: groupColumn,
-    aggregation,
-    direction,
-    results,
-    filters: childPlan.filters,
-    answer,
-    debugPlan: plan,
-  };
+  return attachCrossWorksheetMetricMeaning({
+    result: {
+      success: true,
+      source: 'dataset',
+      dataset: null,
+      datasets: datasetNames,
+      operation: 'rank_across_worksheets',
+      column: metricColumn,
+      groupBy: groupColumn,
+      aggregation,
+      direction,
+      results,
+      filters: childPlan.filters,
+      aggregationPolicy,
+      crossWorksheetDataQuality: {
+        totalWorksheets: datasetNames.length,
+        groupsEvaluated: coverageByGroup.size,
+      },
+      answer,
+      debugPlan: plan,
+    },
+    plan,
+    datasets,
+    schema,
+    question,
+  });
 }
 
 function buildCrossWorksheetGroupedRankingResolution({ datasets, schema, question }) {
@@ -697,6 +862,10 @@ function buildCrossWorksheetGroupedRankingResolution({ datasets, schema, questio
     distributedWorksheetQuery: true,
     crossWorksheetGroupedRanking: true,
     worksheets: datasetNames,
+    aggregationPolicy: {
+      mode: 'available_values',
+      requireCompleteCoverage: false,
+    },
   };
 
   const result = executeCrossWorksheetGroupedPlan({ datasets, schema, plan, question });
@@ -708,7 +877,12 @@ function buildDistributedWorksheetFollowUpResolution({
   schema,
   question,
   previousPlan,
+  previousSemanticPlan = null,
 }) {
+  const semanticExecutable = semanticPlanToExecutable(previousSemanticPlan);
+  previousPlan = previousPlan && typeof previousPlan === 'object'
+    ? previousPlan
+    : semanticExecutable;
   if (!previousPlan || typeof previousPlan !== 'object') return null;
 
   const previousOperation = normalizeText(previousPlan.operation);

@@ -1,0 +1,173 @@
+const assert = require('assert');
+const { buildSchema } = require('./schemaBuilder');
+const {
+  refineStoredMetricOperation,
+  inferMetricMeaning,
+} = require('./metricMeaningEngine');
+const {
+  buildCrossWorksheetGroupedRankingResolution,
+  buildDistributedWorksheetResolution,
+} = require('./multiWorksheetEngine');
+const { evaluateLocalPlanConfidence } = require('./planConfidenceEngine');
+const { buildSemanticPlan, semanticPlanToExecutable } = require('./semanticPlan');
+const { buildSemanticVerifiedAnswer } = require('./responseNarrativeEngine');
+
+const tests = [];
+function test(name, fn) { tests.push({ name, fn }); }
+
+function sampleDatasets() {
+  return {
+    North: [
+      { Province: 'North', Commodity: 'Hog', Unit: 'kg', Month: 'February', Average: '180' },
+      { Province: 'North', Commodity: 'Corn', Unit: 'kg', Month: 'February', Average: '20' },
+    ],
+    South: [
+      { Province: 'South', Commodity: 'Hog', Unit: 'kg', Month: 'February', Average: '220' },
+      { Province: 'South', Commodity: 'Corn', Unit: 'kg', Month: 'February', Average: '' },
+    ],
+    East: [
+      { Province: 'East', Commodity: 'Hog', Unit: 'kg', Month: 'February', Average: '200' },
+      { Province: 'East', Commodity: 'Corn', Unit: 'kg', Month: 'February', Average: '30' },
+    ],
+  };
+}
+
+test('stored Average is a lookup when not explicitly recalculated', () => {
+  const datasets = sampleDatasets();
+  const schema = buildSchema(datasets);
+  const plan = refineStoredMetricOperation({
+    plan: { route:'dataset', dataset:'North', operation:'average', column:'Average', filters:[{column:'Commodity',operator:'equals',value:'Hog'}] },
+    question: 'What is the Average price of Hog?',
+    schema,
+  });
+  assert.equal(plan.operation, 'lookup');
+  assert.equal(plan.metricSource, 'stored_column');
+});
+
+test('average of Average remains an aggregate', () => {
+  const datasets = sampleDatasets();
+  const schema = buildSchema(datasets);
+  const plan = refineStoredMetricOperation({
+    plan: { route:'dataset', dataset:'North', operation:'average', column:'Average' },
+    question: 'What is the average of the Average values?',
+    schema,
+  });
+  assert.equal(plan.operation, 'average');
+  assert.equal(plan.metricCalculation, 'average');
+});
+
+test('price uses row unit as denominator, not as metric unit', () => {
+  const datasets = sampleDatasets();
+  const schema = buildSchema(datasets);
+  const meaning = inferMetricMeaning({
+    plan: { dataset:'North', column:'Average', filters:[{column:'Commodity',operator:'equals',value:'Hog'}] },
+    question: 'What is the average price of Hog?',
+    datasets,
+    schema,
+    reportContext: { title:'Farmgate Price Monitoring' },
+  });
+  assert.equal(meaning.type, 'price');
+  assert.equal(meaning.denominatorUnit, 'kg');
+  assert.equal(meaning.displayUnit, 'per kg');
+});
+
+test('cross-worksheet grouped ranking ranks entities, not worksheets', () => {
+  const datasets = sampleDatasets();
+  const schema = buildSchema(datasets);
+  const resolution = buildCrossWorksheetGroupedRankingResolution({
+    datasets,
+    schema,
+    question: 'Which Commodity had the highest average Average across all Province in February?',
+  });
+  assert.ok(resolution);
+  assert.equal(resolution.plan.operation, 'rank_across_worksheets');
+  assert.equal(resolution.result.results[0].label, 'Hog');
+  assert.equal(resolution.result.results[0].value, 200);
+  assert.equal(resolution.result.results[0].coverage.worksheetsUsed, 3);
+});
+
+test('cross-worksheet coverage reports missing worksheets', () => {
+  const datasets = sampleDatasets();
+  const schema = buildSchema(datasets);
+  const resolution = buildCrossWorksheetGroupedRankingResolution({
+    datasets,
+    schema,
+    question: 'Which Commodity had the lowest average Average across all Province in February?',
+  });
+  assert.ok(resolution);
+  const corn = resolution.result.results.find((item) => item.label === 'Corn') || resolution.result.results[0];
+  if (corn.label === 'Corn') {
+    assert.equal(corn.coverage.worksheetsUsed, 2);
+    assert.ok(corn.coverage.missingWorksheets.includes('South'));
+  }
+  assert.equal(resolution.result.aggregationPolicy.mode, 'available_values');
+});
+
+test('explicit single worksheet does not expand to distributed query', () => {
+  const datasets = sampleDatasets();
+  const schema = buildSchema(datasets);
+  const resolution = buildDistributedWorksheetResolution({
+    datasets,
+    schema,
+    question: 'What are the top 5 Commodity by Average in North in February?',
+  });
+  assert.equal(resolution, null);
+});
+
+test('local confidence exposes unresolved critical fields', () => {
+  const datasets = sampleDatasets();
+  const schema = buildSchema(datasets);
+  const confidence = evaluateLocalPlanConfidence({
+    plan: { route:'dataset', dataset:'Missing', operation:'average', column:'Nope', filters:[] },
+    datasets,
+    schema,
+  });
+  assert.equal(confidence.critical, true);
+  assert.ok(confidence.score < 0.55);
+});
+
+test('semantic conversation plan round-trips multi-sheet meaning', () => {
+  const semantic = buildSemanticPlan({
+    plan: {
+      route:'dataset', dataset:null, operation:'rank_worksheets', column:'Average', groupBy:'Province', aggregation:'average', direction:'desc', limit:1, filters:[]
+    },
+    result: { datasets:['North','South','East'] },
+  });
+  assert.equal(semantic.scope, 'multi_worksheet');
+  const executable = semanticPlanToExecutable(semantic);
+  assert.equal(executable.operation, 'rank_worksheets');
+  assert.equal(executable.groupBy, 'Province');
+});
+
+test('semantic response avoids awkward average Average wording', () => {
+  const answer = buildSemanticVerifiedAnswer({
+    question:'Which Commodity had the highest average price?',
+    plan:{ operation:'rank_across_worksheets', column:'Average', metricMeaning:'price', groupBy:'Commodity', aggregation:'average', direction:'desc', displayUnit:'per kg' },
+    result:{ success:true, operation:'rank_across_worksheets', column:'Average', groupBy:'Commodity', aggregation:'average', direction:'desc', metricMeaning:'price', displayUnit:'per kg', results:[{label:'Hog',value:192.26,coverage:{worksheetsUsed:4,totalWorksheets:4}}] },
+  });
+  assert.ok(/Hog had the highest average price/i.test(answer));
+  assert.ok(/192\.26 per kg/.test(answer));
+  assert.ok(!/average Average/i.test(answer));
+});
+
+async function run() {
+  let passed = 0;
+  const failures = [];
+  for (const item of tests) {
+    try {
+      await item.fn();
+      passed += 1;
+      console.log(`✓ ${item.name}`);
+    } catch (error) {
+      failures.push({ name:item.name, error });
+      console.error(`✗ ${item.name}`);
+      console.error(`  ${error?.stack || error}`);
+    }
+  }
+  console.log(`\n${passed}/${tests.length} regression tests passed.`);
+  if (failures.length) process.exitCode = 1;
+}
+
+if (require.main === module) run();
+
+module.exports = { run };

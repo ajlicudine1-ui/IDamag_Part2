@@ -10,6 +10,10 @@ const {
   formatNumber,
 } = require("./utils");
 
+const {
+  buildSemanticVerifiedAnswer,
+} = require("./responseNarrativeEngine");
+
 
 /**
  * ============================================================
@@ -66,7 +70,7 @@ function decorateVerifiedAnswer(answer, plan, result) {
   let text = String(answer || "").trim();
   if (!text) return text;
 
-  const unit = result?.unit || plan?.unit || null;
+  const unit = result?.displayUnit || plan?.displayUnit || result?.unit || plan?.unit || null;
   const scalarValue = result?.value;
   if (unit && scalarValue !== null && scalarValue !== undefined) {
     const formatted = formatNumber(scalarValue);
@@ -88,8 +92,9 @@ function buildLocalNaturalAnswer({
   plan,
   result,
 }) {
+  const semanticAnswer = buildSemanticVerifiedAnswer({ question, plan, result });
   return decorateVerifiedAnswer(
-    formatVerifiedResultAnswer({ question, plan, result }),
+    semanticAnswer || formatVerifiedResultAnswer({ question, plan, result }),
     plan,
     result
   );
@@ -168,7 +173,19 @@ function buildCompactVerifiedPayload({
       result?.winner,
 
     unit:
-      result?.unit || plan?.unit || undefined,
+      result?.displayUnit || plan?.displayUnit || result?.unit || plan?.unit || undefined,
+
+    metricMeaning:
+      result?.metricMeaning || plan?.metricMeaning || undefined,
+
+    metricSource:
+      plan?.metricSource || undefined,
+
+    coverage:
+      result?.coverage || undefined,
+
+    aggregationPolicy:
+      result?.aggregationPolicy || undefined,
 
     dataQuality:
       result?.dataQuality || undefined,
