@@ -14,6 +14,10 @@ const {
   buildSemanticVerifiedAnswer,
 } = require("./responseNarrativeEngine");
 
+const {
+  finalizeUserFacingGrammar,
+} = require("./responseGrammarEngine");
+
 
 /**
  * ============================================================
@@ -93,10 +97,12 @@ function buildLocalNaturalAnswer({
   result,
 }) {
   const semanticAnswer = buildSemanticVerifiedAnswer({ question, plan, result });
-  return decorateVerifiedAnswer(
-    semanticAnswer || formatVerifiedResultAnswer({ question, plan, result }),
-    plan,
-    result
+  return finalizeUserFacingGrammar(
+    decorateVerifiedAnswer(
+      semanticAnswer || formatVerifiedResultAnswer({ question, plan, result }),
+      plan,
+      result
+    )
   );
 }
 
@@ -293,15 +299,17 @@ async function generateNaturalResponse({
     });
 
   const fallback =
-    decorateVerifiedAnswer(
-      semanticAnswer ||
-        formatVerifiedResultAnswer({
-          question,
-          plan,
-          result,
-        }),
-      plan,
-      result
+    finalizeUserFacingGrammar(
+      decorateVerifiedAnswer(
+        semanticAnswer ||
+          formatVerifiedResultAnswer({
+            question,
+            plan,
+            result,
+          }),
+        plan,
+        result
+      )
     );
 
   if (
@@ -412,7 +420,9 @@ The LOCAL ANSWER is already fact-safe. Prefer making only small stylistic improv
       return fallback;
     }
 
-    return naturalAnswer;
+    return finalizeUserFacingGrammar(
+      naturalAnswer
+    );
   } catch (error) {
     console.error(
       "Natural response generation failed:",

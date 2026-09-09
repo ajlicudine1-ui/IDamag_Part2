@@ -115,22 +115,93 @@ function thirdPersonSingularVerb(baseVerb) {
   return `${verb}s`;
 }
 
-function extractQuestionVerb(question) {
-  const q = String(question || '').trim();
+function deprogressiveVerb(value) {
+  const raw = normalizeText(value);
+  if (!raw) return null;
 
+  // Common English spelling repairs for -ing forms.
+  if (/ying$/.test(raw) && raw.length > 4) return `${raw.slice(0, -4)}ie`;
+  if (/([bcdfghjklmnpqrstvwxyz])\1ing$/.test(raw)) return raw.slice(0, -4);
+  if (/ing$/.test(raw) && raw.length > 4) {
+    const stem = raw.slice(0, -3);
+    // using -> use, providing -> provide, making -> make
+    if (/(us|provid|mak|tak|giv|receiv|manag|creat|writ|driv|serv)$/.test(stem)) {
+      return `${stem}e`;
+    }
+    return stem;
+  }
+  return raw;
+}
+
+function extractQuestionRelation(question) {
+  const q = String(question || '').replace(/\s+/g, ' ').trim();
+  if (!q) return { type: 'neutral' };
+
+  // Standard auxiliary action:
   // "What commodities do they produce?"
-  let match = q.match(/\bdo\s+(?:they|these|those|the\s+\w+(?:\s+\w+)*)\s+([a-z][a-z-]*)\b/i);
-  if (match) return normalizeText(match[1]);
+  // "Which services does the office provide?"
+  let match = q.match(/\b(?:do|does|did)\s+(?:they|these|those|them|the\s+.+?)\s+([a-z][a-z-]*)\b/i);
+  if (match?.[1]) {
+    return { type: 'verb', verb: normalizeText(match[1]) };
+  }
 
-  // "What services are they using?" -> use "use"
-  match = q.match(/\b(?:are|were)\s+they\s+([a-z][a-z-]*?)(?:ing)?\b/i);
-  if (match) return normalizeText(match[1]);
+  // Copular/prepositional relation:
+  // "What municipalities are they from?"
+  // "Which office are they under?"
+  // "What category are they in?"
+  match = q.match(/\b(?:am|is|are|was|were)\s+(?:they|these|those|them|it|he|she)\s+(from|in|at|under|within|inside|on|of|for|with|without|near|around|through|across|over|below|above|between|among|into|onto|to)\b/i);
+  if (match?.[1]) {
+    return {
+      type: 'copular_preposition',
+      preposition: normalizeText(match[1]),
+    };
+  }
 
-  return 'have';
+  // Direct action paraphrase:
+  // "Tell me what they produce."
+  // "Show what those groups provide."
+  match = q.match(/\b(?:they|these|those)\s+([a-z][a-z-]*)\b/i);
+  if (match?.[1]) {
+    const candidate = normalizeText(match[1]);
+    const auxiliaries = /^(?:am|is|are|was|were|be|been|being|do|does|did|have|has|had|can|could|may|might|must|shall|should|will|would)$/;
+    if (candidate && !auxiliaries.test(candidate)) {
+      return { type: 'verb', verb: candidate };
+    }
+  }
+
+  // Progressive action:
+  // "What systems are they using?"
+  match = q.match(/\b(?:am|is|are|was|were)\s+(?:they|these|those|them|it|he|she)\s+([a-z][a-z-]*ing)\b/i);
+  if (match?.[1]) {
+    const verb = deprogressiveVerb(match[1]);
+    if (verb) return { type: 'verb', verb };
+  }
+
+  // Passive relation. Do not guess a base verb from an arbitrary participle.
+  // A neutral relation is safer and remains grammatically correct.
+  if (/\b(?:is|are|was|were|be|been|being)\s+[a-z][a-z-]*(?:ed|en)\s+by\b/i.test(q)) {
+    return { type: 'neutral' };
+  }
+
+  return { type: 'neutral' };
+}
+
+function relationPhrase(relation, { singular = false } = {}) {
+  if (relation?.type === 'verb' && relation.verb) {
+    return singular
+      ? thirdPersonSingularVerb(relation.verb)
+      : relation.verb;
+  }
+
+  if (relation?.type === 'copular_preposition' && relation.preposition) {
+    return `${singular ? 'is' : 'are'} ${relation.preposition}`;
+  }
+
+  return singular ? 'has' : 'have';
 }
 
 function questionUsesThey(question) {
-  return /\bthey\b/i.test(String(question || ''));
+  return /\b(?:they|these|those)\b/i.test(String(question || ''));
 }
 
 function explicitlyRequestsGrouping(question, labelColumn) {
@@ -208,9 +279,13 @@ function buildLookupPairNarrative({ question, plan, result } = {}) {
 
   if (!distinctValues.length) return null;
 
-  const verb = extractQuestionVerb(question);
-  const subject = questionUsesThey(question) ? 'They' : 'The records';
-  const firstSentence = `${subject} ${verb} ${joinNaturalList(distinctValues)}.`;
+  const relation = extractQuestionRelation(question);
+  const subject = questionUsesThey(question) ? 'They' : 'The matching entries';
+  const valueName = humanizeFieldName(valueColumn).toLowerCase() || 'values';
+
+  const firstSentence = relation.type === 'neutral'
+    ? `The ${valueName} include ${joinNaturalList(distinctValues)}.`
+    : `${subject} ${relationPhrase(relation, { singular: false })} ${joinNaturalList(distinctValues)}.`;
 
   // Merge labels that share the same value set so the explanation is concise.
   const clusters = new Map();
@@ -226,8 +301,11 @@ function buildLookupPairNarrative({ question, plan, result } = {}) {
 
   const clauses = clusterEntries.map((entry) => {
     const labels = joinNaturalList(entry.labels);
-    const clauseVerb = entry.labels.length === 1 ? thirdPersonSingularVerb(verb) : verb;
-    return `${labels} ${clauseVerb} ${joinNaturalList(entry.values)}`;
+    if (relation.type === 'neutral') {
+      return `${labels} ${entry.labels.length === 1 ? 'is' : 'are'} associated with ${joinNaturalList(entry.values)}`;
+    }
+    const phrase = relationPhrase(relation, { singular: entry.labels.length === 1 });
+    return `${labels} ${phrase} ${joinNaturalList(entry.values)}`;
   });
 
   let detailSentence = '';

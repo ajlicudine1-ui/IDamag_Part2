@@ -108,6 +108,10 @@ const {
 } = require("./responseNarrativeEngine");
 
 const {
+  finalizeUserFacingGrammar,
+} = require("./responseGrammarEngine");
+
+const {
   normalizeExplicitColumnText,
   compactExplicitColumnText,
   expandExplicitColumnWords,
@@ -2270,7 +2274,9 @@ function formatUserFacingAnswer(answer) {
   // Avoid raw Markdown markers in the chatbot bubble.
   output = output.replace(/\*\*/g, "");
 
-  return output;
+  return finalizeUserFacingGrammar(
+    output
+  );
 }
 
 

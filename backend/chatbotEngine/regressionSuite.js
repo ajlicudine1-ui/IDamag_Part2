@@ -364,6 +364,80 @@ test('paired lookup semantic answer is protected from LLM restructuring', () => 
   assert.strictEqual(preserve, true);
 });
 
+
+
+test('direct-action paraphrase keeps the requested action verb', () => {
+  const answer = buildSemanticVerifiedAnswer({
+    question: 'Tell me what they produce.',
+    plan: { operation:'lookup', column:'Products', labelColumn:'Organization' },
+    result: {
+      success:true,
+      operation:'lookup',
+      column:'Products',
+      labelColumn:'Organization',
+      results:[
+        { Organization:'Org A', Products:'rice, corn' },
+        { Organization:'Org B', Products:'rice, vegetables' },
+      ],
+    },
+  });
+
+  assert(answer.startsWith('They produce rice, corn, and vegetables.'));
+  assert(answer.includes('Org A produces rice and corn'));
+  assert(answer.includes('Org B produces rice and vegetables'));
+  assert(!answer.includes('They have'));
+});
+
+test('copular preposition lookup uses correct is/are grammar', () => {
+  const answer = buildSemanticVerifiedAnswer({
+    question: 'What locations are they from?',
+    plan: { operation:'lookup', column:'Location', labelColumn:'Organization' },
+    result: {
+      success:true,
+      operation:'lookup',
+      column:'Location',
+      labelColumn:'Organization',
+      results:[
+        { Organization:'Org A', Location:'North' },
+        { Organization:'Org B', Location:'South' },
+      ],
+    },
+  });
+
+  assert(answer.startsWith('They are from North and South.'));
+  assert(answer.includes('Org A is from North'));
+  assert(answer.includes('Org B is from South'));
+  assert(!answer.includes('They from '));
+  assert(!answer.includes('froms '));
+});
+
+test('unknown relationship wording falls back to a grammatical neutral relation', () => {
+  const answer = buildSemanticVerifiedAnswer({
+    question: 'What are their linked values?',
+    plan: { operation:'lookup', column:'Values', labelColumn:'Organization' },
+    result: {
+      success:true,
+      operation:'lookup',
+      column:'Values',
+      labelColumn:'Organization',
+      results:[
+        { Organization:'Org A', Values:'A, B' },
+        { Organization:'Org B', Values:'B, C' },
+      ],
+    },
+  });
+
+  assert(answer.startsWith('The values include A, B, and C.'));
+  assert(answer.includes('Org A is associated with A and B'));
+  assert(answer.includes('Org B is associated with B and C'));
+});
+
+test('grammar finalizer fixes safe spacing and duplicate-function-word artifacts', () => {
+  const { finalizeUserFacingGrammar } = require('./responseGrammarEngine');
+  const answer = finalizeUserFacingGrammar('The  the result is  correct ,and verified!!');
+  assert.equal(answer, 'The result is correct, and verified!');
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
