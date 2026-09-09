@@ -2274,43 +2274,155 @@ function formatUserFacingAnswer(answer) {
 }
 
 
-function shouldUseSemanticReferentialNarrative(question) {
-  const text =
+function normalizeSemanticReferentialQuestion(question) {
+  const original =
     String(
       question || ""
     )
       .replace(/\s+/g, " ")
       .trim();
 
-  if (!text) {
-    return false;
+  if (!original) {
+    return null;
+  }
+
+  const text =
+    normalizeText(
+      original
+    );
+
+  /**
+   * Copular/prepositional relations are intentionally NOT rewritten.
+   *
+   * Examples:
+   *   "What municipalities are they from?"
+   *   "Which office are they under?"
+   *   "What category are they in?"
+   *
+   * These are relationships, but "from", "under", and "in" are not action
+   * verbs. Keeping them on the verified pair formatter avoids bad grammar
+   * such as "They from ..." or "froms ...".
+   */
+  if (
+    /\b(?:are|were|is|was)\s+(?:they|these|those|them|it|he|she)\s+(?:from|in|at|under|within|inside|on|of|for|with|without|near|around|through|across|over|below|above|between|among|into|onto|to)\b/i.test(
+      original
+    )
+  ) {
+    return null;
   }
 
   /**
-   * Use the semantic/value-first formatter only when the CURRENT question
-   * contains a clear action relation.
+   * 1. Standard auxiliary action.
+   *
+   * Covers:
+   *   "What products do they sell?"
+   *   "Which services do those groups provide?"
+   *   "What projects did these teams manage?"
+   *
+   * The subject phrase may vary. We canonicalize only the grammatical shell;
+   * the actual requested field, label field, filters, and result values still
+   * come from the live verified plan/result.
+   */
+  let match =
+    original.match(
+      /\b(?:do|does|did)\s+(.+?)\s+([a-z][a-z-]*)\s*[?.!]*$/i
+    );
+
+  if (
+    match?.[2]
+  ) {
+    const verb =
+      normalizeText(
+        match[2]
+      );
+
+    if (
+      verb &&
+      !/^(?:be|am|is|are|was|were|been|being|do|does|did)$/.test(
+        verb
+      )
+    ) {
+      return `What values do they ${verb}?`;
+    }
+  }
+
+  /**
+   * 2. Direct/pronoun action without "do".
+   *
+   * Covers paraphrases such as:
+   *   "Tell me what they produce."
+   *   "What are the products they sell?"
+   *   "Show the activities they conduct."
+   */
+  match =
+    original.match(
+      /\b(?:they|these|those)\s+([a-z][a-z-]*)\b/i
+    );
+
+  if (
+    match?.[1]
+  ) {
+    const verb =
+      normalizeText(
+        match[1]
+      );
+
+    const auxiliaries =
+      /^(?:am|is|are|was|were|be|been|being|do|does|did|have|has|had|can|could|may|might|must|shall|should|will|would)$/;
+
+    if (
+      verb &&
+      !auxiliaries.test(
+        verb
+      )
+    ) {
+      return `What values do they ${verb}?`;
+    }
+  }
+
+  /**
+   * 3. Progressive action.
+   *
+   * Keep the user's wording because responseNarrativeEngine already handles
+   * action-progressive questions. This expands routing to paraphrases such as:
+   *   "What products are they selling?"
+   *   "Which systems are they using?"
+   */
+  if (
+    /\b(?:am|is|are|was|were)\s+(?:they|these|those|them|it|he|she)\s+[a-z][a-z-]*ing\b/i.test(
+      original
+    )
+  ) {
+    return original;
+  }
+
+  /**
+   * 4. Passive paraphrase.
    *
    * Examples:
-   *   "What commodities do they produce?"
-   *   "What services do they provide?"
-   *   "What crops do they grow?"
-   *   "What systems are they using?"
+   *   "What products are produced by them?"
+   *   "Which services were provided by those groups?"
    *
-   * Do NOT force the semantic formatter for copular/prepositional relations
-   * such as:
-   *   "What municipalities are they from?"
-   *   "Which office are they under?"
-   *
-   * Those keep the older verified pair formatter.
-   *
-   * This is generic and does not name any dataset, worksheet, field, or value.
+   * The deterministic formatter may not safely recover every English base
+   * verb from an arbitrary past participle. Instead of inventing a malformed
+   * verb, route the verified relation through the neutral "have" wording.
+   * This preserves correct data and natural grammar without domain hardcoding.
    */
-  return (
-    /\b(?:do|does|did)\s+(?:they|these|those|them)\s+[a-z][a-z-]*\b/i.test(
-      text
-    ) ||
-    /\b(?:are|were|is|was)\s+(?:they|these|those|it)\s+[a-z][a-z-]*ing\b/i.test(
-      text
+  if (
+    /\b(?:is|are|was|were|be|been|being)\s+[a-z][a-z-]*(?:ed|en)\s+by\s+(?:them|these|those)\b/i.test(
+      original
+    )
+  ) {
+    return "What values do they have?";
+  }
+
+  return null;
+}
+
+function shouldUseSemanticReferentialNarrative(question) {
+  return Boolean(
+    normalizeSemanticReferentialQuestion(
+      question
     )
   );
 }
@@ -4852,6 +4964,9 @@ async function answerQuestion(
       )
         ? buildSemanticVerifiedAnswer({
             question:
+              normalizeSemanticReferentialQuestion(
+                cleanQuestion
+              ) ||
               cleanQuestion,
             plan:
               explicitReferentialFieldPlan,
