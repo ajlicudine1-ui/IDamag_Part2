@@ -2164,6 +2164,111 @@ test('single-result filter continuation still returns the requested entity list'
   assert(!/^Phase 1$/i.test(answer.trim()));
 });
 
+
+test('filter-switch intro derives requested entity instead of copying about wording', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer =
+    buildSemanticVerifiedAnswer({
+      question:
+        'what about phase 1?',
+      plan: {
+        operation: 'list',
+        column: 'Name of Association',
+        labelColumn: 'Name of Association',
+        filters: [
+          {
+            column: 'Phase',
+            operator: 'equals',
+            value: 'Phase 1',
+          },
+        ],
+        conversationalFilterSwitch: true,
+      },
+      result: {
+        success: true,
+        operation: 'list',
+        count: 1,
+        results: [
+          'Santiago Sur Agriculture Cooperative',
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    answer,
+    `1 association in Phase 1:
+1. Santiago Sur Agriculture Cooperative`
+  );
+});
+
+test('filter-switch formatting stays consistent for multiple result counts', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer =
+    buildSemanticVerifiedAnswer({
+      question:
+        'what about phase 3?',
+      plan: {
+        operation: 'list',
+        column: 'Name of Association',
+        labelColumn: 'Name of Association',
+        filters: [
+          {
+            column: 'Phase',
+            operator: 'equals',
+            value: 'Phase 3',
+          },
+        ],
+        conversationalFilterSwitch: true,
+      },
+      result: {
+        success: true,
+        operation: 'list',
+        count: 3,
+        results: [
+          'Association A',
+          'Association B',
+          'Association C',
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    answer,
+    `3 associations in Phase 3:
+1. Association A
+2. Association B
+3. Association C`
+  );
+});
+
+test('continuation entity noun is derived generically from common name fields', () => {
+  const {
+    deriveEntityNounFromField,
+  } = require('./responseNarrativeEngine');
+
+  assert.strictEqual(
+    deriveEntityNounFromField(
+      'Name of Association',
+      2
+    ),
+    'Associations'
+  );
+
+  assert.strictEqual(
+    deriveEntityNounFromField(
+      'Employee Name',
+      1
+    ),
+    'Employee'
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
