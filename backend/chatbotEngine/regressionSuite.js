@@ -1126,6 +1126,90 @@ test('ordinary multi-category count remains separate when no unit-like category 
   );
 });
 
+
+test('quantity measure selection excludes contact numbers and chooses Quantity', () => {
+  const {
+    findBestAdditiveMeasureColumn,
+  } = require('./analyticalConversationEngine');
+
+  const rows = [
+    {
+      'Contact Number': 9171111111,
+      Quantity: 25,
+      'Unit of Measurement': 'cuttings',
+      'Intervention Details': 'Napier',
+    },
+    {
+      'Contact Number': 9172222222,
+      Quantity: 30,
+      'Unit of Measurement': 'cuttings',
+      'Intervention Details': 'Napier',
+    },
+  ];
+
+  assert.strictEqual(
+    findBestAdditiveMeasureColumn(rows),
+    'Quantity'
+  );
+});
+
+test('intersected quantity aggregation sums Quantity and not Contact Number', () => {
+  const {
+    buildIntersectedQuantityAggregation,
+  } = require('./analyticalConversationEngine');
+
+  const rows = [
+    {
+      'Contact Number': 9171111111,
+      Quantity: 25,
+      'Unit of Measurement': 'cuttings',
+      'Intervention Details': 'Napier',
+    },
+    {
+      'Contact Number': 9172222222,
+      Quantity: 30,
+      'Unit of Measurement': 'cuttings',
+      'Intervention Details': 'Napier',
+    },
+    {
+      'Contact Number': 9173333333,
+      Quantity: 50,
+      'Unit of Measurement': 'cuttings',
+      'Intervention Details': 'Trichantera',
+    },
+  ];
+
+  const resolution =
+    buildIntersectedQuantityAggregation({
+      datasetName: 'Sheet1',
+      rows,
+      categories: [
+        {
+          column: 'Intervention Details',
+          value: 'Napier',
+        },
+        {
+          column: 'Unit of Measurement',
+          value: 'cuttings',
+        },
+      ],
+    });
+
+  assert(resolution);
+  assert.strictEqual(
+    resolution.plan.column,
+    'Quantity'
+  );
+  assert.strictEqual(
+    resolution.result.value,
+    55
+  );
+  assert.strictEqual(
+    resolution.result.answer,
+    'Napier: 55 cuttings.'
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];

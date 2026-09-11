@@ -5470,10 +5470,56 @@ function isUnitLikeColumnName(columnName) {
   );
 }
 
-function isAdditiveMeasureColumnName(columnName) {
-  return /\b(?:quantity|qty|amount|total|volume|weight|area|value|cost|price|number)\b/i.test(
-    String(
-      columnName || ""
+function scoreAdditiveMeasureColumnName(columnName) {
+  const name =
+    normalizeText(
+      columnName
+    );
+
+  if (!name) {
+    return 0;
+  }
+
+  if (
+    /\b(?:quantity|qty|amount|volume|weight|area|value|cost|price|total)\b/.test(
+      name
+    )
+  ) {
+    return 1;
+  }
+
+  if (
+    /\bnumber\b/.test(
+      name
+    )
+  ) {
+    return 0.2;
+  }
+
+  return 0;
+}
+
+function isIdentifierLikeNumericColumn(columnName) {
+  const name =
+    normalizeText(
+      columnName
+    );
+
+  if (!name) {
+    return false;
+  }
+
+  return (
+    /\b(?:contact|phone|mobile|telephone|tel|gatepass|reference|ref|id|identifier|code|account|serial|tracking|invoice|receipt|birthdate|date|year)\b/.test(
+      name
+    ) ||
+    (
+      /\b(?:number|no)\b/.test(
+        name
+      ) &&
+      !/\b(?:quantity|qty|amount|volume|weight|area|value|cost|price|total)\b/.test(
+        name
+      )
     )
   );
 }
@@ -5502,6 +5548,14 @@ function findBestAdditiveMeasureColumn(rows) {
     )
       .map(
         (column) => {
+          if (
+            isIdentifierLikeNumericColumn(
+              column
+            )
+          ) {
+            return null;
+          }
+
           const values =
             rows
               .map(
@@ -5524,16 +5578,21 @@ function findBestAdditiveMeasureColumn(rows) {
             return null;
           }
 
-          const numericCount =
-            values.filter(
-              (value) =>
-                parseNumber(
-                  value
-                ) !== null
-            ).length;
+          const numericValues =
+            values
+              .map(
+                (value) =>
+                  parseNumber(
+                    value
+                  )
+              )
+              .filter(
+                (value) =>
+                  value !== null
+              );
 
           const numericRatio =
-            numericCount /
+            numericValues.length /
             values.length;
 
           if (
@@ -5543,38 +5602,50 @@ function findBestAdditiveMeasureColumn(rows) {
             return null;
           }
 
+          const nameScore =
+            scoreAdditiveMeasureColumnName(
+              column
+            );
+
+          if (
+            nameScore <
+              0.5
+          ) {
+            return null;
+          }
+
+          const magnitudePenalty =
+            numericValues.length
+              ? numericValues.filter(
+                  (value) =>
+                    Math.abs(
+                      value
+                    ) >=
+                    1e8
+                ).length /
+                numericValues.length
+              : 0;
+
+          const score =
+            nameScore * 0.8 +
+            numericRatio * 0.15 +
+            (1 - magnitudePenalty) * 0.05;
+
           return {
             column,
-            nameScore:
-              isAdditiveMeasureColumnName(
-                column
-              )
-                ? 1
-                : 0,
-            numericRatio,
+            score,
+            nameScore,
           };
         }
       )
       .filter(Boolean)
       .sort(
         (a, b) =>
-          b.nameScore -
-            a.nameScore ||
-          b.numericRatio -
-            a.numericRatio
+          b.score -
+          a.score
       );
 
-  if (
-    !candidates.length ||
-    candidates[0]
-      .nameScore <
-      1
-  ) {
-    return null;
-  }
-
-  return candidates[0]
-    .column;
+  return candidates[0]?.column || null;
 }
 
 function shouldTreatMultiCategoryCountAsQuantityAggregation({
@@ -6065,4 +6136,7 @@ module.exports = {
   buildMultiCategoryCountResolution,
   shouldTreatMultiCategoryCountAsQuantityAggregation,
   buildIntersectedQuantityAggregation,
+  scoreAdditiveMeasureColumnName,
+  isIdentifierLikeNumericColumn,
+  findBestAdditiveMeasureColumn,
 };
