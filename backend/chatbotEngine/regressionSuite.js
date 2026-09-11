@@ -703,6 +703,101 @@ test('verified single-field lists remove repeated values', () => {
   assert(source.includes('const distinctItems'));
 });
 
+
+test('action-verb ranking resolves categorical target and numeric metric correctly', () => {
+  const {
+    normalizePlannerPlan,
+  } = require('./plannerNormalizer');
+
+  const datasets = {
+    Sheet1: [
+      { Barangay: 'Alpha', Quantity: 20, Unit: 'cuttings' },
+      { Barangay: 'Alpha', Quantity: 30, Unit: 'cuttings' },
+      { Barangay: 'Beta', Quantity: 40, Unit: 'cuttings' },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: [
+      { name: 'Barangay', type: 'text' },
+      { name: 'Quantity', type: 'number' },
+      { name: 'Unit', type: 'text' },
+    ],
+  }];
+
+  const plan = normalizePlannerPlan({
+    datasets,
+    schema,
+    question: 'Which barangay received the largest quantity of cuttings?',
+    plan: {
+      route: 'dataset',
+      dataset: 'Sheet1',
+      operation: 'rank_rows',
+      column: 'Barangay',
+      labelColumn: 'Barangay',
+      aggregation: null,
+      direction: 'desc',
+      filters: [
+        { column: 'Unit', operator: 'equals', value: 'cuttings' },
+      ],
+      selectColumns: ['Barangay', 'Quantity'],
+      limit: 1,
+    },
+  });
+
+  assert.strictEqual(plan.column, 'Quantity');
+  assert.strictEqual(plan.labelColumn, 'Barangay');
+  assert.strictEqual(plan.operation, 'rank_groups');
+  assert.strictEqual(plan.groupBy, 'Barangay');
+  assert.strictEqual(plan.aggregation, 'sum');
+  assert.strictEqual(plan.direction, 'desc');
+});
+
+test('copular ranking without additive action keeps ordinary row-ranking semantics', () => {
+  const {
+    normalizePlannerPlan,
+  } = require('./plannerNormalizer');
+
+  const datasets = {
+    Sheet1: [
+      { Product: 'A', Price: 10 },
+      { Product: 'B', Price: 20 },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: [
+      { name: 'Product', type: 'text' },
+      { name: 'Price', type: 'number' },
+    ],
+  }];
+
+  const plan = normalizePlannerPlan({
+    datasets,
+    schema,
+    question: 'Which product has the highest price?',
+    plan: {
+      route: 'dataset',
+      dataset: 'Sheet1',
+      operation: 'rank_rows',
+      column: 'Product',
+      labelColumn: 'Product',
+      aggregation: null,
+      direction: 'desc',
+      filters: [],
+      selectColumns: ['Product', 'Price'],
+      limit: 1,
+    },
+  });
+
+  assert.strictEqual(plan.column, 'Price');
+  assert.strictEqual(plan.labelColumn, 'Product');
+  assert.strictEqual(plan.operation, 'rank_rows');
+  assert.strictEqual(plan.aggregation, null);
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
