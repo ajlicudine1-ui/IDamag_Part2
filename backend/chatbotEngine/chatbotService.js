@@ -1266,7 +1266,26 @@ function buildVerifiedListAnswer({
     );
   }
 
-  return items
+  /**
+   * A list answer represents distinct values unless the user explicitly asks
+   * for row-by-row records. Preserve first-seen display casing while removing
+   * duplicate values case-insensitively.
+   */
+  const distinctItems =
+    [
+      ...new Map(
+        items.map(
+          (value) => [
+            normalizeText(
+              value
+            ),
+            value,
+          ]
+        )
+      ).values(),
+    ];
+
+  return distinctItems
     .map(
       (value, index) =>
         `${index + 1}. ${value}`
@@ -1274,6 +1293,134 @@ function buildVerifiedListAnswer({
     .join(
       "\n"
     );
+}
+
+
+function normalizeDirectSingleFieldResult({
+  plan,
+  result,
+}) {
+  if (
+    !plan ||
+    !result ||
+    !plan.column ||
+    !Array.isArray(
+      result.results
+    )
+  ) {
+    return result;
+  }
+
+  const selectedColumns =
+    Array.isArray(
+      plan.selectColumns
+    )
+      ? plan.selectColumns
+          .filter(Boolean)
+      : [];
+
+  const isSingleField =
+    selectedColumns.length <=
+      1 &&
+    (
+      !selectedColumns.length ||
+      normalizeText(
+        selectedColumns[0]
+      ) ===
+        normalizeText(
+          plan.column
+        )
+    );
+
+  if (
+    !isSingleField
+  ) {
+    return result;
+  }
+
+  const distinctMap =
+    new Map();
+
+  for (
+    const item of
+    result.results
+  ) {
+    const value =
+      typeof item ===
+        "object" &&
+      item !== null
+        ? item[
+            plan.column
+          ]
+        : item;
+
+    if (
+      value === null ||
+      value === undefined ||
+      String(
+        value
+      ).trim() ===
+        ""
+    ) {
+      continue;
+    }
+
+    const displayValue =
+      String(
+        value
+      ).trim();
+
+    const key =
+      normalizeText(
+        displayValue
+      );
+
+    if (
+      !distinctMap.has(
+        key
+      )
+    ) {
+      distinctMap.set(
+        key,
+        typeof item ===
+          "object" &&
+        item !== null
+          ? {
+              ...item,
+              [
+                plan.column
+              ]:
+                displayValue,
+            }
+          : displayValue
+      );
+    }
+  }
+
+  const distinctResults =
+    [
+      ...distinctMap.values(),
+    ];
+
+  if (
+    distinctResults.length ===
+      result.results.length
+  ) {
+    return result;
+  }
+
+  return {
+    ...result,
+    results:
+      distinctResults,
+    count:
+      distinctResults.length,
+    distinctResultCount:
+      distinctResults.length,
+    duplicateRowsRemoved:
+      result.results.length -
+      distinctResults.length,
+  };
 }
 
 
@@ -5181,10 +5328,23 @@ async function answerQuestion(
       );
     }
 
-    const directFilteredFieldResult =
+    const rawDirectFilteredFieldResult =
       await executeResolvedPlan(
         directFilteredFieldPlan
       );
+
+    /**
+     * Direct single-field lookups are value-set questions, not row dumps.
+     * Collapse duplicate rows before storing the conversational result and
+     * before formatting the answer.
+     */
+    const directFilteredFieldResult =
+      normalizeDirectSingleFieldResult({
+        plan:
+          directFilteredFieldPlan,
+        result:
+          rawDirectFilteredFieldResult,
+      });
 
     updateConversation(
       sessionId,
@@ -5198,23 +5358,20 @@ async function answerQuestion(
       }
     );
 
+    const directSingleFieldAnswer =
+      buildVerifiedListAnswer({
+        result:
+          directFilteredFieldResult,
+        subjectColumn:
+          directFilteredFieldPlan
+            .column,
+      });
+
     return {
       ...directFilteredFieldResult,
 
       answer:
-        directFilteredFieldPlan
-          .operation ===
-          "list"
-          ? buildVerifiedListAnswer({
-              result:
-                directFilteredFieldResult,
-
-              subjectColumn:
-                directFilteredFieldPlan
-                  .column,
-            })
-          : directFilteredFieldResult
-              .answer,
+        directSingleFieldAnswer,
 
       plannerSource:
         "conversation-local",

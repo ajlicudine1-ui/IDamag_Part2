@@ -688,6 +688,21 @@ test('list introduction avoids copying do-they grammar incorrectly', () => {
   assert(answer.includes('2. corn'));
 });
 
+
+test('verified single-field lists remove repeated values', () => {
+  const fs = require('fs');
+  const path = require('path');
+
+  const source = fs.readFileSync(
+    path.join(__dirname, 'chatbotService.js'),
+    'utf8'
+  );
+
+  assert(source.includes('function normalizeDirectSingleFieldResult'));
+  assert(source.includes('duplicateRowsRemoved'));
+  assert(source.includes('const distinctItems'));
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
