@@ -13,10 +13,6 @@ const {
   resolveLocalRelationPlan,
 } = require("./localRelationResolver");
 
-const {
-  resolveLocalQuantityAggregationPlan,
-} = require("./localAggregationResolver");
-
 const STOP_WORDS = new Set([
   "a","an","and","are","as","at","be","been","being","by","can","could",
   "did","do","does","for","from","had","has","have","how","in","into",
@@ -238,27 +234,6 @@ function resolveStrongLocalSemanticPlan({
   context = null,
 } = {}) {
   if (!isLikelyDataQuestion(question)) return null;
-
-  const aggregationPlan =
-    resolveLocalQuantityAggregationPlan({
-      question,
-      schema,
-      datasets,
-    });
-
-  if (
-    aggregationPlan?.route ===
-      "clarify"
-  ) {
-    return aggregationPlan;
-  }
-
-  if (
-    aggregationPlan?.route ===
-      "dataset"
-  ) {
-    return aggregationPlan;
-  }
 
   const relationPlan =
     resolveLocalRelationPlan({

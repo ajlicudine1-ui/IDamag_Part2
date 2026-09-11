@@ -166,7 +166,7 @@ function inferAssociatedUnitColumn({ schema = [], dataset = null } = {}) {
   const candidates = (datasetSchema.columns || [])
     .map((column) => column?.name)
     .filter(Boolean)
-    .filter((name) => /^(?:unit|uom|unit of measure|unit of measurement|measurement unit)$/i.test(String(name).trim()));
+    .filter((name) => /^(?:unit|uom|unit of measure|measurement unit)$/i.test(String(name).trim()));
   return candidates[0] || null;
 }
 
@@ -200,16 +200,6 @@ function inferMetricMeaning({ plan, question, datasets = {}, schema = [], report
   } else if (/\b(percent|percentage|rate)\b|%/.test(contextText)) {
     type = 'percentage';
     confidence = 0.82;
-  } else if (
-    /\b(?:quantity|qty|volume|weight)\b/.test(
-      normalizeText(column)
-    ) &&
-    /^(?:sum|average|minimum|maximum|median)$/i.test(
-      String(plan?.operation || '')
-    )
-  ) {
-    type = 'quantity';
-    confidence = 0.9;
   } else if (/\b(count|number|members|beneficiaries|employees|farmers|persons|respondents)\b/.test(contextText)) {
     type = 'count';
     confidence = 0.7;
@@ -232,10 +222,6 @@ function inferMetricMeaning({ plan, question, datasets = {}, schema = [], report
   // append "kg" directly to a price value; that changes the metric meaning.
   if (type === 'price' && denominatorUnit) {
     displayUnit = numeratorUnit ? `${numeratorUnit}/${denominatorUnit}` : `per ${denominatorUnit}`;
-  }
-
-  if (type === 'quantity' && denominatorUnit) {
-    displayUnit = denominatorUnit;
   }
 
   return {
