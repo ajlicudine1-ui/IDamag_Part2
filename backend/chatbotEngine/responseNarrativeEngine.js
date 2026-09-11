@@ -612,7 +612,11 @@ function buildNaturalListNarrative({
   if (
     hasExplicitFilter &&
     unique.length <=
-      6
+      6 &&
+    plan?.conversationalFilterSwitch !==
+      true &&
+    plan?.conversationalWorksheetSwitch !==
+      true
   ) {
     const fieldLabel =
       pluralizeDisplayLabel(

@@ -1989,6 +1989,181 @@ test('local planner parity repairs grouped average ranking', () => {
   assert.strictEqual(plan.aggregation, 'average');
 });
 
+
+test('filter-value follow-up wins over same-named schema field', () => {
+  const {
+    shouldPreferExplicitValueFilter,
+  } = require('./followUpContinuityEngine');
+
+  assert.strictEqual(
+    shouldPreferExplicitValueFilter({
+      isFollowUp: true,
+      question: 'what about Phase 3?',
+      explicitValueFilters: [
+        {
+          column: 'Phase',
+          operator: 'equals',
+          value: 'Phase 3',
+        },
+      ],
+    }),
+    true
+  );
+});
+
+test('filter follow-up preserves previous output field instead of filter field', () => {
+  const {
+    chooseContinuitySubjectColumn,
+  } = require('./followUpContinuityEngine');
+
+  assert.strictEqual(
+    chooseContinuitySubjectColumn({
+      previousPlan: {
+        operation: 'list',
+        column: 'Name of Association',
+        labelColumn: 'Name of Association',
+        selectColumns: [
+          'Name of Association',
+        ],
+      },
+      newFilters: [
+        {
+          column: 'Phase',
+          operator: 'equals',
+          value: 'Phase 3',
+        },
+      ],
+    }),
+    'Name of Association'
+  );
+
+  assert.strictEqual(
+    chooseContinuitySubjectColumn({
+      previousPlan: {
+        operation: 'list',
+        column: 'Phase',
+        labelColumn: 'Name of Association',
+        selectColumns: [
+          'Phase',
+        ],
+      },
+      newFilters: [
+        {
+          column: 'Phase',
+          operator: 'equals',
+          value: 'Phase 1',
+        },
+      ],
+    }),
+    'Name of Association'
+  );
+});
+
+test('continuity narrative rewrites previous scope value while keeping subject wording', () => {
+  const {
+    rewriteContinuityQuestionWithFilters,
+  } = require('./followUpContinuityEngine');
+
+  assert.strictEqual(
+    rewriteContinuityQuestionWithFilters({
+      subjectQuestion:
+        'what are the association in phase 2?',
+      previousFilters: [
+        {
+          column: 'Phase',
+          operator: 'equals',
+          value: 'Phase 2',
+        },
+      ],
+      newFilters: [
+        {
+          column: 'Phase',
+          operator: 'equals',
+          value: 'Phase 3',
+        },
+      ],
+      fallbackQuestion:
+        'what about phase 3?',
+    }),
+    'what are the association in Phase 3?'
+  );
+});
+
+test('conversational filter-switch list keeps numbered format for small result sets', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer =
+    buildSemanticVerifiedAnswer({
+      question:
+        'what are the association in Phase 3?',
+      plan: {
+        operation: 'list',
+        column: 'Name of Association',
+        filters: [
+          {
+            column: 'Phase',
+            operator: 'equals',
+            value: 'Phase 3',
+          },
+        ],
+        conversationalFilterSwitch: true,
+      },
+      result: {
+        success: true,
+        operation: 'list',
+        count: 3,
+        results: [
+          'Association A',
+          'Association B',
+          'Association C',
+        ],
+      },
+    });
+
+  assert(answer);
+  assert(answer.includes('1. Association A'));
+  assert(answer.includes('2. Association B'));
+  assert(answer.includes('3. Association C'));
+});
+
+test('single-result filter continuation still returns the requested entity list', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer =
+    buildSemanticVerifiedAnswer({
+      question:
+        'what are the association in Phase 1?',
+      plan: {
+        operation: 'list',
+        column: 'Name of Association',
+        filters: [
+          {
+            column: 'Phase',
+            operator: 'equals',
+            value: 'Phase 1',
+          },
+        ],
+        conversationalFilterSwitch: true,
+      },
+      result: {
+        success: true,
+        operation: 'list',
+        count: 1,
+        results: [
+          'Association A',
+        ],
+      },
+    });
+
+  assert(answer);
+  assert(answer.includes('1. Association A'));
+  assert(!/^Phase 1$/i.test(answer.trim()));
+});
+
 async function run() {
   let passed = 0;
   const failures = [];

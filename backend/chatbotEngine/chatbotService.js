@@ -112,6 +112,12 @@ const {
 } = require("./responseGrammarEngine");
 
 const {
+  chooseContinuitySubjectColumn,
+  rewriteContinuityQuestionWithFilters,
+  shouldPreferExplicitValueFilter,
+} = require("./followUpContinuityEngine");
+
+const {
   normalizeExplicitColumnText,
   compactExplicitColumnText,
   expandExplicitColumnWords,
@@ -5549,6 +5555,27 @@ async function answerQuestion(
    * handler later in the pipeline should switch the metric while
    * preserving the previous operation.
    */
+  const sameQueryCandidateRows =
+    conversationContext
+      ?.lastDataset &&
+    Array.isArray(
+      datasets?.[
+        conversationContext.lastDataset
+      ]
+    )
+      ? datasets[
+          conversationContext.lastDataset
+        ]
+      : [];
+
+  const sameQueryExplicitValueFilters =
+    sameQueryCandidateRows.length
+      ? inferCoherentFilters(
+          sameQueryCandidateRows,
+          cleanQuestion
+        )
+      : [];
+
   const sameQueryMetricColumn =
     findFollowUpMetricColumn({
       schema,
@@ -5560,6 +5587,17 @@ async function answerQuestion(
         null,
     });
 
+  const preferExplicitValueFilter =
+    shouldPreferExplicitValueFilter({
+      isFollowUp:
+        conversationContext
+          .isFollowUp,
+      question:
+        cleanQuestion,
+      explicitValueFilters:
+        sameQueryExplicitValueFilters,
+    });
+
   const looksLikeSameQueryNewFilter =
     conversationContext
       .isFollowUp === true &&
@@ -5568,7 +5606,10 @@ async function answerQuestion(
     ) &&
     conversationContext
       .lastDataset &&
-    !sameQueryMetricColumn;
+    (
+      preferExplicitValueFilter ||
+      !sameQueryMetricColumn
+    );
 
   // ========================================================
   // EXPLICIT WORKSHEET SWITCH FOLLOW-UP
@@ -5821,10 +5862,27 @@ async function answerQuestion(
        * phases, etc. without hardcoding their names.
        */
       let newlyMentionedFilters =
-        inferCoherentFilters(
-          previousRows,
-          cleanQuestion
-        );
+        Array.isArray(
+          sameQueryExplicitValueFilters
+        ) &&
+        sameQueryExplicitValueFilters.length
+          ? sameQueryExplicitValueFilters.map(
+              (filter) => ({
+                ...filter,
+                value:
+                  Array.isArray(
+                    filter?.value
+                  )
+                    ? [
+                        ...filter.value,
+                      ]
+                    : filter?.value,
+              })
+            )
+          : inferCoherentFilters(
+              previousRows,
+              cleanQuestion
+            );
 
       if (
         !Array.isArray(
@@ -5874,6 +5932,11 @@ async function answerQuestion(
           {};
 
         const rememberedSubject =
+          chooseContinuitySubjectColumn({
+            previousPlan,
+            newFilters:
+              newlyMentionedFilters,
+          }) ||
           inferRememberedSubjectColumn({
             schema,
 
@@ -5890,18 +5953,6 @@ async function answerQuestion(
               conversationContext,
           }) ||
           previousPlan.column ||
-          (
-            Array.isArray(
-              previousPlan
-                .selectColumns
-            ) &&
-            previousPlan
-              .selectColumns
-              .length === 1
-              ? previousPlan
-                  .selectColumns[0]
-              : null
-          ) ||
           null;
 
         /**
@@ -6095,26 +6146,39 @@ async function answerQuestion(
         if (
           operation === "list"
         ) {
-          const matchingRows =
-            filterRowsBySimpleFilters(
-              previousRows,
-              finalFilters
-            );
+          const narrativeQuestion =
+            rewriteContinuityQuestionWithFilters({
+              subjectQuestion:
+                conversationContext
+                  .lastSubjectQuestion ||
+                conversationContext
+                  .lastQuestion,
 
-          const oneToManyAnswer =
-            buildOneToManyListAnswer({
-              rows:
-                matchingRows,
+              previousFilters:
+                conversationContext
+                  .lastFilters,
 
-              subjectColumn:
-                rememberedSubject,
+              newFilters:
+                newlyMentionedFilters,
 
-              filters:
-                finalFilters,
+              fallbackQuestion:
+                cleanQuestion,
+            });
+
+          const semanticContinuityAnswer =
+            buildSemanticVerifiedAnswer({
+              question:
+                narrativeQuestion,
+
+              plan:
+                sameQueryPlan,
+
+              result:
+                sameQueryResult,
             });
 
           sameQueryAnswer =
-            oneToManyAnswer ||
+            semanticContinuityAnswer ||
             buildVerifiedListAnswer({
               result:
                 sameQueryResult,
