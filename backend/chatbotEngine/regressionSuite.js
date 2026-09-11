@@ -1443,6 +1443,104 @@ test('quantity metric meaning uses Unit of Measurement as display unit', () => {
   );
 });
 
+
+test('local quantity resolver does not silently drop an ungrounded requested object', () => {
+  const {
+    resolveLocalQuantityAggregationPlan,
+  } = require('./localAggregationResolver');
+
+  const datasets = {
+    Sheet1: [
+      {
+        'Intervention Details': 'OPV Vegetable Seeds',
+        'Unit of Measurement': 'kilograms',
+        Quantity: 4.4,
+      },
+      {
+        'Intervention Details': 'Vermicast',
+        'Unit of Measurement': 'kilograms',
+        Quantity: 20,
+      },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: Object.keys(
+      datasets.Sheet1[0]
+    ).map(
+      (name) => ({ name })
+    ),
+  }];
+
+  const plan =
+    resolveLocalQuantityAggregationPlan({
+      question:
+        'How many kilograms of fertilizer were released?',
+      schema,
+      datasets,
+    });
+
+  assert(plan);
+  assert.strictEqual(plan.route, 'clarify');
+  assert.strictEqual(
+    plan.localGroundingFailed,
+    true
+  );
+  assert.strictEqual(
+    plan.localGroundingFailure.phrase,
+    'fertilizer'
+  );
+});
+
+test('strong local resolver preserves grounding failure instead of falling back to a broader count', () => {
+  const {
+    resolveStrongLocalSemanticPlan,
+  } = require('./localSemanticResolver');
+
+  const datasets = {
+    Sheet1: [
+      {
+        'Intervention Details': 'OPV Vegetable Seeds',
+        'Unit of Measurement': 'kilograms',
+        Quantity: 4.4,
+        'Date released': '2026-01-01',
+      },
+      {
+        'Intervention Details': 'Vermicast',
+        'Unit of Measurement': 'kilograms',
+        Quantity: 20,
+        'Date released': '2026-01-02',
+      },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: Object.keys(
+      datasets.Sheet1[0]
+    ).map(
+      (name) => ({ name })
+    ),
+  }];
+
+  const plan =
+    resolveStrongLocalSemanticPlan({
+      question:
+        'How many kilograms of fertilizer were released?',
+      schema,
+      datasets,
+      context: null,
+    });
+
+  assert(plan);
+  assert.strictEqual(plan.route, 'clarify');
+  assert.strictEqual(
+    plan.localGroundingFailed,
+    true
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];

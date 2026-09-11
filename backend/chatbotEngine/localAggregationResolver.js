@@ -325,6 +325,43 @@ function resolveLocalQuantityAggregationPlan({
           })
         : null;
 
+    /**
+     * Grounding rule:
+     *
+     * If the question explicitly names an object/category after "of"
+     * (for example "kilograms of fertilizer"), that object must map to
+     * a live categorical value in the selected worksheet.
+     *
+     * Never silently drop an ungrounded object and broaden the query to
+     * "all kilogram rows" because that changes the user's meaning.
+     */
+    if (
+      objectPhrase &&
+      !objectFilter
+    ) {
+      candidates.push({
+        route: "clarify",
+        question:
+          `I could not find a dataset value matching "${objectPhrase}" in ${datasetName}. Please specify an available intervention or category.`,
+        confidence: 0.35,
+        localSemanticResolved: false,
+        localSemanticAmbiguous: false,
+        localGroundingFailed: true,
+        localGroundingFailure: {
+          phrase:
+            objectPhrase,
+          dataset:
+            datasetName,
+          unitColumn:
+            unitFilter.column,
+          unitValue:
+            unitFilter.value,
+        },
+      });
+
+      continue;
+    }
+
     const filters = [
       unitFilter,
       ...(objectFilter
@@ -415,7 +452,17 @@ function resolveLocalQuantityAggregationPlan({
     return null;
   }
 
-  candidates.sort(
+  const grounded =
+    candidates.filter(
+      (candidate) =>
+        candidate?.route === "dataset"
+    );
+
+  if (!grounded.length) {
+    return candidates[0];
+  }
+
+  grounded.sort(
     (a, b) =>
       Number(
         b.localSemanticConfidence ||
@@ -428,10 +475,10 @@ function resolveLocalQuantityAggregationPlan({
   );
 
   const best =
-    candidates[0];
+    grounded[0];
 
   const second =
-    candidates[1];
+    grounded[1];
 
   if (
     second &&
