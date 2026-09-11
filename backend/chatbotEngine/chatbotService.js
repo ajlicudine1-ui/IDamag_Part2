@@ -207,6 +207,10 @@ const {
   resolveStrongLocalSemanticPlan,
 } = require("./localSemanticResolver");
 
+const {
+  ensureLocalPlannerParity,
+} = require("./localPlannerParityEngine");
+
 
 
 
@@ -7925,6 +7929,25 @@ async function answerQuestion(
       localPlan =
         strongLocalSemanticPlan;
     }
+
+    /**
+     * V7.35 LOCAL/GROQ DATA-PLANNER PARITY
+     *
+     * Mirror Groq's executable DATASET/SCHEMA planning surface locally.
+     * This uses only the live schema and live row values and never calls
+     * an external model.
+     */
+    localPlan =
+      ensureLocalPlannerParity({
+        plan:
+          localPlan,
+        question:
+          cleanQuestion,
+        schema,
+        datasets,
+        context:
+          conversationContext,
+      });
 
     /**
      * If Groq is unavailable and the current turn is an elliptical

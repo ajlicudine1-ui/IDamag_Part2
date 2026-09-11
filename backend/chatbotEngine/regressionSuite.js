@@ -1541,6 +1541,454 @@ test('strong local resolver preserves grounding failure instead of falling back 
   );
 });
 
+
+test('local planner parity exposes the same executable operation surface as Groq', () => {
+  const {
+    DATASET_OPERATIONS,
+  } = require('./localPlannerParityEngine');
+
+  assert.deepStrictEqual(
+    [...DATASET_OPERATIONS].sort(),
+    [
+      'sum',
+      'average',
+      'median',
+      'minimum',
+      'maximum',
+      'row_count',
+      'non_empty_count',
+      'distinct_count',
+      'list',
+      'lookup',
+      'group_count',
+      'group_sum',
+      'group_average',
+      'group_minimum',
+      'group_maximum',
+      'rank_rows',
+      'rank_groups',
+    ].sort()
+  );
+});
+
+test('local planner parity supports schema routes without Groq', () => {
+  const {
+    ensureLocalPlannerParity,
+  } = require('./localPlannerParityEngine');
+
+  const schema = [{
+    name: 'People',
+    columns: [
+      { name: 'Employee Name', type: 'text' },
+      { name: 'Salary', type: 'number' },
+    ],
+  }];
+
+  const plan =
+    ensureLocalPlannerParity({
+      plan: { route: 'general' },
+      question: 'What columns are available?',
+      schema,
+      datasets: {},
+      context: null,
+    });
+
+  assert.strictEqual(plan.route, 'schema');
+  assert.strictEqual(plan.intent, 'columns');
+});
+
+test('local planner parity repairs grouped sum from live schema', () => {
+  const {
+    ensureLocalPlannerParity,
+  } = require('./localPlannerParityEngine');
+
+  const datasets = {
+    Sheet1: [
+      { Province: 'A', Quantity: 10 },
+      { Province: 'A', Quantity: 20 },
+      { Province: 'B', Quantity: 5 },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: [
+      { name: 'Province', type: 'text' },
+      { name: 'Quantity', type: 'number' },
+    ],
+  }];
+
+  const plan =
+    ensureLocalPlannerParity({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'sum',
+        column: 'Quantity',
+        filters: [],
+        selectColumns: ['Quantity'],
+      },
+      question: 'What is the total Quantity by Province?',
+      schema,
+      datasets,
+      context: null,
+    });
+
+  assert.strictEqual(plan.operation, 'group_sum');
+  assert.strictEqual(plan.column, 'Quantity');
+  assert.strictEqual(plan.groupBy, 'Province');
+});
+
+test('local planner parity supports average median minimum and maximum', () => {
+  const {
+    ensureLocalPlannerParity,
+  } = require('./localPlannerParityEngine');
+
+  const datasets = {
+    Sheet1: [
+      { Category: 'A', Score: 10 },
+      { Category: 'B', Score: 20 },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: [
+      { name: 'Category', type: 'text' },
+      { name: 'Score', type: 'number' },
+    ],
+  }];
+
+  const cases = [
+    ['average Score', 'average'],
+    ['median Score', 'median'],
+    ['minimum Score', 'minimum'],
+    ['maximum Score', 'maximum'],
+  ];
+
+  for (const [question, expected] of cases) {
+    const plan =
+      ensureLocalPlannerParity({
+        plan: {
+          route: 'dataset',
+          dataset: 'Sheet1',
+          operation: 'lookup',
+          column: 'Score',
+          filters: [],
+          selectColumns: ['Score'],
+        },
+        question,
+        schema,
+        datasets,
+        context: null,
+      });
+
+    assert.strictEqual(plan.operation, expected);
+    assert.strictEqual(plan.column, 'Score');
+  }
+});
+
+test('local planner parity supports numeric comparison filters', () => {
+  const {
+    ensureLocalPlannerParity,
+  } = require('./localPlannerParityEngine');
+
+  const datasets = {
+    Sheet1: [
+      { Employee: 'A', Salary: 100 },
+      { Employee: 'B', Salary: 200 },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: [
+      { name: 'Employee', type: 'text' },
+      { name: 'Salary', type: 'number' },
+    ],
+  }];
+
+  const plan =
+    ensureLocalPlannerParity({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'list',
+        column: 'Employee',
+        filters: [],
+        selectColumns: ['Employee'],
+      },
+      question: 'List Employee where Salary is greater than 150',
+      schema,
+      datasets,
+      context: null,
+    });
+
+  const filter =
+    plan.filters.find(
+      (item) =>
+        item.column === 'Salary'
+    );
+
+  assert(filter);
+  assert.strictEqual(filter.operator, 'greater_than');
+  assert.strictEqual(filter.value, 150);
+});
+
+test('local planner parity preserves multiple same-column values as IN and supports NOT IN wording', () => {
+  const {
+    ensureLocalPlannerParity,
+  } = require('./localPlannerParityEngine');
+
+  const datasets = {
+    Sheet1: [
+      { Province: 'Pangasinan', Item: 'A' },
+      { Province: 'La Union', Item: 'B' },
+      { Province: 'Ilocos Norte', Item: 'C' },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: [
+      { name: 'Province', type: 'text' },
+      { name: 'Item', type: 'text' },
+    ],
+  }];
+
+  const includePlan =
+    ensureLocalPlannerParity({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'list',
+        column: 'Item',
+        filters: [],
+        selectColumns: ['Item'],
+      },
+      question: 'List Item in Pangasinan and La Union',
+      schema,
+      datasets,
+      context: null,
+    });
+
+  const include =
+    includePlan.filters.find(
+      (item) =>
+        item.column === 'Province'
+    );
+
+  assert(include);
+  assert.strictEqual(include.operator, 'in');
+
+  const excludePlan =
+    ensureLocalPlannerParity({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'list',
+        column: 'Item',
+        filters: [],
+        selectColumns: ['Item'],
+      },
+      question: 'List Item excluding Pangasinan and La Union',
+      schema,
+      datasets,
+      context: null,
+    });
+
+  const exclude =
+    excludePlan.filters.find(
+      (item) =>
+        item.column === 'Province'
+    );
+
+  assert(exclude);
+  assert.strictEqual(exclude.operator, 'not_in');
+});
+
+test('local planner parity supports first-word and last-word transforms', () => {
+  const {
+    ensureLocalPlannerParity,
+  } = require('./localPlannerParityEngine');
+
+  const datasets = {
+    Sheet1: [
+      { 'Employee Name': 'Doris Joy Garcia' },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: [
+      { name: 'Employee Name', type: 'text' },
+    ],
+  }];
+
+  const first =
+    ensureLocalPlannerParity({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'lookup',
+        column: 'Employee Name',
+        filters: [],
+        selectColumns: ['Employee Name'],
+      },
+      question: 'What is the first name?',
+      schema,
+      datasets,
+      context: null,
+    });
+
+  assert.strictEqual(first.transform, 'first_word');
+
+  const last =
+    ensureLocalPlannerParity({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'lookup',
+        column: 'Employee Name',
+        filters: [],
+        selectColumns: ['Employee Name'],
+      },
+      question: 'What is the last name?',
+      schema,
+      datasets,
+      context: null,
+    });
+
+  assert.strictEqual(last.transform, 'last_word');
+});
+
+test('local planner parity keeps normal list requests showAll when no explicit N', () => {
+  const {
+    ensureLocalPlannerParity,
+  } = require('./localPlannerParityEngine');
+
+  const datasets = {
+    Sheet1: [
+      { Commodity: 'Rice' },
+      { Commodity: 'Corn' },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: [
+      { name: 'Commodity', type: 'text' },
+    ],
+  }];
+
+  const plan =
+    ensureLocalPlannerParity({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'list',
+        column: 'Commodity',
+        filters: [],
+        selectColumns: ['Commodity'],
+        showAll: false,
+        limit: 10,
+      },
+      question: 'List all Commodity',
+      schema,
+      datasets,
+      context: null,
+    });
+
+  assert.strictEqual(plan.operation, 'list');
+  assert.strictEqual(plan.showAll, true);
+  assert(plan.limit >= 100);
+});
+
+test('local planner parity repairs row ranking label versus metric', () => {
+  const {
+    ensureLocalPlannerParity,
+  } = require('./localPlannerParityEngine');
+
+  const datasets = {
+    Sheet1: [
+      { Barangay: 'A', Quantity: 5 },
+      { Barangay: 'B', Quantity: 10 },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: [
+      { name: 'Barangay', type: 'text' },
+      { name: 'Quantity', type: 'number' },
+    ],
+  }];
+
+  const plan =
+    ensureLocalPlannerParity({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'lookup',
+        column: 'Barangay',
+        filters: [],
+        selectColumns: ['Barangay', 'Quantity'],
+      },
+      question: 'Which Barangay has the highest Quantity?',
+      schema,
+      datasets,
+      context: null,
+    });
+
+  assert.strictEqual(plan.operation, 'rank_rows');
+  assert.strictEqual(plan.column, 'Quantity');
+  assert.strictEqual(plan.labelColumn, 'Barangay');
+  assert.strictEqual(plan.direction, 'desc');
+});
+
+test('local planner parity repairs grouped average ranking', () => {
+  const {
+    ensureLocalPlannerParity,
+  } = require('./localPlannerParityEngine');
+
+  const datasets = {
+    Sheet1: [
+      { Division: 'A', Salary: 100 },
+      { Division: 'A', Salary: 200 },
+      { Division: 'B', Salary: 250 },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: [
+      { name: 'Division', type: 'text' },
+      { name: 'Salary', type: 'number' },
+    ],
+  }];
+
+  const plan =
+    ensureLocalPlannerParity({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'lookup',
+        column: 'Division',
+        filters: [],
+        selectColumns: ['Division', 'Salary'],
+      },
+      question: 'Which Division has the highest average Salary?',
+      schema,
+      datasets,
+      context: null,
+    });
+
+  assert.strictEqual(plan.operation, 'rank_groups');
+  assert.strictEqual(plan.column, 'Salary');
+  assert.strictEqual(plan.groupBy, 'Division');
+  assert.strictEqual(plan.aggregation, 'average');
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
