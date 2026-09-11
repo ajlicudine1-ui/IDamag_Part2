@@ -798,6 +798,81 @@ test('copular ranking without additive action keeps ordinary row-ranking semanti
   assert.strictEqual(plan.aggregation, null);
 });
 
+
+test('filtered plural field with appear wording scans all matching rows', () => {
+  const {
+    resolveDirectFilteredFieldPlan,
+  } = require('./directQueryResolver');
+
+  const datasets = {
+    Sheet1: [
+      { 'Beneficiary Type': 'Individual', 'Beneficiary Subtype': 'Farmer' },
+      { 'Beneficiary Type': 'Individual', 'Beneficiary Subtype': 'Others' },
+      { 'Beneficiary Type': 'Individual', 'Beneficiary Subtype': 'School' },
+      { 'Beneficiary Type': 'Individual', 'Beneficiary Subtype': 'FCA' },
+      { 'Beneficiary Type': 'Individual', 'Beneficiary Subtype': 'NGO' },
+      { 'Beneficiary Type': 'Group', 'Beneficiary Subtype': 'Government' },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: [
+      { name: 'Beneficiary Type' },
+      { name: 'Beneficiary Subtype' },
+    ],
+  }];
+
+  const plan = resolveDirectFilteredFieldPlan({
+    question: 'what beneficiary subtypes appear under individual?',
+    schema,
+    datasets,
+  });
+
+  assert(plan);
+  assert.strictEqual(plan.operation, 'list');
+  assert.strictEqual(plan.column, 'Beneficiary Subtype');
+  assert.strictEqual(plan.showAll, true);
+  assert.strictEqual(plan.limit, 100);
+});
+
+test('small filtered list narrative uses a natural sentence', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer = buildSemanticVerifiedAnswer({
+    question: 'what beneficiary subtypes appear under individual?',
+    plan: {
+      operation: 'list',
+      column: 'Beneficiary Subtype',
+      filters: [
+        {
+          column: 'Beneficiary Type',
+          operator: 'equals',
+          value: 'Individual',
+        },
+      ],
+    },
+    result: {
+      success: true,
+      operation: 'list',
+      results: [
+        'Farmer',
+        'Others',
+        'School',
+        'FCA',
+        'NGO',
+      ],
+    },
+  });
+
+  assert.strictEqual(
+    answer,
+    'The beneficiary subtypes under Individual are Farmer, Others, School, FCA, and NGO.'
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];

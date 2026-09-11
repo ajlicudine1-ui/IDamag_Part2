@@ -5359,13 +5359,35 @@ async function answerQuestion(
     );
 
     const directSingleFieldAnswer =
-      buildVerifiedListAnswer({
-        result:
-          directFilteredFieldResult,
-        subjectColumn:
-          directFilteredFieldPlan
-            .column,
-      });
+      (
+        directFilteredFieldPlan
+          .operation ===
+        "list"
+      )
+        ? (
+            buildSemanticVerifiedAnswer({
+              question:
+                cleanQuestion,
+              plan:
+                directFilteredFieldPlan,
+              result:
+                directFilteredFieldResult,
+            }) ||
+            buildVerifiedListAnswer({
+              result:
+                directFilteredFieldResult,
+              subjectColumn:
+                directFilteredFieldPlan
+                  .column,
+            })
+          )
+        : buildVerifiedListAnswer({
+            result:
+              directFilteredFieldResult,
+            subjectColumn:
+              directFilteredFieldPlan
+                .column,
+          });
 
     return {
       ...directFilteredFieldResult,

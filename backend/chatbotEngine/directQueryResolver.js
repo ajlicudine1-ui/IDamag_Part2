@@ -930,8 +930,16 @@ function resolveDirectFilteredFieldPlan({
     return null;
   }
 
-  const requestedPhrase =
+  const rawRequestedPhrase =
     match[1]
+      .trim();
+
+  const requestedPhrase =
+    rawRequestedPhrase
+      .replace(
+        /\s+(?:appear|appears|appeared|represented|present|available|exist|exists|occur|occurs|found|listed|shown)\s*$/i,
+        ""
+      )
       .trim();
 
   const identifierText =
@@ -1109,13 +1117,35 @@ function resolveDirectFilteredFieldPlan({
     return null;
   }
 
+  const explicitListVerb =
+    /\b(?:appear|appears|appeared|represented|present|available|exist|exists|occur|occurs|found|listed|shown)\b/.test(
+      text
+    );
+
+  const pluralRequestedField =
+    requestedPhrase
+      .split(
+        /\s+/
+      )
+      .some(
+        (token) =>
+          /s$/i.test(
+            token
+          ) &&
+          !/(?:ss|us|is)$/i.test(
+            token
+          )
+      );
+
   const asksForList =
     /^(?:what|which)\s+are\b/.test(
       text
     ) ||
     /^(?:show|give|list|display)\b/.test(
       text
-    );
+    ) ||
+    explicitListVerb ||
+    pluralRequestedField;
 
   return {
     route:

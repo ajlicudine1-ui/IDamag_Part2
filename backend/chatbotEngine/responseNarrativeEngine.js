@@ -392,6 +392,146 @@ function deriveNaturalListIntroduction({
   return `${count} matching ${count === 1 ? "record was" : "records were"} found:`;
 }
 
+
+function pluralizeDisplayLabel(value) {
+  const label =
+    humanizeFieldLabel(
+      value
+    );
+
+  if (!label) {
+    return "";
+  }
+
+  const parts =
+    label.split(
+      /\s+/
+    );
+
+  const last =
+    parts[
+      parts.length - 1
+    ];
+
+  if (
+    !last ||
+    /s$/i.test(
+      last
+    )
+  ) {
+    return label;
+  }
+
+  if (
+    /[^aeiou]y$/i.test(
+      last
+    )
+  ) {
+    parts[
+      parts.length - 1
+    ] =
+      `${last.slice(
+        0,
+        -1
+      )}ies`;
+  } else if (
+    /(?:s|sh|ch|x|z)$/i.test(
+      last
+    )
+  ) {
+    parts[
+      parts.length - 1
+    ] =
+      `${last}es`;
+  } else {
+    parts[
+      parts.length - 1
+    ] =
+      `${last}s`;
+  }
+
+  return parts.join(
+    " "
+  );
+}
+
+function deriveFilteredListScopePhrase({
+  question,
+  plan,
+}) {
+  const filters =
+    Array.isArray(
+      plan?.filters
+    )
+      ? plan.filters
+      : [];
+
+  if (
+    filters.length !==
+      1
+  ) {
+    return "";
+  }
+
+  const value =
+    filters[0]?.value;
+
+  if (
+    value === null ||
+    value === undefined ||
+    String(
+      value
+    ).trim() ===
+      ""
+  ) {
+    return "";
+  }
+
+  const q =
+    normalizeText(
+      question
+    );
+
+  const displayValue =
+    String(
+      value
+    ).trim();
+
+  if (
+    /\bunder\b/.test(
+      q
+    )
+  ) {
+    return ` under ${displayValue}`;
+  }
+
+  if (
+    /\b(?:in|within|inside|at)\b/.test(
+      q
+    )
+  ) {
+    return ` in ${displayValue}`;
+  }
+
+  if (
+    /\bfrom\b/.test(
+      q
+    )
+  ) {
+    return ` from ${displayValue}`;
+  }
+
+  if (
+    /\bfor\b/.test(
+      q
+    )
+  ) {
+    return ` for ${displayValue}`;
+  }
+
+  return ` for ${displayValue}`;
+}
+
 function buildNaturalListNarrative({
   question,
   plan,
@@ -460,6 +600,37 @@ function buildNaturalListNarrative({
     !unique.length
   ) {
     return null;
+  }
+
+  const hasExplicitFilter =
+    Array.isArray(
+      plan?.filters
+    ) &&
+    plan.filters.length >
+      0;
+
+  if (
+    hasExplicitFilter &&
+    unique.length <=
+      6
+  ) {
+    const fieldLabel =
+      pluralizeDisplayLabel(
+        plan?.column
+      );
+
+    const scopePhrase =
+      deriveFilteredListScopePhrase({
+        question,
+        plan,
+      });
+
+    const subject =
+      fieldLabel
+        ? `The ${fieldLabel.toLowerCase()}${scopePhrase}`
+        : `The matching values${scopePhrase}`;
+
+    return `${subject} ${unique.length === 1 ? "is" : "are"} ${joinNaturalList(unique)}.`;
   }
 
   const intro =
