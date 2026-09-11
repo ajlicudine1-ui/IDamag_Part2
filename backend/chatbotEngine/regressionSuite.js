@@ -1210,6 +1210,239 @@ test('intersected quantity aggregation sums Quantity and not Contact Number', ()
   );
 });
 
+
+test('grammar finalizer preserves thousands separators without inserting spaces', () => {
+  const {
+    finalizeUserFacingGrammar,
+  } = require('./responseGrammarEngine');
+
+  assert.strictEqual(
+    finalizeUserFacingGrammar(
+      'Napier: 1,535 cuttings.'
+    ),
+    'Napier: 1,535 cuttings.'
+  );
+
+  assert.strictEqual(
+    finalizeUserFacingGrammar(
+      'The total is 12,345,678 units.'
+    ),
+    'The total is 12,345,678 units.'
+  );
+});
+
+test('grammar finalizer still inserts spaces after ordinary commas', () => {
+  const {
+    finalizeUserFacingGrammar,
+  } = require('./responseGrammarEngine');
+
+  assert.strictEqual(
+    finalizeUserFacingGrammar(
+      'Farmer,Others,School'
+    ),
+    'Farmer, Others, School'
+  );
+});
+
+
+test('local quantity resolver maps unit plus object wording to sum Quantity', () => {
+  const {
+    resolveLocalQuantityAggregationPlan,
+  } = require('./localAggregationResolver');
+
+  const datasets = {
+    Sheet1: [
+      {
+        'Intervention Details': 'Organic Fertilizer',
+        'Unit of Measurement': 'kilograms',
+        Quantity: 25,
+        'Date released': '2026-01-01',
+      },
+      {
+        'Intervention Details': 'Inorganic Fertilizer',
+        'Unit of Measurement': 'kilograms',
+        Quantity: 30,
+        'Date released': '2026-01-02',
+      },
+      {
+        'Intervention Details': 'Seeds',
+        'Unit of Measurement': 'kilograms',
+        Quantity: 10,
+        'Date released': '2026-01-03',
+      },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: Object.keys(
+      datasets.Sheet1[0]
+    ).map(
+      (name) => ({ name })
+    ),
+  }];
+
+  const plan =
+    resolveLocalQuantityAggregationPlan({
+      question:
+        'How many kilograms of fertilizer were released?',
+      schema,
+      datasets,
+    });
+
+  assert(plan);
+  assert.strictEqual(plan.route, 'dataset');
+  assert.strictEqual(plan.operation, 'sum');
+  assert.strictEqual(plan.column, 'Quantity');
+
+  const unitFilter =
+    plan.filters.find(
+      (filter) =>
+        filter.column ===
+        'Unit of Measurement'
+    );
+
+  assert(unitFilter);
+  assert.strictEqual(
+    unitFilter.value,
+    'kilograms'
+  );
+
+  const objectFilter =
+    plan.filters.find(
+      (filter) =>
+        filter.column ===
+        'Intervention Details'
+    );
+
+  assert(objectFilter);
+  assert.strictEqual(
+    objectFilter.operator,
+    'contains'
+  );
+  assert.strictEqual(
+    objectFilter.value,
+    'fertilizer'
+  );
+});
+
+test('strong local resolver uses quantity sum before generic distinct count', () => {
+  const {
+    resolveStrongLocalSemanticPlan,
+  } = require('./localSemanticResolver');
+
+  const datasets = {
+    Sheet1: [
+      {
+        'Intervention Details': 'Organic Fertilizer',
+        'Unit of Measurement': 'kilograms',
+        Quantity: 25,
+        'Date released': '2026-01-01',
+      },
+      {
+        'Intervention Details': 'Organic Fertilizer',
+        'Unit of Measurement': 'kilograms',
+        Quantity: 30,
+        'Date released': '2026-01-02',
+      },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: Object.keys(
+      datasets.Sheet1[0]
+    ).map(
+      (name) => ({ name })
+    ),
+  }];
+
+  const plan =
+    resolveStrongLocalSemanticPlan({
+      question:
+        'How many kilograms of fertilizer were released?',
+      schema,
+      datasets,
+      context: null,
+    });
+
+  assert(plan);
+  assert.strictEqual(plan.operation, 'sum');
+  assert.strictEqual(plan.column, 'Quantity');
+  assert.strictEqual(
+    plan.localAggregationResolved,
+    true
+  );
+});
+
+test('quantity metric meaning uses Unit of Measurement as display unit', () => {
+  const {
+    enrichPlanMetricMeaning,
+  } = require('./metricMeaningEngine');
+
+  const datasets = {
+    Sheet1: [
+      {
+        'Intervention Details': 'Organic Fertilizer',
+        'Unit of Measurement': 'kilograms',
+        Quantity: 25,
+      },
+      {
+        'Intervention Details': 'Inorganic Fertilizer',
+        'Unit of Measurement': 'kilograms',
+        Quantity: 30,
+      },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: [
+      { name: 'Intervention Details' },
+      { name: 'Unit of Measurement' },
+      { name: 'Quantity' },
+    ],
+  }];
+
+  const enriched =
+    enrichPlanMetricMeaning({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'sum',
+        column: 'Quantity',
+        filters: [
+          {
+            column: 'Unit of Measurement',
+            operator: 'equals',
+            value: 'kilograms',
+          },
+          {
+            column: 'Intervention Details',
+            operator: 'contains',
+            value: 'fertilizer',
+          },
+        ],
+      },
+      question:
+        'How many kilograms of fertilizer were released?',
+      datasets,
+      schema,
+      reportContext: {
+        title: 'Station Dashboard',
+      },
+    });
+
+  assert.strictEqual(
+    enriched.metricSemantics,
+    'quantity'
+  );
+  assert.strictEqual(
+    enriched.displayUnit,
+    'kilograms'
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];

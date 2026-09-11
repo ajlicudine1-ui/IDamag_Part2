@@ -27,10 +27,34 @@ function finalizeUserFacingGrammar(answer) {
     .map((line) => line.replace(/[ \t]+/g, ' ').trimEnd())
     .join('\n');
 
-  // Remove spaces before punctuation and ensure one space after sentence
+  // Remove spaces before punctuation and ensure one space after ordinary
   // punctuation when another word follows on the same line.
+  //
+  // IMPORTANT: a comma between digits is a thousands separator, not sentence
+  // punctuation. Never turn "1,535" into "1, 535".
   text = text.replace(/[ \t]+([,.;:!?])/g, '$1');
-  text = text.replace(/([,;:])(?=[^\s\n])/g, '$1 ');
+  text = text.replace(
+    /([,;:])(?=[^\s\n])/g,
+    (match, punctuation, offset, source) => {
+      if (
+        punctuation === ',' &&
+        /\d/.test(
+          source[
+            offset - 1
+          ] || ''
+        ) &&
+        /\d/.test(
+          source[
+            offset + 1
+          ] || ''
+        )
+      ) {
+        return ',';
+      }
+
+      return `${punctuation} `;
+    }
+  );
   text = text.replace(/([.!?])(?=[A-Za-z])/g, '$1 ');
 
   // Collapse accidental repeated punctuation without touching ellipses.
