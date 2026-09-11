@@ -9,6 +9,10 @@ const {
   inferValueFilters,
 } = require("./filterEngine");
 
+const {
+  resolveLocalRelationPlan,
+} = require("./localRelationResolver");
+
 const STOP_WORDS = new Set([
   "a","an","and","are","as","at","be","been","being","by","can","could",
   "did","do","does","for","from","had","has","have","how","in","into",
@@ -231,6 +235,76 @@ function resolveStrongLocalSemanticPlan({
 } = {}) {
   if (!isLikelyDataQuestion(question)) return null;
 
+  const relationPlan =
+    resolveLocalRelationPlan({
+      question,
+      schema,
+      datasets,
+    });
+
+  if (
+    relationPlan?.route ===
+      "clarify"
+  ) {
+    return relationPlan;
+  }
+
+  if (
+    relationPlan?.route ===
+      "dataset" &&
+    Number(
+      relationPlan.localSemanticConfidence ||
+      0
+    ) >=
+      0.5
+  ) {
+    if (
+      context?.isFollowUp ===
+        true &&
+      isReferentialQuestion(
+        question
+      ) &&
+      (
+        !Array.isArray(
+          relationPlan.filters
+        ) ||
+        !relationPlan.filters.length
+      )
+    ) {
+      const datasetSchema =
+        schema.find(
+          (item) =>
+            normalizeText(item?.name) ===
+            normalizeText(relationPlan.dataset)
+        );
+
+      const liveColumns =
+        new Set(
+          (datasetSchema?.columns || [])
+            .map(
+              (item) =>
+                typeof item === "string"
+                  ? item
+                  : item?.name
+            )
+            .filter(Boolean)
+            .map((name) => normalizeText(name))
+        );
+
+      relationPlan.filters =
+        copyFilters(
+          context.lastFilters
+        ).filter(
+          (filter) =>
+            liveColumns.has(
+              normalizeText(filter?.column)
+            )
+        );
+    }
+
+    return relationPlan;
+  }
+
   const candidates = [];
 
   for (const datasetSchema of schema || []) {
@@ -288,10 +362,21 @@ function resolveStrongLocalSemanticPlan({
   if (
     second &&
     second.dataset !== best.dataset &&
-    Math.abs(best.score - second.score) < 0.045 &&
-    best.columnScore < 0.78
+    Math.abs(
+      best.score -
+      second.score
+    ) < 0.045 &&
+    best.columnScore <
+      0.78
   ) {
-    return null;
+    return {
+      route: "clarify",
+      question:
+        `I found multiple possible matches: ${best.column} in ${best.dataset} or ${second.column} in ${second.dataset}. Which one should I use?`,
+      confidence: 0.35,
+      localSemanticResolved: false,
+      localSemanticAmbiguous: true,
+    };
   }
 
   const sourceRows = datasets[best.dataset];

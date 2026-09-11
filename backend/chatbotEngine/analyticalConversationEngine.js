@@ -5461,6 +5461,341 @@ function findMentionedCategoriesInDataset({
 }
 
 
+
+function isUnitLikeColumnName(columnName) {
+  return /\b(?:unit|uom|unit of measurement|measurement unit)\b/i.test(
+    String(
+      columnName || ""
+    )
+  );
+}
+
+function isAdditiveMeasureColumnName(columnName) {
+  return /\b(?:quantity|qty|amount|total|volume|weight|area|value|cost|price|number)\b/i.test(
+    String(
+      columnName || ""
+    )
+  );
+}
+
+function findBestAdditiveMeasureColumn(rows) {
+  const sampleRow =
+    Array.isArray(
+      rows
+    ) &&
+    rows.length
+      ? rows.find(
+          (row) =>
+            row &&
+            typeof row ===
+              "object"
+        )
+      : null;
+
+  if (!sampleRow) {
+    return null;
+  }
+
+  const candidates =
+    Object.keys(
+      sampleRow
+    )
+      .map(
+        (column) => {
+          const values =
+            rows
+              .map(
+                (row) =>
+                  row?.[
+                    column
+                  ]
+              )
+              .filter(
+                (value) =>
+                  value !== null &&
+                  value !== undefined &&
+                  String(
+                    value
+                  ).trim() !==
+                    ""
+              );
+
+          if (!values.length) {
+            return null;
+          }
+
+          const numericCount =
+            values.filter(
+              (value) =>
+                parseNumber(
+                  value
+                ) !== null
+            ).length;
+
+          const numericRatio =
+            numericCount /
+            values.length;
+
+          if (
+            numericRatio <
+              0.7
+          ) {
+            return null;
+          }
+
+          return {
+            column,
+            nameScore:
+              isAdditiveMeasureColumnName(
+                column
+              )
+                ? 1
+                : 0,
+            numericRatio,
+          };
+        }
+      )
+      .filter(Boolean)
+      .sort(
+        (a, b) =>
+          b.nameScore -
+            a.nameScore ||
+          b.numericRatio -
+            a.numericRatio
+      );
+
+  if (
+    !candidates.length ||
+    candidates[0]
+      .nameScore <
+      1
+  ) {
+    return null;
+  }
+
+  return candidates[0]
+    .column;
+}
+
+function shouldTreatMultiCategoryCountAsQuantityAggregation({
+  question,
+  categories,
+  rows,
+}) {
+  if (
+    !Array.isArray(
+      categories
+    ) ||
+    categories.length <
+      2
+  ) {
+    return false;
+  }
+
+  const distinctColumns =
+    new Set(
+      categories.map(
+        (category) =>
+          normalizeText(
+            category.column
+          )
+      )
+    );
+
+  if (
+    distinctColumns.size <
+      2
+  ) {
+    return false;
+  }
+
+  const hasUnitCategory =
+    categories.some(
+      (category) =>
+        isUnitLikeColumnName(
+          category.column
+        )
+    );
+
+  if (
+    !hasUnitCategory
+  ) {
+    return false;
+  }
+
+  const hasDistributionAction =
+    /\b(?:distributed?|released?|received?|provided?|given|issued|allocated|delivered|dispensed|supplied)\b/i.test(
+      String(
+        question || ""
+      )
+    );
+
+  if (
+    !hasDistributionAction
+  ) {
+    return false;
+  }
+
+  return Boolean(
+    findBestAdditiveMeasureColumn(
+      rows
+    )
+  );
+}
+
+function buildIntersectedQuantityAggregation({
+  datasetName,
+  rows,
+  categories,
+}) {
+  const measureColumn =
+    findBestAdditiveMeasureColumn(
+      rows
+    );
+
+  if (
+    !measureColumn
+  ) {
+    return null;
+  }
+
+  const filters =
+    categories.map(
+      (category) => ({
+        column:
+          category.column,
+        operator:
+          "equals",
+        value:
+          category.value,
+      })
+    );
+
+  const matchedRows =
+    rows.filter(
+      (row) =>
+        filters.every(
+          (filter) =>
+            normalizeText(
+              row?.[
+                filter.column
+              ]
+            ) ===
+            normalizeText(
+              filter.value
+            )
+        )
+    );
+
+  const numericValues =
+    matchedRows
+      .map(
+        (row) =>
+          parseNumber(
+            row?.[
+              measureColumn
+            ]
+          )
+      )
+      .filter(
+        (value) =>
+          value !== null
+      );
+
+  if (
+    !numericValues.length
+  ) {
+    return null;
+  }
+
+  const total =
+    numericValues.reduce(
+      (
+        sum,
+        value
+      ) =>
+        sum + value,
+      0
+    );
+
+  const unitCategory =
+    categories.find(
+      (category) =>
+        isUnitLikeColumnName(
+          category.column
+        )
+    );
+
+  const objectCategory =
+    categories.find(
+      (category) =>
+        !isUnitLikeColumnName(
+          category.column
+        )
+    );
+
+  const subject =
+    objectCategory?.value ||
+    "matching records";
+
+  const unit =
+    unitCategory?.value ||
+    "";
+
+  const answer =
+    unit
+      ? `${subject}: ${formatConversationNumber(total)} ${unit}.`
+      : `${subject}: ${formatConversationNumber(total)}.`;
+
+  const plan = {
+    route:
+      "dataset",
+    dataset:
+      datasetName,
+    operation:
+      "sum",
+    column:
+      measureColumn,
+    aggregation:
+      "sum",
+    filters,
+    outputRequested:
+      true,
+    multiCategoryQuantityAggregation:
+      true,
+  };
+
+  const result = {
+    success:
+      true,
+    source:
+      "dataset",
+    dataset:
+      datasetName,
+    operation:
+      "sum",
+    column:
+      measureColumn,
+    value:
+      total,
+    recordsUsed:
+      numericValues.length,
+    filters,
+    answer,
+    responseStyle:
+      "natural",
+    debugPlan:
+      plan,
+    debugEntityChanges:
+      [],
+  };
+
+  return {
+    plan,
+    result,
+  };
+}
+
 function buildMultiCategoryCountResolution({
   datasets,
   question,
@@ -5543,6 +5878,32 @@ function buildMultiCategoryCountResolution({
       best.preferred
   ) {
     return null;
+  }
+
+  if (
+    shouldTreatMultiCategoryCountAsQuantityAggregation({
+      question,
+      categories:
+        best.categories,
+      rows:
+        best.rows,
+    })
+  ) {
+    const quantityResolution =
+      buildIntersectedQuantityAggregation({
+        datasetName:
+          best.datasetName,
+        rows:
+          best.rows,
+        categories:
+          best.categories,
+      });
+
+    if (
+      quantityResolution
+    ) {
+      return quantityResolution;
+    }
   }
 
   const categoryResults =
@@ -5702,4 +6063,6 @@ module.exports = {
   isUsefulCategoryColumn,
   findMentionedCategoriesInDataset,
   buildMultiCategoryCountResolution,
+  shouldTreatMultiCategoryCountAsQuantityAggregation,
+  buildIntersectedQuantityAggregation,
 };

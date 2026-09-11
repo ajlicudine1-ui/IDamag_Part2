@@ -873,6 +873,259 @@ test('small filtered list narrative uses a natural sentence', () => {
   );
 });
 
+
+test('local relation resolver maps entity-action-object questions across columns', () => {
+  const {
+    resolveLocalRelationPlan,
+  } = require('./localRelationResolver');
+
+  const datasets = {
+    People: [
+      { 'Employee Name': 'Ana', Department: 'A' },
+      { 'Employee Name': 'Ben', Department: 'B' },
+    ],
+    Attendance: [
+      { 'Employee Name': 'Ana', Training: 'Safety', Hours: 4 },
+      { 'Employee Name': 'Ana', Training: 'Data', Hours: 2 },
+      { 'Employee Name': 'Ben', Training: '', Hours: 0 },
+    ],
+  };
+
+  const schema = Object.entries(datasets).map(([name, rows]) => ({
+    name,
+    columns: Object.keys(rows[0]).map((column) => ({ name: column })),
+  }));
+
+  const plan = resolveLocalRelationPlan({
+    question: 'Which employees attended training?',
+    schema,
+    datasets,
+  });
+
+  assert(plan);
+  assert.strictEqual(plan.route, 'dataset');
+  assert.strictEqual(plan.dataset, 'Attendance');
+  assert.strictEqual(plan.column, 'Employee Name');
+  assert.strictEqual(plan.operation, 'list');
+
+  const evidenceFilter = plan.filters.find(
+    (filter) => filter.column === 'Training'
+  );
+
+  assert(evidenceFilter);
+  assert.strictEqual(evidenceFilter.operator, 'not_empty');
+});
+
+test('local relation resolver uses explicit object values as filters', () => {
+  const {
+    resolveLocalRelationPlan,
+  } = require('./localRelationResolver');
+
+  const datasets = {
+    Attendance: [
+      { 'Employee Name': 'Ana', Training: 'Safety Training' },
+      { 'Employee Name': 'Ben', Training: 'Data Training' },
+      { 'Employee Name': 'Cara', Training: 'Safety Training' },
+    ],
+  };
+
+  const schema = [{
+    name: 'Attendance',
+    columns: [
+      { name: 'Employee Name' },
+      { name: 'Training' },
+    ],
+  }];
+
+  const plan = resolveLocalRelationPlan({
+    question: 'Which employees attended Safety Training?',
+    schema,
+    datasets,
+  });
+
+  assert(plan);
+  const filter = plan.filters.find(
+    (item) => item.column === 'Training'
+  );
+
+  assert(filter);
+  assert.strictEqual(filter.operator, 'equals');
+  assert.strictEqual(filter.value, 'Safety Training');
+});
+
+test('local relation resolver handles new semantic questions without sticky prior memory', () => {
+  const {
+    resolveStrongLocalSemanticPlan,
+  } = require('./localSemanticResolver');
+
+  const datasets = {
+    Commodities: [
+      { Association: 'A', Commodities: 'rice' },
+      { Association: 'B', Commodities: 'corn' },
+    ],
+    Projects: [
+      { 'Project Name': 'Project X', 'Funding Source': 'Fund A', Amount: 100 },
+      { 'Project Name': 'Project Y', 'Funding Source': 'Fund B', Amount: 200 },
+    ],
+  };
+
+  const schema = Object.entries(datasets).map(([name, rows]) => ({
+    name,
+    columns: Object.keys(rows[0]).map((column) => ({ name: column })),
+  }));
+
+  const plan = resolveStrongLocalSemanticPlan({
+    question: 'Which projects received funding?',
+    schema,
+    datasets,
+    context: {
+      isFollowUp: true,
+      lastDataset: 'Commodities',
+      lastMetric: 'Commodities',
+      lastFilters: [],
+    },
+  });
+
+  assert(plan);
+  assert.strictEqual(plan.route, 'dataset');
+  assert.strictEqual(plan.dataset, 'Projects');
+  assert.strictEqual(plan.column, 'Project Name');
+});
+
+test('ambiguous local relation asks instead of guessing', () => {
+  const {
+    resolveLocalRelationPlan,
+  } = require('./localRelationResolver');
+
+  const datasets = {
+    SheetA: [
+      { 'Organization Name': 'A', Program: 'P1' },
+      { 'Organization Name': 'B', Program: 'P2' },
+    ],
+    SheetB: [
+      { 'Organization Name': 'C', Program: 'P3' },
+      { 'Organization Name': 'D', Program: 'P4' },
+    ],
+  };
+
+  const schema = Object.entries(datasets).map(([name, rows]) => ({
+    name,
+    columns: Object.keys(rows[0]).map((column) => ({ name: column })),
+  }));
+
+  const plan = resolveLocalRelationPlan({
+    question: 'Which organizations joined programs?',
+    schema,
+    datasets,
+  });
+
+  assert(plan);
+  assert.strictEqual(plan.route, 'clarify');
+  assert.strictEqual(plan.localSemanticAmbiguous, true);
+});
+
+test('not_empty filter works for relation evidence', () => {
+  const {
+    applyFilters,
+  } = require('./filterEngine');
+
+  const rows = [
+    { Name: 'A', Training: 'Safety' },
+    { Name: 'B', Training: '' },
+    { Name: 'C', Training: null },
+  ];
+
+  const filtered = applyFilters(
+    rows,
+    [
+      {
+        column: 'Training',
+        operator: 'not_empty',
+        value: true,
+      },
+    ]
+  );
+
+  assert.deepStrictEqual(
+    filtered.map((row) => row.Name),
+    ['A']
+  );
+});
+
+
+test('multi-category how-many with a unit sums quantity over the category intersection', () => {
+  const {
+    buildMultiCategoryCountResolution,
+  } = require('./analyticalConversationEngine');
+
+  const datasets = {
+    Sheet1: [
+      {
+        'Intervention Details': 'Napier',
+        'Unit of Measurement': 'cuttings',
+        Quantity: 25,
+      },
+      {
+        'Intervention Details': 'Napier',
+        'Unit of Measurement': 'cuttings',
+        Quantity: 30,
+      },
+      {
+        'Intervention Details': 'Napier',
+        'Unit of Measurement': 'kilograms',
+        Quantity: 2,
+      },
+      {
+        'Intervention Details': 'Trichantera',
+        'Unit of Measurement': 'cuttings',
+        Quantity: 50,
+      },
+    ],
+  };
+
+  const resolution = buildMultiCategoryCountResolution({
+    datasets,
+    question: 'how many napier cuttings were distributed?',
+    preferredDataset: null,
+  });
+
+  assert(resolution);
+  assert.strictEqual(resolution.plan.operation, 'sum');
+  assert.strictEqual(resolution.plan.column, 'Quantity');
+  assert.strictEqual(resolution.result.value, 55);
+  assert.strictEqual(resolution.result.recordsUsed, 2);
+  assert.strictEqual(
+    resolution.result.answer,
+    'Napier: 55 cuttings.'
+  );
+});
+
+test('ordinary multi-category count remains separate when no unit-like category exists', () => {
+  const {
+    buildMultiCategoryCountResolution,
+  } = require('./analyticalConversationEngine');
+
+  const datasets = {
+    Sheet1: [
+      { Beneficiary: 'Farmer', Sex: 'Female' },
+      { Beneficiary: 'Farmer', Sex: 'Male' },
+      { Beneficiary: 'Others', Sex: 'Female' },
+    ],
+  };
+
+  const resolution = buildMultiCategoryCountResolution({
+    datasets,
+    question: 'how many Farmer and Female?',
+    preferredDataset: null,
+  });
+
+  assert(resolution);
+  assert.strictEqual(
+    resolution.plan.operation,
+    'multi_category_count'
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
