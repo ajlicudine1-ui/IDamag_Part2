@@ -614,13 +614,17 @@ function deriveContinuationScopePhrase(plan) {
   return ` for ${displayValue}`;
 }
 
-function buildConversationalFilterSwitchListNarrative({
+function buildScopedEntityListNarrative({
   plan,
   unique,
 }) {
   if (
-    plan?.conversationalFilterSwitch !==
-      true ||
+    !(
+      plan?.conversationalFilterSwitch ===
+        true ||
+      plan?.directFilteredField ===
+        true
+    ) ||
     !Array.isArray(unique) ||
     !unique.length
   ) {
@@ -723,7 +727,7 @@ function buildNaturalListNarrative({
   }
 
   const continuityNarrative =
-    buildConversationalFilterSwitchListNarrative({
+    buildScopedEntityListNarrative({
       plan,
       unique,
     });
@@ -886,5 +890,7 @@ module.exports = {
   buildLookupPairNarrative,
   deriveEntityNounFromField,
   deriveContinuationScopePhrase,
-  buildConversationalFilterSwitchListNarrative,
+  buildScopedEntityListNarrative,
+  buildConversationalFilterSwitchListNarrative:
+    buildScopedEntityListNarrative,
 };

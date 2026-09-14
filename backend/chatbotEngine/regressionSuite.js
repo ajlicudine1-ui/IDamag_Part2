@@ -2520,6 +2520,200 @@ test('relative-clause direct filter is generic outside phase data', () => {
   );
 });
 
+
+test('word-boundary matching does not match short live values inside longer words', () => {
+  const {
+    inferValueFilters,
+  } = require('./filterEngine');
+
+  const rows = [
+    {
+      Association: 'A',
+      Phase: 'Phase 2',
+      'SEC/DOLE/CDA': 'SEC',
+    },
+    {
+      Association: 'B',
+      Phase: 'Phase 2',
+      'SEC/DOLE/CDA': 'DOLE',
+    },
+  ];
+
+  const filters =
+    inferValueFilters(
+      rows,
+      'second phase'
+    );
+
+  const phase =
+    filters.find(
+      (filter) =>
+        filter.column === 'Phase'
+    );
+
+  const sec =
+    filters.find(
+      (filter) =>
+        filter.column === 'SEC/DOLE/CDA'
+    );
+
+  assert(phase);
+  assert.strictEqual(
+    phase.value,
+    'Phase 2'
+  );
+  assert.strictEqual(
+    sec,
+    undefined
+  );
+});
+
+test('second phase and phase 2 resolve to the same direct filtered entity request', () => {
+  const {
+    resolveDirectFilteredFieldPlan,
+  } = require('./directQueryResolver');
+
+  const datasets = {
+    Main_Table_2026: [
+      {
+        Association: 'Association A',
+        Phase: 'Phase 2',
+        'SEC/DOLE/CDA': 'SEC',
+      },
+      {
+        Association: 'Association B',
+        Phase: 'Phase 2',
+        'SEC/DOLE/CDA': 'DOLE',
+      },
+      {
+        Association: 'Association C',
+        Phase: 'Phase 3',
+        'SEC/DOLE/CDA': 'SEC',
+      },
+    ],
+  };
+
+  const schema = [{
+    name: 'Main_Table_2026',
+    columns: [
+      { name: 'Association', type: 'text' },
+      { name: 'Phase', type: 'text' },
+      { name: 'SEC/DOLE/CDA', type: 'text' },
+    ],
+  }];
+
+  const natural =
+    resolveDirectFilteredFieldPlan({
+      question:
+        'what are the association that are in second phase?',
+      schema,
+      datasets,
+    });
+
+  const literal =
+    resolveDirectFilteredFieldPlan({
+      question:
+        'what are the association that are in phase 2?',
+      schema,
+      datasets,
+    });
+
+  assert(natural);
+  assert(literal);
+
+  assert.strictEqual(
+    natural.column,
+    'Association'
+  );
+  assert.strictEqual(
+    literal.column,
+    'Association'
+  );
+
+  assert.deepStrictEqual(
+    natural.filters,
+    [
+      {
+        column: 'Phase',
+        operator: 'equals',
+        value: 'Phase 2',
+      },
+    ]
+  );
+
+  assert.deepStrictEqual(
+    literal.filters,
+    [
+      {
+        column: 'Phase',
+        operator: 'equals',
+        value: 'Phase 2',
+      },
+    ]
+  );
+});
+
+test('direct filtered Association narrative is consistent for phase wording', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const plan = {
+    operation: 'list',
+    column: 'Association',
+    labelColumn: 'Association',
+    filters: [
+      {
+        column: 'Phase',
+        operator: 'equals',
+        value: 'Phase 2',
+      },
+    ],
+    directFilteredField: true,
+  };
+
+  const result = {
+    success: true,
+    operation: 'list',
+    count: 2,
+    results: [
+      'Association A',
+      'Association B',
+    ],
+  };
+
+  const natural =
+    buildSemanticVerifiedAnswer({
+      question:
+        'what are the association that are in second phase?',
+      plan,
+      result,
+    });
+
+  const literal =
+    buildSemanticVerifiedAnswer({
+      question:
+        'what are the association that are in phase 2?',
+      plan,
+      result,
+    });
+
+  const expected =
+    `2 associations in Phase 2:
+1. Association A
+2. Association B`;
+
+  assert.strictEqual(
+    natural,
+    expected
+  );
+
+  assert.strictEqual(
+    literal,
+    expected
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
