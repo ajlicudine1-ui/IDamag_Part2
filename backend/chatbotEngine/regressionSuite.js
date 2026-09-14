@@ -2269,6 +2269,257 @@ test('continuation entity noun is derived generically from common name fields', 
   );
 });
 
+
+test('ordinal wording grounds to live numbered categorical values', () => {
+  const {
+    inferCoherentFilters,
+  } = require('./filterEngine');
+
+  const rows = [
+    { Phase: 'Phase 1', Association: 'A' },
+    { Phase: 'Phase 2', Association: 'B' },
+    { Phase: 'Phase 3', Association: 'C' },
+  ];
+
+  const cases = [
+    ['second phase', 'Phase 2'],
+    ['phase two', 'Phase 2'],
+    ['2nd phase', 'Phase 2'],
+    ['third phase', 'Phase 3'],
+  ];
+
+  for (const [question, expected] of cases) {
+    const filters =
+      inferCoherentFilters(
+        rows,
+        question
+      );
+
+    const phase =
+      filters.find(
+        (filter) =>
+          filter.column ===
+          'Phase'
+      );
+
+    assert(phase);
+    assert.strictEqual(
+      phase.value,
+      expected
+    );
+  }
+});
+
+test('ordinal alias grounding is generic for other numbered dimensions', () => {
+  const {
+    inferCoherentFilters,
+  } = require('./filterEngine');
+
+  const rows = [
+    { Level: 'Level 1', Name: 'A' },
+    { Level: 'Level 2', Name: 'B' },
+    { Level: 'Level 3', Name: 'C' },
+  ];
+
+  const filters =
+    inferCoherentFilters(
+      rows,
+      'which names are in third level?'
+    );
+
+  const level =
+    filters.find(
+      (filter) =>
+        filter.column ===
+        'Level'
+    );
+
+  assert(level);
+  assert.strictEqual(
+    level.value,
+    'Level 3'
+  );
+});
+
+test('ordinal alias grounding does not reinterpret arbitrary numeric identifiers', () => {
+  const {
+    buildOrdinalValueAliases,
+  } = require('./filterEngine');
+
+  assert.deepStrictEqual(
+    buildOrdinalValueAliases({
+      column: 'Gatepass No.',
+      displayValue: 'GP 2',
+    }),
+    []
+  );
+});
+
+test('direct filtered entity list uses same stable scoped narrative style', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer =
+    buildSemanticVerifiedAnswer({
+      question:
+        'what are the association that are in second phase?',
+      plan: {
+        operation: 'list',
+        column: 'Name of Association',
+        labelColumn: 'Name of Association',
+        filters: [
+          {
+            column: 'Phase',
+            operator: 'equals',
+            value: 'Phase 2',
+          },
+        ],
+        directFilteredField: true,
+      },
+      result: {
+        success: true,
+        operation: 'list',
+        count: 2,
+        results: [
+          'Association A',
+          'Association B',
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    answer,
+    `2 associations in Phase 2:
+1. Association A
+2. Association B`
+  );
+});
+
+
+test('relative-clause direct filter keeps requested entity field', () => {
+  const {
+    resolveDirectFilteredFieldPlan,
+  } = require('./directQueryResolver');
+
+  const datasets = {
+    Main_Table_2026: [
+      {
+        'Name of Association': 'Association A',
+        Phase: 'Phase 2',
+      },
+      {
+        'Name of Association': 'Association B',
+        Phase: 'Phase 2',
+      },
+      {
+        'Name of Association': 'Association C',
+        Phase: 'Phase 3',
+      },
+    ],
+  };
+
+  const schema = [{
+    name: 'Main_Table_2026',
+    columns: [
+      {
+        name: 'Name of Association',
+        type: 'text',
+      },
+      {
+        name: 'Phase',
+        type: 'text',
+      },
+    ],
+  }];
+
+  const plan =
+    resolveDirectFilteredFieldPlan({
+      question:
+        'what are the association that are in phase 2?',
+      schema,
+      datasets,
+    });
+
+  assert(plan);
+  assert.strictEqual(
+    plan.operation,
+    'list'
+  );
+  assert.strictEqual(
+    plan.column,
+    'Name of Association'
+  );
+
+  const phase =
+    plan.filters.find(
+      (filter) =>
+        filter.column ===
+        'Phase'
+    );
+
+  assert(phase);
+  assert.strictEqual(
+    phase.value,
+    'Phase 2'
+  );
+});
+
+test('relative-clause direct filter is generic outside phase data', () => {
+  const {
+    resolveDirectFilteredFieldPlan,
+  } = require('./directQueryResolver');
+
+  const datasets = {
+    People: [
+      {
+        'Employee Name': 'Ana',
+        Department: 'Finance',
+      },
+      {
+        'Employee Name': 'Ben',
+        Department: 'HR',
+      },
+    ],
+  };
+
+  const schema = [{
+    name: 'People',
+    columns: [
+      {
+        name: 'Employee Name',
+        type: 'text',
+      },
+      {
+        name: 'Department',
+        type: 'text',
+      },
+    ],
+  }];
+
+  const plan =
+    resolveDirectFilteredFieldPlan({
+      question:
+        'which employees that are in finance?',
+      schema,
+      datasets,
+    });
+
+  assert(plan);
+  assert.strictEqual(
+    plan.column,
+    'Employee Name'
+  );
+  assert.strictEqual(
+    plan.filters[0].column,
+    'Department'
+  );
+  assert.strictEqual(
+    plan.filters[0].value,
+    'Finance'
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];

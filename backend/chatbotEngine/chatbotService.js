@@ -3660,10 +3660,27 @@ function buildExplicitReferentialFieldPlan({
   }
 
   // Require an actual conversational reference to the prior verified scope.
-  if (
-    !/\b(?:they|them|their|theirs|those|these|there|therein|same|ones?|it|its|that|this)\b/.test(
+  //
+  // "that/which/who" can be relative-clause grammar in a fresh request:
+  //   "what are the associations that are in phase 2?"
+  //
+  // Do not route that grammar as a reference to previous conversation state.
+  const hasStrongPriorReference =
+    /\b(?:they|them|their|theirs|those|these|there|therein|same|ones?|it|its)\b/.test(
       text
-    )
+    );
+
+  const hasStandaloneDemonstrativeReference =
+    /^(?:that|this)\b/.test(
+      text
+    ) ||
+    /\b(?:that|this)\s+(?:one|ones|same)\b/.test(
+      text
+    );
+
+  if (
+    !hasStrongPriorReference &&
+    !hasStandaloneDemonstrativeReference
   ) {
     return null;
   }
