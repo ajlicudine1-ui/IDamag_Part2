@@ -14,46 +14,89 @@ import {
   Search,
 } from "lucide-react";
 
-const publicSteps = [
+const idamagSteps = [
   {
     id: 1,
-    title: "IDAMAG Home Page",
+    title: "Open the iDAMAG Home Page",
     description:
-      "The landing page where you can see the overall statistics and map overview.",
-    image: "/iDAMAG/For Public Users/1. Home Page.png",
+      "Access the iDAMAG public portal and click the Explore Dashboards button to begin viewing the available dashboards.",
+    image: "/iDAMAG/User Guide/1.png",
     icon: Monitor,
   },
   {
     id: 2,
-    title: "Explore Divisions",
+    title: "Select a Dashboard Category",
     description:
-      "Click on the 'Explore Divisions' button to view the different offices and divisions.",
-    image: "/iDAMAG/For Public Users/2. Explore Divisions.png",
+      "Choose a dashboard category such as Agricultural Production, Agricultural Programs, Administration, Farmers & Beneficiaries, Animal Health, or another available category.",
+    image: "/iDAMAG/User Guide/2.png",
     icon: Navigation,
   },
   {
     id: 3,
-    title: "Select Division",
+    title: "Select a Division or Section",
     description:
-      "Choose a specific division or office from the list to view its available reports.",
-    image: "/iDAMAG/For Public Users/3. Select Divisions.png",
+      "From the selected category, choose the division or section whose reports and dashboards you want to view.",
+    image: "/iDAMAG/User Guide/3.png",
     icon: Building2,
   },
   {
     id: 4,
-    title: "View Division Reports",
+    title: "Choose a Dashboard",
     description:
-      "Browse through the available reports for the selected division.",
-    image: "/iDAMAG/For Public Users/4. Select Division Reports.png",
+      "Select one of the available dashboards under the chosen division or section to open its report.",
+    image: "/iDAMAG/User Guide/4.png",
     icon: FileText,
   },
   {
     id: 5,
-    title: "Detailed Report View",
+    title: "View the Dashboard",
     description:
-      "Open a specific report to view its complete dashboard, visualizations, maps, and monitoring information.",
-    image: "/iDAMAG/For Public Users/5. View Report.png",
+      "Review the selected dashboard and explore its charts, maps, statistics, filters, and other available information.",
+    image: "/iDAMAG/User Guide/5.png",
     icon: BookOpen,
+  },
+];
+
+const chatbotSteps = [
+  {
+    id: 1,
+    title: "Open the iDAMAG Chatbot",
+    description:
+      "Click the chatbot button on the page to open the iDAMAG Chatbot and start asking questions about available dashboard data.",
+    image: "/iDAMAG/User Guide/6.png",
+    icon: BookOpen,
+  },
+  {
+    id: 2,
+    title: "Select a Dashboard in the Chatbot",
+    description:
+      "Choose the dashboard you want to ask about from the list of available dashboards shown inside the chatbot.",
+    image: "/iDAMAG/User Guide/7.png",
+    icon: Navigation,
+  },
+  {
+    id: 3,
+    title: "Start a Chat with the Selected Dashboard",
+    description:
+      "After selecting a dashboard, the chatbot connects to its available data and becomes ready to answer questions about that report.",
+    image: "/iDAMAG/User Guide/8.png",
+    icon: Monitor,
+  },
+  {
+    id: 4,
+    title: "Ask a Question",
+    description:
+      "Type a natural-language question about the selected dashboard. You can ask about locations, associations, values, rankings, totals, or other information available in the report.",
+    image: "/iDAMAG/User Guide/9.png",
+    icon: Search,
+  },
+  {
+    id: 5,
+    title: "Review the Chatbot Response",
+    description:
+      "Review the chatbot's answer based on the connected dashboard data, then continue asking follow-up questions when you need more information.",
+    image: "/iDAMAG/User Guide/10.png",
+    icon: FileText,
   },
 ];
 
@@ -61,11 +104,15 @@ const UserGuide = () => {
   const [selectedImage, setSelectedImage] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
 
-  const filteredSteps = publicSteps.filter(
-    (step) =>
-      step.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      step.description.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filterGuideSteps = (steps) =>
+    steps.filter(
+      (step) =>
+        step.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        step.description.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+
+  const filteredIdamagSteps = filterGuideSteps(idamagSteps);
+  const filteredChatbotSteps = filterGuideSteps(chatbotSteps);
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -244,18 +291,17 @@ const UserGuide = () => {
           </div>
         </div>
 
-        {/* Section Title */}
+        {/* How to Use iDAMAG */}
         <div className="mb-6">
           <h2 className="text-xl font-black text-slate-900 sm:text-2xl">
-            How to Use iDamag
+            How to Use iDAMAG
           </h2>
 
           <p className="mt-1 text-sm text-slate-500 sm:text-base">
-            Follow these steps to navigate the public iDamag portal.
+            Follow these steps to navigate the public iDAMAG portal and open a dashboard.
           </p>
         </div>
 
-        {/* Guide Cards */}
         <div
           className="
             grid
@@ -263,17 +309,16 @@ const UserGuide = () => {
             md:grid-cols-2
             lg:grid-cols-3
             gap-4
-
             sm:gap-6
           "
         >
-          {filteredSteps.length > 0 ? (
-            filteredSteps.map((step) => {
+          {filteredIdamagSteps.length > 0 ? (
+            filteredIdamagSteps.map((step) => {
               const StepIcon = step.icon;
 
               return (
                 <div
-                  key={step.id}
+                  key={`idamag-${step.id}`}
                   className="
                     bg-white
                     rounded-3xl
@@ -281,17 +326,13 @@ const UserGuide = () => {
                     border-slate-100
                     shadow-sm
                     overflow-hidden
-
                     hover:shadow-xl
                     hover:-translate-y-1
-
                     transition-all
                     duration-300
-
                     group
                   "
                 >
-                  {/* Image */}
                   <div className="relative h-44 overflow-hidden bg-slate-100 sm:h-52">
                     <img
                       src={step.image}
@@ -300,14 +341,12 @@ const UserGuide = () => {
                         w-full
                         h-full
                         object-cover
-
                         group-hover:scale-105
                         transition-transform
                         duration-500
                       "
                     />
 
-                    {/* Image Hover Overlay */}
                     <div
                       className="
                         absolute
@@ -315,33 +354,32 @@ const UserGuide = () => {
                         bg-black/0
                         group-hover:bg-black/10
                         transition-colors
-
                         flex
                         items-center
                         justify-center
                       "
                     >
                       <button
-                        onClick={() => setSelectedImage(step)}
+                        onClick={() =>
+                          setSelectedImage({
+                            ...step,
+                            section: "How to Use iDAMAG",
+                          })
+                        }
                         className="
                           w-11
                           h-11
                           bg-white
                           rounded-xl
                           shadow-lg
-
                           flex
                           items-center
                           justify-center
-
                           text-[#235E26]
-
                           opacity-0
                           scale-90
-
                           group-hover:opacity-100
                           group-hover:scale-100
-
                           transition-all
                           duration-300
                         "
@@ -351,20 +389,16 @@ const UserGuide = () => {
                       </button>
                     </div>
 
-                    {/* Icon */}
                     <div
                       className="
                         absolute
                         top-4
                         left-4
-
                         w-10
                         h-10
-
                         bg-white/95
                         rounded-xl
                         shadow-sm
-
                         flex
                         items-center
                         justify-center
@@ -377,14 +411,12 @@ const UserGuide = () => {
                     </div>
                   </div>
 
-                  {/* Card Content */}
                   <div className="p-4 sm:p-6">
                     <div
                       className="
                         flex
                         items-center
                         gap-1
-
                         text-[11px]
                         font-black
                         uppercase
@@ -403,7 +435,6 @@ const UserGuide = () => {
                         font-black
                         text-slate-800
                         mb-2
-
                         group-hover:text-[#235E26]
                         transition-colors
                       "
@@ -416,17 +447,20 @@ const UserGuide = () => {
                     </p>
 
                     <button
-                      onClick={() => setSelectedImage(step)}
+                      onClick={() =>
+                        setSelectedImage({
+                          ...step,
+                          section: "How to Use iDAMAG",
+                        })
+                      }
                       className="
                         mt-5
                         inline-flex
                         items-center
                         gap-2
-
                         text-sm
                         font-bold
                         text-[#235E26]
-
                         hover:gap-3
                         transition-all
                       "
@@ -439,62 +473,216 @@ const UserGuide = () => {
               );
             })
           ) : (
-            /* No Results */
-            <div
-              className="
-                col-span-full
-                bg-white
-                rounded-3xl
-                border
-                border-dashed
-                border-slate-200
-                py-10 sm:py-16
-
-                flex
-                flex-col
-                items-center
-                justify-center
-                text-center
-              "
-            >
-              <div
-                className="
-                  w-16
-                  h-16
-                  rounded-2xl
-                  bg-slate-100
-
-                  flex
-                  items-center
-                  justify-center
-
-                  text-slate-400
-                  mb-4
-                "
-              >
+            <div className="col-span-full bg-white rounded-3xl border border-dashed border-slate-200 py-10 sm:py-16 flex flex-col items-center justify-center text-center">
+              <div className="w-16 h-16 rounded-2xl bg-slate-100 flex items-center justify-center text-slate-400 mb-4">
                 <Search size={30} />
               </div>
 
               <h3 className="text-xl font-black text-slate-900">
-                No guide found
+                No iDAMAG guide found
               </h3>
 
               <p className="text-slate-500 mt-2">
-                No tutorials match "{searchQuery}".
+                No iDAMAG tutorials match "{searchQuery}".
               </p>
+            </div>
+          )}
+        </div>
 
-              <button
-                onClick={() => setSearchQuery("")}
-                className="
-                  mt-5
-                  text-sm
-                  font-bold
-                  text-[#235E26]
-                  hover:underline
-                "
-              >
-                Clear Search
-              </button>
+        {/* How to Use Chatbot */}
+        <div className="mt-12 mb-6 sm:mt-16">
+          <h2 className="text-xl font-black text-slate-900 sm:text-2xl">
+            How to Use Chatbot
+          </h2>
+
+          <p className="mt-1 text-sm text-slate-500 sm:text-base">
+            Follow these steps to open the chatbot, select a dashboard, ask questions, and review the answers.
+          </p>
+        </div>
+
+        <div
+          className="
+            grid
+            grid-cols-1
+            md:grid-cols-2
+            lg:grid-cols-3
+            gap-4
+            sm:gap-6
+          "
+        >
+          {filteredChatbotSteps.length > 0 ? (
+            filteredChatbotSteps.map((step) => {
+              const StepIcon = step.icon;
+
+              return (
+                <div
+                  key={`chatbot-${step.id}`}
+                  className="
+                    bg-white
+                    rounded-3xl
+                    border
+                    border-slate-100
+                    shadow-sm
+                    overflow-hidden
+                    hover:shadow-xl
+                    hover:-translate-y-1
+                    transition-all
+                    duration-300
+                    group
+                  "
+                >
+                  <div className="relative h-44 overflow-hidden bg-slate-100 sm:h-52">
+                    <img
+                      src={step.image}
+                      alt={step.title}
+                      className="
+                        w-full
+                        h-full
+                        object-cover
+                        group-hover:scale-105
+                        transition-transform
+                        duration-500
+                      "
+                    />
+
+                    <div
+                      className="
+                        absolute
+                        inset-0
+                        bg-black/0
+                        group-hover:bg-black/10
+                        transition-colors
+                        flex
+                        items-center
+                        justify-center
+                      "
+                    >
+                      <button
+                        onClick={() =>
+                          setSelectedImage({
+                            ...step,
+                            section: "How to Use Chatbot",
+                          })
+                        }
+                        className="
+                          w-11
+                          h-11
+                          bg-white
+                          rounded-xl
+                          shadow-lg
+                          flex
+                          items-center
+                          justify-center
+                          text-[#235E26]
+                          opacity-0
+                          scale-90
+                          group-hover:opacity-100
+                          group-hover:scale-100
+                          transition-all
+                          duration-300
+                        "
+                        aria-label={`View ${step.title}`}
+                      >
+                        <Maximize2 size={20} />
+                      </button>
+                    </div>
+
+                    <div
+                      className="
+                        absolute
+                        top-4
+                        left-4
+                        w-10
+                        h-10
+                        bg-white/95
+                        rounded-xl
+                        shadow-sm
+                        flex
+                        items-center
+                        justify-center
+                      "
+                    >
+                      <StepIcon
+                        size={20}
+                        className="text-[#235E26]"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="p-4 sm:p-6">
+                    <div
+                      className="
+                        flex
+                        items-center
+                        gap-1
+                        text-[11px]
+                        font-black
+                        uppercase
+                        tracking-widest
+                        text-[#235E26]
+                        mb-3
+                      "
+                    >
+                      Step {step.id}
+                      <ChevronRight size={12} />
+                    </div>
+
+                    <h3
+                      className="
+                        text-lg
+                        font-black
+                        text-slate-800
+                        mb-2
+                        group-hover:text-[#235E26]
+                        transition-colors
+                      "
+                    >
+                      {step.title}
+                    </h3>
+
+                    <p className="text-sm text-slate-500 leading-relaxed font-medium">
+                      {step.description}
+                    </p>
+
+                    <button
+                      onClick={() =>
+                        setSelectedImage({
+                          ...step,
+                          section: "How to Use Chatbot",
+                        })
+                      }
+                      className="
+                        mt-5
+                        inline-flex
+                        items-center
+                        gap-2
+                        text-sm
+                        font-bold
+                        text-[#235E26]
+                        hover:gap-3
+                        transition-all
+                      "
+                    >
+                      View Guide
+                      <ChevronRight size={16} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <div className="col-span-full bg-white rounded-3xl border border-dashed border-slate-200 py-10 sm:py-16 flex flex-col items-center justify-center text-center">
+              <div className="w-16 h-16 rounded-2xl bg-slate-100 flex items-center justify-center text-slate-400 mb-4">
+                <Search size={30} />
+              </div>
+
+              <h3 className="text-xl font-black text-slate-900">
+                No chatbot guide found
+              </h3>
+
+              <p className="text-slate-500 mt-2">
+                No chatbot tutorials match "{searchQuery}".
+              </p>
             </div>
           )}
         </div>
@@ -607,7 +795,7 @@ const UserGuide = () => {
                       text-[#235E26]
                     "
                   >
-                    Step {selectedImage.id}
+                    {selectedImage.section} • Step {selectedImage.id}
                   </div>
 
                   <h2 className="text-xl font-black text-slate-900 sm:text-2xl">
