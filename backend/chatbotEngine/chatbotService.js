@@ -217,6 +217,14 @@ const {
   ensureLocalPlannerParity,
 } = require("./localPlannerParityEngine");
 
+const {
+  resolveComplexFilterPlan,
+} = require("./complexFilterParityEngine");
+
+const {
+  enforceUniversalGrounding,
+} = require("./universalGroundingEngine");
+
 
 
 
@@ -4615,6 +4623,98 @@ async function answerQuestion(
         throw new Error(
           "The query planner returned an invalid plan."
         );
+      }
+
+      /**
+       * ==================================================
+       * V7.36 COMMON PARITY GUARDS
+       * ==================================================
+       *
+       * These run for Groq, local fallback, conversation,
+       * conversation-local, and deterministic/general plans.
+       *
+       * 1) Reconstruct grounded AND/OR boolean filter logic.
+       * 2) Enforce universal live-data grounding.
+       */
+      if (
+        plan.route ===
+          "dataset" &&
+        plan.dataset &&
+        Array.isArray(
+          datasets?.[
+            plan.dataset
+          ]
+        )
+      ) {
+        const parityRows =
+          datasets[
+            plan.dataset
+          ];
+
+        plan =
+          resolveComplexFilterPlan({
+            plan,
+            question:
+              cleanQuestion,
+            rows:
+              parityRows,
+          });
+
+        if (
+          plan?.complexFilterGroundingFailed ===
+            true
+        ) {
+          plan = {
+            route:
+              "clarify",
+            question:
+              `I could not safely ground every condition in this AND/OR request: ${plan.complexFilterUngroundedClauses.join(", ")}. Please use values that exist in the current report.`,
+            universalGroundingFailed:
+              true,
+            complexFilterGroundingFailed:
+              true,
+          };
+        } else {
+          const datasetSchema =
+            schema.find(
+              (item) =>
+                String(
+                  item?.name ||
+                  ""
+                ) ===
+                String(
+                  plan.dataset ||
+                  ""
+                )
+            );
+
+          const columns =
+            (
+              datasetSchema?.columns ||
+              []
+            )
+              .map(
+                (column) =>
+                  typeof column ===
+                    "string"
+                    ? column
+                    : column?.name
+              )
+              .filter(Boolean);
+
+          const grounding =
+            enforceUniversalGrounding({
+              plan,
+              question:
+                cleanQuestion,
+              rows:
+                parityRows,
+              columns,
+            });
+
+          plan =
+            grounding.plan;
+        }
       }
 
       if (

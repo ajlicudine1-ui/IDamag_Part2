@@ -2714,6 +2714,356 @@ test('direct filtered Association narrative is consistent for phase wording', ()
   );
 });
 
+
+test('universal grounding rejects a requested object that does not exist', () => {
+  const {
+    enforceUniversalGrounding,
+  } = require('./universalGroundingEngine');
+
+  const rows = [
+    {
+      'Intervention Details': 'Vermicast',
+      'Unit of Measurement': 'kilograms',
+      Quantity: 10,
+    },
+    {
+      'Intervention Details': 'OPV Vegetable Seeds',
+      'Unit of Measurement': 'kilograms',
+      Quantity: 5,
+    },
+  ];
+
+  const grounding =
+    enforceUniversalGrounding({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'sum',
+        column: 'Quantity',
+        filters: [
+          {
+            column: 'Unit of Measurement',
+            operator: 'equals',
+            value: 'kilograms',
+          },
+        ],
+      },
+      question:
+        'How many kilograms of fertilizer were released?',
+      rows,
+      columns: [
+        'Intervention Details',
+        'Unit of Measurement',
+        'Quantity',
+      ],
+    });
+
+  assert.strictEqual(
+    grounding.valid,
+    false
+  );
+  assert.strictEqual(
+    grounding.plan.route,
+    'clarify'
+  );
+  assert.strictEqual(
+    grounding.plan.universalGroundingFailed,
+    true
+  );
+});
+
+test('universal grounding repairs an omitted live value filter', () => {
+  const {
+    enforceUniversalGrounding,
+  } = require('./universalGroundingEngine');
+
+  const rows = [
+    {
+      Association: 'A',
+      Phase: 'Phase 2',
+    },
+    {
+      Association: 'B',
+      Phase: 'Phase 3',
+    },
+  ];
+
+  const grounding =
+    enforceUniversalGrounding({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'list',
+        column: 'Association',
+        filters: [],
+      },
+      question:
+        'List associations in Phase 2',
+      rows,
+      columns: [
+        'Association',
+        'Phase',
+      ],
+    });
+
+  assert.strictEqual(
+    grounding.valid,
+    true
+  );
+
+  const phase =
+    grounding.plan.filters.find(
+      (filter) =>
+        filter.column === 'Phase'
+    );
+
+  assert(phase);
+  assert.strictEqual(
+    phase.value,
+    'Phase 2'
+  );
+  assert.strictEqual(
+    grounding.plan.universalGroundingRepaired,
+    true
+  );
+});
+
+test('universal grounding validates filters emitted by any planner source', () => {
+  const {
+    enforceUniversalGrounding,
+  } = require('./universalGroundingEngine');
+
+  const rows = [
+    {
+      Province: 'Pangasinan',
+      Status: 'Active',
+    },
+  ];
+
+  const grounding =
+    enforceUniversalGrounding({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'list',
+        column: 'Province',
+        filters: [
+          {
+            column: 'Status',
+            operator: 'equals',
+            value: 'Imaginary',
+          },
+        ],
+      },
+      question:
+        'List Province where Status is Imaginary',
+      rows,
+      columns: [
+        'Province',
+        'Status',
+      ],
+    });
+
+  assert.strictEqual(
+    grounding.valid,
+    false
+  );
+});
+
+test('complex filter parity collapses same-column OR into IN plus AND filter', () => {
+  const {
+    resolveComplexFilterPlan,
+  } = require('./complexFilterParityEngine');
+
+  const rows = [
+    {
+      Province: 'Pangasinan',
+      Status: 'Active',
+      Project: 'A',
+    },
+    {
+      Province: 'La Union',
+      Status: 'Active',
+      Project: 'B',
+    },
+    {
+      Province: 'Ilocos Norte',
+      Status: 'Pending',
+      Project: 'C',
+    },
+  ];
+
+  const plan =
+    resolveComplexFilterPlan({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'list',
+        column: 'Project',
+        filters: [],
+      },
+      question:
+        'List Project in Pangasinan or La Union and Active',
+      rows,
+    });
+
+  assert.strictEqual(
+    plan.complexFilterResolved,
+    true
+  );
+  assert.strictEqual(
+    plan.filterGroups.length,
+    0
+  );
+
+  const province =
+    plan.filters.find(
+      (filter) =>
+        filter.column === 'Province'
+    );
+
+  const status =
+    plan.filters.find(
+      (filter) =>
+        filter.column === 'Status'
+    );
+
+  assert(province);
+  assert.strictEqual(
+    province.operator,
+    'in'
+  );
+  assert.deepStrictEqual(
+    province.value,
+    [
+      'Pangasinan',
+      'La Union',
+    ]
+  );
+
+  assert(status);
+  assert.strictEqual(
+    status.value,
+    'Active'
+  );
+});
+
+test('complex filter parity creates OR-of-AND groups for independent alternatives', () => {
+  const {
+    resolveComplexFilterPlan,
+  } = require('./complexFilterParityEngine');
+
+  const rows = [
+    {
+      Province: 'Pangasinan',
+      Status: 'Active',
+      Project: 'A',
+    },
+    {
+      Province: 'La Union',
+      Status: 'Pending',
+      Project: 'B',
+    },
+    {
+      Province: 'Pangasinan',
+      Status: 'Pending',
+      Project: 'C',
+    },
+  ];
+
+  const plan =
+    resolveComplexFilterPlan({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'lookup',
+        column: 'Project',
+        filters: [],
+      },
+      question:
+        'Pangasinan and Active or La Union and Pending',
+      rows,
+    });
+
+  assert.strictEqual(
+    plan.complexFilterResolved,
+    true
+  );
+  assert.strictEqual(
+    plan.filterGroupLogic,
+    'or'
+  );
+  assert.strictEqual(
+    plan.filterGroups.length,
+    2
+  );
+
+  assert.deepStrictEqual(
+    plan.filterGroups[0].filters.map(
+      (filter) => [
+        filter.column,
+        filter.value,
+      ]
+    ),
+    [
+      ['Province', 'Pangasinan'],
+      ['Status', 'Active'],
+    ]
+  );
+
+  assert.deepStrictEqual(
+    plan.filterGroups[1].filters.map(
+      (filter) => [
+        filter.column,
+        filter.value,
+      ]
+    ),
+    [
+      ['Province', 'La Union'],
+      ['Status', 'Pending'],
+    ]
+  );
+});
+
+test('complex filter parity refuses partial AND OR grounding', () => {
+  const {
+    resolveComplexFilterPlan,
+  } = require('./complexFilterParityEngine');
+
+  const rows = [
+    {
+      Province: 'Pangasinan',
+      Status: 'Active',
+      Project: 'A',
+    },
+  ];
+
+  const plan =
+    resolveComplexFilterPlan({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'list',
+        column: 'Project',
+        filters: [],
+      },
+      question:
+        'Pangasinan and ImaginaryStatus',
+      rows,
+    });
+
+  assert.strictEqual(
+    plan.complexFilterGroundingFailed,
+    true
+  );
+  assert.deepStrictEqual(
+    plan.complexFilterUngroundedClauses,
+    [
+      'ImaginaryStatus',
+    ]
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];

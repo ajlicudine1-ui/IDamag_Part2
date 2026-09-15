@@ -1041,6 +1041,19 @@ Dataset:
       "value":"scalar or array for in/not_in"
     }
   ],
+  "filterGroups":[
+    {
+      "logic":"and",
+      "filters":[
+        {
+          "column":"exact column",
+          "operator":"equals|not_equals|contains|starts_with|ends_with|greater_than|greater_or_equal|less_than|less_or_equal|in|not_in",
+          "value":"scalar or array"
+        }
+      ]
+    }
+  ],
+  "filterGroupLogic":"or|null",
   "selectColumns":["exact requested output columns"],
   "outputRequested":true,
   "transform":"first_word|last_word|null",
@@ -1095,6 +1108,13 @@ RULES
 14. If genuinely ambiguous, return route "clarify".
 15. If the user challenges a prior answer, create an executable dataset plan
     so JavaScript verifies the claim. Never accept the correction as fact.
+16. Preserve explicit boolean logic. For simple same-column alternatives use
+    an "in" filter. For expressions that require OR across independent
+    conditions, use filterGroups as OR-of-AND groups. Never silently drop an
+    AND/OR condition.
+17. Every explicit requested object/category/value must be grounded to the
+    live schema or RETRIEVED REAL DATA. If it cannot be grounded, return
+    route "clarify" instead of broadening the query.
 
 Return JSON only.
 `;
