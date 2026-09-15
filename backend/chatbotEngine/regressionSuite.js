@@ -638,7 +638,7 @@ test('categorical list plans do not get numeric metric semantics', () => {
   assert.strictEqual(plan.metricMeaningSkipped, true);
 });
 
-test('plain list narrative uses the user question as a natural introduction', () => {
+test('plain list narrative uses standardized count-and-list formatting', () => {
   const {
     buildSemanticVerifiedAnswer,
   } = require('./responseNarrativeEngine');
@@ -660,9 +660,10 @@ test('plain list narrative uses the user question as a natural introduction', ()
     },
   });
 
-  assert(answer.startsWith('3 organizations received support:'));
-  assert(answer.includes('1. Org A'));
-  assert(answer.includes('3. Org C'));
+  assert.strictEqual(
+    answer,
+    `3 organizations:\n1. Org A\n2. Org B\n3. Org C`
+  );
 });
 
 test('list introduction avoids copying do-they grammar incorrectly', () => {
@@ -836,7 +837,7 @@ test('filtered plural field with appear wording scans all matching rows', () => 
   assert.strictEqual(plan.limit, 100);
 });
 
-test('small filtered list narrative uses a natural sentence', () => {
+test('small filtered list narrative uses standardized count-and-list formatting', () => {
   const {
     buildSemanticVerifiedAnswer,
   } = require('./responseNarrativeEngine');
@@ -869,7 +870,7 @@ test('small filtered list narrative uses a natural sentence', () => {
 
   assert.strictEqual(
     answer,
-    'The beneficiary subtypes under Individual are Farmer, Others, School, FCA, and NGO.'
+    `5 beneficiary subtypes in Individual:\n1. Farmer\n2. Others\n3. School\n4. FCA\n5. NGO`
   );
 });
 
@@ -3061,6 +3062,358 @@ test('complex filter parity refuses partial AND OR grounding', () => {
     [
       'ImaginaryStatus',
     ]
+  );
+});
+
+
+test('all simple list answers use the same format across planner sources', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const plannerSources = [
+    'groq',
+    'local-fallback',
+    'conversation',
+    'conversation-local',
+    'deterministic-direct',
+  ];
+
+  for (const plannerSource of plannerSources) {
+    const answer =
+      buildSemanticVerifiedAnswer({
+        question:
+          'Which associations are registered with SEC or DOLE?',
+        plan: {
+          route: 'dataset',
+          operation: 'list',
+          column: 'Association',
+          filters: [
+            {
+              column: 'SEC/DOLE/CDA',
+              operator: 'in',
+              value: ['SEC', 'DOLE'],
+            },
+          ],
+          plannerSource,
+        },
+        result: {
+          success: true,
+          operation: 'list',
+          count: 3,
+          results: [
+            'Association A',
+            'Association B',
+            'Association C',
+          ],
+        },
+      });
+
+    assert.strictEqual(
+      answer,
+      `3 associations:\n1. Association A\n2. Association B\n3. Association C`
+    );
+  }
+});
+
+test('single equals filter may add a natural scope while retaining count-and-list format', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer =
+    buildSemanticVerifiedAnswer({
+      question: 'What associations are in Phase 2?',
+      plan: {
+        route: 'dataset',
+        operation: 'list',
+        column: 'Association',
+        filters: [
+          {
+            column: 'Phase',
+            operator: 'equals',
+            value: 'Phase 2',
+          },
+        ],
+      },
+      result: {
+        success: true,
+        operation: 'list',
+        count: 2,
+        results: [
+          'Association A',
+          'Association B',
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    answer,
+    `2 associations in Phase 2:\n1. Association A\n2. Association B`
+  );
+});
+
+test('IN filters do not render array values as awkward list scopes', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer =
+    buildSemanticVerifiedAnswer({
+      question:
+        'Which associations are registered with SEC or DOLE?',
+      plan: {
+        route: 'dataset',
+        operation: 'list',
+        column: 'Association',
+        filters: [
+          {
+            column: 'SEC/DOLE/CDA',
+            operator: 'in',
+            value: ['SEC', 'DOLE'],
+          },
+        ],
+      },
+      result: {
+        success: true,
+        operation: 'list',
+        results: [
+          'Association A',
+          'Association B',
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    answer,
+    `2 associations:\n1. Association A\n2. Association B`
+  );
+});
+
+test('verified list formatting is preserved from Groq language rewriting', () => {
+  const {
+    shouldPreserveDeterministicSemanticAnswer,
+  } = require('./responseGenerator');
+
+  assert.strictEqual(
+    shouldPreserveDeterministicSemanticAnswer({
+      plan: {
+        route: 'dataset',
+        operation: 'list',
+        column: 'Association',
+        labelColumn: null,
+      },
+      result: {
+        success: true,
+        operation: 'list',
+        results: [
+          'Association A',
+          'Association B',
+        ],
+      },
+      semanticAnswer:
+        `2 associations:\n1. Association A\n2. Association B`,
+    }),
+    true
+  );
+});
+
+
+test('response style router keeps simple scalar lists as clean lists', () => {
+  const {
+    classifyResponseStyle,
+  } = require('./responseStyleRouter');
+
+  const style =
+    classifyResponseStyle({
+      question:
+        'Which associations are in Pangasinan?',
+      plan: {
+        operation: 'list',
+        column: 'Association',
+      },
+      result: {
+        operation: 'list',
+        results: [
+          'Association A',
+          'Association B',
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    style,
+    'simple_list'
+  );
+});
+
+test('response style router sends paired lookups to human-like relationship narrative', () => {
+  const {
+    classifyResponseStyle,
+  } = require('./responseStyleRouter');
+
+  const style =
+    classifyResponseStyle({
+      question:
+        'What commodities do they produce?',
+      plan: {
+        operation: 'lookup',
+        column: 'Commodities',
+        labelColumn: 'Municipality',
+      },
+      result: {
+        operation: 'lookup',
+        column: 'Commodities',
+        labelColumn: 'Municipality',
+        results: [
+          {
+            Municipality: 'Sison',
+            Commodities: 'rice, corn, vegetables',
+          },
+          {
+            Municipality: 'Mabini',
+            Commodities: 'rice, vegetables, sugarcane',
+          },
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    style,
+    'relationship_grouped'
+  );
+});
+
+test('response style router sends scalar calculations to concise numeric analysis', () => {
+  const {
+    classifyResponseStyle,
+  } = require('./responseStyleRouter');
+
+  const style =
+    classifyResponseStyle({
+      question:
+        'What is the total land area?',
+      plan: {
+        operation: 'sum',
+        column: 'Total Land Area (ha)',
+      },
+      result: {
+        operation: 'sum',
+        value: 123.45,
+      },
+    });
+
+  assert.strictEqual(
+    style,
+    'numeric_analysis'
+  );
+});
+
+test('response style router prioritizes ranking over generic grouped output', () => {
+  const {
+    classifyResponseStyle,
+  } = require('./responseStyleRouter');
+
+  const style =
+    classifyResponseStyle({
+      question:
+        'Which association has the largest land area?',
+      plan: {
+        operation: 'rank_groups',
+        column: 'Total Land Area (ha)',
+        groupBy: 'Association',
+        direction: 'desc',
+      },
+      result: {
+        operation: 'rank_groups',
+        groupBy: 'Association',
+        direction: 'desc',
+        results: [
+          {
+            label: 'Association A',
+            value: 161.6967,
+          },
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    style,
+    'ranking'
+  );
+});
+
+test('response style router prioritizes conversational continuation for follow-ups', () => {
+  const {
+    classifyResponseStyle,
+  } = require('./responseStyleRouter');
+
+  const style =
+    classifyResponseStyle({
+      question:
+        'What about Phase 3?',
+      plan: {
+        operation: 'list',
+        column: 'Association',
+        conversationalFilterSwitch: true,
+      },
+      result: {
+        operation: 'list',
+        results: [
+          'Association A',
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    style,
+    'follow_up'
+  );
+});
+
+test('relationship narrative remains human-like instead of becoming a raw list', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer =
+    buildSemanticVerifiedAnswer({
+      question:
+        'What commodities do they produce?',
+      plan: {
+        operation: 'lookup',
+        column: 'Commodities',
+        labelColumn: 'Municipality',
+      },
+      result: {
+        success: true,
+        operation: 'lookup',
+        column: 'Commodities',
+        labelColumn: 'Municipality',
+        results: [
+          {
+            Municipality: 'Sison',
+            Commodities: 'rice, corn, vegetables',
+          },
+          {
+            Municipality: 'Anda',
+            Commodities: 'rice, corn, vegetables',
+          },
+          {
+            Municipality: 'Binalonan',
+            Commodities: 'rice, corn, vegetables',
+          },
+          {
+            Municipality: 'Mabini',
+            Commodities: 'rice, vegetables, sugarcane',
+          },
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    answer,
+    'They produce rice, corn, vegetables, and sugarcane. Sison, Anda, and Binalonan produce rice, corn, and vegetables, while Mabini produces rice, vegetables, and sugarcane.'
   );
 });
 

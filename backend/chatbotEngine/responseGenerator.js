@@ -18,6 +18,11 @@ const {
   finalizeUserFacingGrammar,
 } = require("./responseGrammarEngine");
 
+const {
+  classifyResponseStyle,
+  getResponseStyleInstruction,
+} = require("./responseStyleRouter");
+
 
 /**
  * ============================================================
@@ -129,6 +134,33 @@ function shouldPreserveDeterministicSemanticAnswer({
     : [];
 
   if (!rows.length) return false;
+
+  const responseStyle =
+    classifyResponseStyle({
+      question: "",
+      plan,
+      result,
+    });
+
+  /**
+   * Keep deterministic answers when the engine already has the exact
+   * presentation shape we want. This preserves parity when Groq is available
+   * or unavailable.
+   *
+   * - simple list -> clean deterministic list
+   * - relationship/grouped -> verified human-like local narrative
+   *
+   * Numeric and ranking answers may still receive tiny language polish, but
+   * their verified values/order remain locked by the formatter prompt.
+   */
+  if (
+    responseStyle ===
+      "simple_list" ||
+    responseStyle ===
+      "relationship_grouped"
+  ) {
+    return true;
+  }
 
   const labelColumn =
     result?.labelColumn ||
@@ -298,6 +330,13 @@ async function generateNaturalResponse({
       result,
     });
 
+  const responseStyle =
+    classifyResponseStyle({
+      question,
+      plan,
+      result,
+    });
+
   const fallback =
     finalizeUserFacingGrammar(
       decorateVerifiedAnswer(
@@ -372,6 +411,11 @@ STRICT RULES:
 - Preserve and naturally include the verified unit when one is provided.
 - Preserve any missing-data note when dataQuality says it is material.
 - Return ONLY the final answer.
+
+RESPONSE STYLE:
+${getResponseStyleInstruction(
+  responseStyle
+)}
 
 The LOCAL ANSWER is already fact-safe. Prefer making only small stylistic improvements.
 `.trim();
