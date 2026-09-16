@@ -1316,9 +1316,70 @@ function buildVerifiedListAnswer({
 }
 
 
+function splitDistinctCellValues(
+  value
+) {
+  const raw =
+    String(
+      value ?? ""
+    ).trim();
+
+  if (!raw) {
+    return [];
+  }
+
+  if (/[;|\r\n]/.test(raw)) {
+    return raw
+      .split(
+        /\s*(?:;|\||\r?\n)\s*/
+      )
+      .map(
+        (part) =>
+          part.trim()
+      )
+      .filter(Boolean);
+  }
+
+  if (
+    raw.includes(",")
+  ) {
+    const parts =
+      raw
+        .split(",")
+        .map(
+          (part) =>
+            part.trim()
+        )
+        .filter(Boolean);
+
+    const compactCategoryList =
+      parts.length >= 2 &&
+      parts.length <= 20 &&
+      parts.every(
+        (part) =>
+          part
+            .split(/\s+/)
+            .filter(Boolean)
+            .length <= 6
+      );
+
+    if (
+      compactCategoryList
+    ) {
+      return parts;
+    }
+  }
+
+  return [
+    raw,
+  ];
+}
+
+
 function normalizeDirectSingleFieldResult({
   plan,
   result,
+  question = "",
 }) {
   if (
     !plan ||
@@ -1361,6 +1422,16 @@ function normalizeDirectSingleFieldResult({
   const distinctMap =
     new Map();
 
+  const wantsDistinctValues =
+    /\b(?:distinct|unique|different)\b/i.test(
+      String(
+        question || ""
+      )
+    );
+
+  let multiValueNormalized =
+    false;
+
   for (
     const item of
     result.results
@@ -1385,21 +1456,48 @@ function normalizeDirectSingleFieldResult({
       continue;
     }
 
-    const displayValue =
-      String(
-        value
-      ).trim();
-
-    const key =
-      normalizeText(
-        displayValue
-      );
+    const displayValues =
+      wantsDistinctValues
+        ? splitDistinctCellValues(
+            value
+          )
+        : [
+            String(
+              value
+            ).trim(),
+          ];
 
     if (
-      !distinctMap.has(
-        key
-      )
+      displayValues.length >
+      1
     ) {
+      multiValueNormalized =
+        true;
+    }
+
+    for (
+      const displayValueRaw of
+      displayValues
+    ) {
+      const displayValue =
+        String(
+          displayValueRaw
+        ).trim();
+
+      const key =
+        normalizeText(
+          displayValue
+        );
+
+      if (
+        !key ||
+        distinctMap.has(
+          key
+        )
+      ) {
+        continue;
+      }
+
       distinctMap.set(
         key,
         typeof item ===
@@ -1423,6 +1521,7 @@ function normalizeDirectSingleFieldResult({
     ];
 
   if (
+    !multiValueNormalized &&
     distinctResults.length ===
       result.results.length
   ) {
@@ -1438,8 +1537,12 @@ function normalizeDirectSingleFieldResult({
     distinctResultCount:
       distinctResults.length,
     duplicateRowsRemoved:
-      result.results.length -
-      distinctResults.length,
+      Math.max(
+        0,
+        result.results.length -
+          distinctResults.length
+      ),
+    multiValueNormalized,
   };
 }
 
@@ -5482,6 +5585,8 @@ async function answerQuestion(
           directFilteredFieldPlan,
         result:
           rawDirectFilteredFieldResult,
+        question:
+          cleanQuestion,
       });
 
     updateConversation(
@@ -7674,6 +7779,8 @@ async function answerQuestion(
     httpStatus: null,
     code: null,
     message: null,
+    jsonRetryUsed: false,
+    jsonRetryRecovered: false,
   };
 
   /**
@@ -7697,20 +7804,46 @@ async function answerQuestion(
         retrievalContext,
       });
 
+    const groqPlanDiagnostics =
+      groqPlan?.__groqDiagnostics ||
+      null;
+
     groqDiagnostic = {
-      status: "ok",
+      status:
+        groqPlanDiagnostics
+          ?.jsonRetryRecovered
+          ? "ok_after_json_retry"
+          : "ok",
       httpStatus: 200,
       code: null,
       message: null,
+      jsonRetryUsed:
+        Boolean(
+          groqPlanDiagnostics
+            ?.jsonRetryUsed
+        ),
+      jsonRetryRecovered:
+        Boolean(
+          groqPlanDiagnostics
+            ?.jsonRetryRecovered
+        ),
     };
   } catch (error) {
     groqPlanningError =
       error;
 
-    groqDiagnostic =
-      classifyGroqError(
+    groqDiagnostic = {
+      ...classifyGroqError(
         error
-      );
+      ),
+      jsonRetryUsed:
+        Boolean(
+          error
+            ?.groqJsonRetryUsed
+        ),
+      jsonRetryRecovered:
+        false,
+    };
 
     console.error(
       "Groq planning failed; local fallback will be used:",
@@ -8422,6 +8555,18 @@ async function answerQuestion(
       groqErrorCode:
         groqDiagnostic.code,
 
+      groqJsonRetryUsed:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryUsed
+        ),
+
+      groqJsonRetryRecovered:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryRecovered
+        ),
+
       groqPlanningError:
         groqPlanningError?.message ||
         null,
@@ -8452,6 +8597,18 @@ async function answerQuestion(
 
       groqErrorCode:
         groqDiagnostic.code,
+
+      groqJsonRetryUsed:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryUsed
+        ),
+
+      groqJsonRetryRecovered:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryRecovered
+        ),
 
       groqPlanningError:
         groqPlanningError?.message ||

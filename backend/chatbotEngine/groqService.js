@@ -1125,6 +1125,48 @@ function compactConversationContext(
  *
  * JavaScript performs the real lookup/calculation.
  */
+
+function shouldRetryGroqJsonError(
+  error
+) {
+  return (
+    error?.groqErrorType ===
+      "invalid_json" ||
+    classifyGroqError(
+      error
+    ).status ===
+      "invalid_json"
+  );
+}
+
+function buildGroqJsonRepairMessages({
+  originalSystemPrompt,
+  originalUserPrompt,
+  invalidResponse,
+}) {
+  return [
+    {
+      role: "system",
+      content:
+        `${originalSystemPrompt}\n\n` +
+        `IMPORTANT RECOVERY RULE:\n` +
+        `Your previous planner response was not valid JSON. ` +
+        `Return exactly ONE syntactically valid JSON object only. ` +
+        `Do not use Markdown fences, comments, explanations, trailing commas, ` +
+        `or text before/after the JSON object.`,
+    },
+    {
+      role: "user",
+      content:
+        `${originalUserPrompt}\n\n` +
+        `INVALID PREVIOUS PLANNER RESPONSE:\n` +
+        `${String(invalidResponse || "").slice(0, 6000)}\n\n` +
+        `Repair the planner response and return ONE valid JSON object only.`,
+    },
+  ];
+}
+
+
 async function createSchemaAwarePlan({
   question,
   schema,
@@ -1286,43 +1328,121 @@ RULES
 Return JSON only.
 `;
 
-  const response = await callGroq(
-    [
-      {
-        role: "system",
-        content: systemPrompt,
-      },
+  const plannerUserPrompt =
+    `SCHEMA:\n${JSON.stringify(
+      compactSchema
+    )}\n\n` +
 
-      {
-        role: "user",
-        content:
-          `SCHEMA:\n${JSON.stringify(
-            compactSchema
-          )}\n\n` +
+    `SEMANTIC HINTS:\n${JSON.stringify(
+      semanticHints
+    )}\n\n` +
 
-          `SEMANTIC HINTS:\n${JSON.stringify(
-            semanticHints
-          )}\n\n` +
+    `RETRIEVED REAL DATA:\n${JSON.stringify(
+      safeRetrievalContext
+    )}\n\n` +
 
-          `RETRIEVED REAL DATA:\n${JSON.stringify(
-            safeRetrievalContext
-          )}\n\n` +
+    `CONVERSATION CONTEXT:\n${JSON.stringify(
+      safeContext
+    )}\n\n` +
 
-          `CONVERSATION CONTEXT:\n${JSON.stringify(
-            safeContext
-          )}\n\n` +
+    `QUESTION:\n${question}`;
 
-          `QUESTION:\n${question}`,
-      },
-    ],
+  const plannerMessages = [
     {
-      temperature: 0,
-      maxTokens: 600,
+      role: "system",
+      content: systemPrompt,
+    },
+    {
+      role: "user",
+      content:
+        plannerUserPrompt,
+    },
+  ];
+
+  let response =
+    await callGroq(
+      plannerMessages,
+      {
+        temperature: 0,
+        maxTokens: 600,
+      }
+    );
+
+  let plan = null;
+  let groqJsonRetryUsed =
+    false;
+
+  try {
+    plan =
+      extractJsonObject(
+        response
+      );
+  } catch (error) {
+    if (
+      !shouldRetryGroqJsonError(
+        error
+      )
+    ) {
+      throw error;
+    }
+
+    groqJsonRetryUsed =
+      true;
+
+    const repairMessages =
+      buildGroqJsonRepairMessages({
+        originalSystemPrompt:
+          systemPrompt,
+        originalUserPrompt:
+          plannerUserPrompt,
+        invalidResponse:
+          response,
+      });
+
+    response =
+      await callGroq(
+        repairMessages,
+        {
+          temperature: 0,
+          maxTokens: 600,
+        }
+      );
+
+    try {
+      plan =
+        extractJsonObject(
+          response
+        );
+    } catch (retryError) {
+      if (
+        shouldRetryGroqJsonError(
+          retryError
+        )
+      ) {
+        retryError.groqJsonRetryUsed =
+          true;
+        retryError.groqJsonRetryRecovered =
+          false;
+      }
+
+      throw retryError;
+    }
+  }
+
+  Object.defineProperty(
+    plan,
+    "__groqDiagnostics",
+    {
+      value: {
+        jsonRetryUsed:
+          groqJsonRetryUsed,
+        jsonRetryRecovered:
+          groqJsonRetryUsed,
+      },
+      enumerable: false,
+      configurable: true,
     }
   );
-
-  const plan =
-    extractJsonObject(response);
 
   // ==========================================================
   // EXACT SCHEMA COLUMN SAFETY NET
@@ -1610,4 +1730,6 @@ module.exports = {
   answerGeneralQuestion,
   createSchemaAwarePlan,
   classifyGroqError,
+  shouldRetryGroqJsonError,
+  buildGroqJsonRepairMessages,
 };

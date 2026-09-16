@@ -1,4 +1,6 @@
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { buildSchema } = require('./schemaBuilder');
 const {
   refineStoredMetricOperation,
@@ -3835,6 +3837,188 @@ test('Groq diagnostics identify missing key, timeout, network, and server failur
       server
     ).status,
     'server_error'
+  );
+});
+
+
+test('distinct multi-value cells normalize to individual semantic values in local direct path', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'function splitDistinctCellValues'
+    )
+  );
+
+  assert(
+    source.includes(
+      'wantsDistinctValues'
+    )
+  );
+
+  assert(
+    source.includes(
+      'multiValueNormalized'
+    )
+  );
+});
+
+test('distinct cell splitter is generic for categorical comma lists and preserves long name-like values', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const helperStart =
+    source.indexOf(
+      'function splitDistinctCellValues'
+    );
+
+  const helperEnd =
+    source.indexOf(
+      'function normalizeDirectSingleFieldResult',
+      helperStart
+    );
+
+  assert(
+    helperStart >= 0 &&
+    helperEnd > helperStart
+  );
+
+  const helperSource =
+    source.slice(
+      helperStart,
+      helperEnd
+    );
+
+  const makeHelper =
+    new Function(
+      `${helperSource}; return splitDistinctCellValues;`
+    );
+
+  const splitDistinctCellValues =
+    makeHelper();
+
+  assert.deepStrictEqual(
+    splitDistinctCellValues(
+      'rice, corn, vegetables'
+    ),
+    [
+      'rice',
+      'corn',
+      'vegetables',
+    ]
+  );
+
+  assert.deepStrictEqual(
+    splitDistinctCellValues(
+      'Typhoon, Flood, Drought'
+    ),
+    [
+      'Typhoon',
+      'Flood',
+      'Drought',
+    ]
+  );
+
+  assert.deepStrictEqual(
+    splitDistinctCellValues(
+      'A very long organization name with many descriptive words, another very long descriptive organization value'
+    ),
+    [
+      'A very long organization name with many descriptive words, another very long descriptive organization value',
+    ]
+  );
+});
+
+
+test('Groq invalid JSON is eligible for one JSON repair retry only', () => {
+  const {
+    shouldRetryGroqJsonError,
+  } = require('./groqService');
+
+  const invalid =
+    new Error(
+      'Groq returned malformed JSON.'
+    );
+  invalid.groqErrorType =
+    'invalid_json';
+
+  assert.strictEqual(
+    shouldRetryGroqJsonError(
+      invalid
+    ),
+    true
+  );
+
+  const rateLimited =
+    new Error(
+      'Rate limit reached'
+    );
+  rateLimited.httpStatus =
+    429;
+
+  assert.strictEqual(
+    shouldRetryGroqJsonError(
+      rateLimited
+    ),
+    false
+  );
+});
+
+test('Groq JSON repair prompt preserves planner context and demands JSON only', () => {
+  const {
+    buildGroqJsonRepairMessages,
+  } = require('./groqService');
+
+  const messages =
+    buildGroqJsonRepairMessages({
+      originalSystemPrompt:
+        'SYSTEM CONTRACT',
+      originalUserPrompt:
+        'QUESTION: test',
+      invalidResponse:
+        'Here is your answer: {bad json}',
+    });
+
+  assert.strictEqual(
+    messages.length,
+    2
+  );
+
+  assert(
+    messages[0].content.includes(
+      'SYSTEM CONTRACT'
+    )
+  );
+
+  assert(
+    messages[0].content.includes(
+      'exactly ONE syntactically valid JSON object only'
+    )
+  );
+
+  assert(
+    messages[1].content.includes(
+      'QUESTION: test'
+    )
+  );
+
+  assert(
+    messages[1].content.includes(
+      '{bad json}'
+    )
   );
 });
 
