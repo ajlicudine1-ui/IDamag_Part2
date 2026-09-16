@@ -20,7 +20,7 @@ const idamagSteps = [
     title: "Open the iDAMAG Home Page",
     description:
       "Access the iDAMAG public portal and click the Explore Dashboards button to begin viewing the available dashboards.",
-    image: "/iDAMAG/User Guide/1.png",
+    image: "/iDAMAG/For Public Users/1.png",
     icon: Monitor,
   },
   {
@@ -28,7 +28,7 @@ const idamagSteps = [
     title: "Select a Dashboard Category",
     description:
       "Choose a dashboard category such as Agricultural Production, Agricultural Programs, Administration, Farmers & Beneficiaries, Animal Health, or another available category.",
-    image: "/iDAMAG/User Guide/2.png",
+    image: "/iDAMAG/For Public Users/2.png",
     icon: Navigation,
   },
   {
@@ -36,7 +36,7 @@ const idamagSteps = [
     title: "Select a Division or Section",
     description:
       "From the selected category, choose the division or section whose reports and dashboards you want to view.",
-    image: "/iDAMAG/User Guide/3.png",
+    image: "/iDAMAG/For Public Users/3.png",
     icon: Building2,
   },
   {
@@ -44,7 +44,7 @@ const idamagSteps = [
     title: "Choose a Dashboard",
     description:
       "Select one of the available dashboards under the chosen division or section to open its report.",
-    image: "/iDAMAG/User Guide/4.png",
+    image: "/iDAMAG/For Public Users/4.png",
     icon: FileText,
   },
   {
@@ -52,7 +52,7 @@ const idamagSteps = [
     title: "View the Dashboard",
     description:
       "Review the selected dashboard and explore its charts, maps, statistics, filters, and other available information.",
-    image: "/iDAMAG/User Guide/5.png",
+    image: "/iDAMAG/For Public Users/5.png",
     icon: BookOpen,
   },
 ];
@@ -63,7 +63,7 @@ const chatbotSteps = [
     title: "Open the iDAMAG Chatbot",
     description:
       "Click the chatbot button on the page to open the iDAMAG Chatbot and start asking questions about available dashboard data.",
-    image: "/iDAMAG/User Guide/6.png",
+    image: "/iDAMAG/For Public Users/6.png",
     icon: BookOpen,
   },
   {
@@ -71,7 +71,7 @@ const chatbotSteps = [
     title: "Select a Dashboard in the Chatbot",
     description:
       "Choose the dashboard you want to ask about from the list of available dashboards shown inside the chatbot.",
-    image: "/iDAMAG/User Guide/7.png",
+    image: "/iDAMAG/For Public Users/7.png",
     icon: Navigation,
   },
   {
@@ -79,7 +79,7 @@ const chatbotSteps = [
     title: "Start a Chat with the Selected Dashboard",
     description:
       "After selecting a dashboard, the chatbot connects to its available data and becomes ready to answer questions about that report.",
-    image: "/iDAMAG/User Guide/8.png",
+    image: "/iDAMAG/For Public Users/8.png",
     icon: Monitor,
   },
   {
@@ -87,7 +87,7 @@ const chatbotSteps = [
     title: "Ask a Question",
     description:
       "Type a natural-language question about the selected dashboard. You can ask about locations, associations, values, rankings, totals, or other information available in the report.",
-    image: "/iDAMAG/User Guide/9.png",
+    image: "/iDAMAG/For Public Users/9.png",
     icon: Search,
   },
   {
@@ -95,7 +95,7 @@ const chatbotSteps = [
     title: "Review the Chatbot Response",
     description:
       "Review the chatbot's answer based on the connected dashboard data, then continue asking follow-up questions when you need more information.",
-    image: "/iDAMAG/User Guide/10.png",
+    image: "/iDAMAG/For Public Users/10.png",
     icon: FileText,
   },
 ];
