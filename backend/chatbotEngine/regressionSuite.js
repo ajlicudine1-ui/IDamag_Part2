@@ -3605,6 +3605,130 @@ test('explicit referential copular lookup uses semantic human-like relationship 
   );
 });
 
+
+test('current explicit distinct field wins over relationship subject in direct filtered question', () => {
+  const {
+    resolveDirectFilteredFieldPlan,
+    normalizeDirectRequestedFieldPhrase,
+  } = require('./directQueryResolver');
+
+  assert.strictEqual(
+    normalizeDirectRequestedFieldPhrase(
+      'distinct commodities are produced by associations'
+    ),
+    'commodities'
+  );
+
+  const datasets = {
+    Main_Table_2026: [
+      {
+        Association: 'Association A',
+        Commodities: 'rice, corn, vegetables',
+        Province: 'Pangasinan',
+      },
+      {
+        Association: 'Association B',
+        Commodities: 'rice, vegetables, sugarcane',
+        Province: 'Pangasinan',
+      },
+      {
+        Association: 'Association C',
+        Commodities: 'corn',
+        Province: 'La Union',
+      },
+    ],
+  };
+
+  const schema = [{
+    name: 'Main_Table_2026',
+    columns: [
+      { name: 'Association', type: 'text' },
+      { name: 'Commodities', type: 'text' },
+      { name: 'Province', type: 'text' },
+    ],
+  }];
+
+  const plan =
+    resolveDirectFilteredFieldPlan({
+      question:
+        'What distinct commodities are produced by associations in Pangasinan?',
+      schema,
+      datasets,
+    });
+
+  assert(plan);
+  assert.strictEqual(
+    plan.operation,
+    'list'
+  );
+  assert.strictEqual(
+    plan.column,
+    'Commodities'
+  );
+  assert.deepStrictEqual(
+    plan.filters,
+    [
+      {
+        column: 'Province',
+        operator: 'equals',
+        value: 'Pangasinan',
+      },
+    ]
+  );
+});
+
+test('direct field relationship cleanup is generic outside commodities', () => {
+  const {
+    resolveDirectFilteredFieldPlan,
+  } = require('./directQueryResolver');
+
+  const datasets = {
+    Sheet1: [
+      {
+        Project: 'Project A',
+        Status: 'Completed',
+        Province: 'Pangasinan',
+      },
+      {
+        Project: 'Project B',
+        Status: 'Active',
+        Province: 'Pangasinan',
+      },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: [
+      { name: 'Project', type: 'text' },
+      { name: 'Status', type: 'text' },
+      { name: 'Province', type: 'text' },
+    ],
+  }];
+
+  const plan =
+    resolveDirectFilteredFieldPlan({
+      question:
+        'What unique projects are located in Pangasinan?',
+      schema,
+      datasets,
+    });
+
+  assert(plan);
+  assert.strictEqual(
+    plan.column,
+    'Project'
+  );
+  assert.strictEqual(
+    plan.filters[0].column,
+    'Province'
+  );
+  assert.strictEqual(
+    plan.filters[0].value,
+    'Pangasinan'
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
