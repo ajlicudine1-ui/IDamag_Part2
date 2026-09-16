@@ -2751,16 +2751,13 @@ function recoverLocalReferentialPlanFromConversation({
     return plan;
   }
 
-  // A valid local dataset plan already has enough information.
-  if (
-    plan.route === "dataset" &&
-    plan.dataset &&
-    plan.column
-  ) {
-    return plan;
-  }
-
+  /**
+   * A valid local dataset plan may still be incomplete for a referential
+   * relationship question. Do not return early just because dataset+column
+   * exist; enrich the CURRENT field with the PREVIOUS verified pair column.
+   */
   const datasetName =
+    plan.dataset ||
     context.lastDataset ||
     context.semanticPlan?.dataset ||
     null;
@@ -2816,9 +2813,14 @@ function recoverLocalReferentialPlanFromConversation({
       ) || null;
     };
 
-  // Prefer the immediately previous verified output/metric field.
-  // This is conversation-derived, not domain hardcoding.
+  /**
+   * The current question's locally resolved live field wins.
+   * Previous conversation fields are only fallbacks.
+   */
   const valueColumn =
+    findLiveColumn(
+      plan.column
+    ) ||
     findLiveColumn(
       context.lastMetric
     ) ||
@@ -2873,24 +2875,38 @@ function recoverLocalReferentialPlanFromConversation({
     }
   }
 
-  const filters =
+  /**
+   * Prefer the current local plan's grounded filters. If it has no scope,
+   * inherit the previous VERIFIED conversation filters.
+   */
+  const sourceFilters =
     Array.isArray(
-      context.lastFilters
-    )
-      ? context.lastFilters.map(
-          (filter) => ({
-            ...filter,
-            value:
-              Array.isArray(
-                filter?.value
-              )
-                ? [
-                    ...filter.value,
-                  ]
-                : filter?.value,
-          })
-        )
-      : [];
+      plan.filters
+    ) &&
+    plan.filters.length
+      ? plan.filters
+      : (
+          Array.isArray(
+            context.lastFilters
+          )
+            ? context.lastFilters
+            : []
+        );
+
+  const filters =
+    sourceFilters.map(
+      (filter) => ({
+        ...filter,
+        value:
+          Array.isArray(
+            filter?.value
+          )
+            ? [
+                ...filter.value,
+              ]
+            : filter?.value,
+      })
+    );
 
   const selectColumns =
     [
@@ -2911,6 +2927,22 @@ function recoverLocalReferentialPlanFromConversation({
           ) === index
       );
 
+  /**
+   * Upgrade to a relationship lookup only when a distinct verified pair
+   * column exists. Otherwise keep the original local plan unchanged.
+   */
+  if (
+    !pairColumn ||
+    normalizeText(
+      pairColumn
+    ) ===
+    normalizeText(
+      valueColumn
+    )
+  ) {
+    return plan;
+  }
+
   return {
     ...plan,
     route:
@@ -2922,8 +2954,7 @@ function recoverLocalReferentialPlanFromConversation({
     column:
       valueColumn,
     labelColumn:
-      pairColumn ||
-      valueColumn,
+      pairColumn,
     groupBy:
       null,
     aggregation:
@@ -5918,6 +5949,42 @@ async function answerQuestion(
   }
 
 
+
+  const buildGroqHandoffDiagnostics =
+    () => ({
+      groqStatus:
+        groqDiagnostic.status,
+
+      groqPlanConfidence:
+        groqPrimaryConfidence,
+
+      groqConfidenceIssues:
+        groqPrimaryIssues,
+
+      groqHttpStatus:
+        groqDiagnostic.httpStatus,
+
+      groqErrorCode:
+        groqDiagnostic.code,
+
+      groqJsonRetryUsed:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryUsed
+        ),
+
+      groqJsonRetryRecovered:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryRecovered
+        ),
+
+      groqPlanningError:
+        groqPlanningError?.message ||
+        null,
+    });
+
+
   // ========================================================
   // DETERMINISTIC LINKED MULTI-FIELD LOOKUP
   // ========================================================
@@ -6050,6 +6117,8 @@ async function answerQuestion(
 
       plannerSource:
         "conversation-local",
+
+      ...buildGroqHandoffDiagnostics(),
     };
   }
 
@@ -6161,6 +6230,8 @@ async function answerQuestion(
 
       plannerSource:
         "conversation-local",
+
+      ...buildGroqHandoffDiagnostics(),
     };
   }
 
@@ -6267,6 +6338,8 @@ async function answerQuestion(
         [],
       plannerSource:
         "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
     };
   }
 
@@ -6583,6 +6656,8 @@ async function answerQuestion(
       return {
         ...worksheetSwitchResult,
         plannerSource: "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
         conversationalWorksheetSwitch: true,
       };
     }
@@ -6955,6 +7030,8 @@ async function answerQuestion(
 
           plannerSource:
             "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
         };
       }
     }
@@ -7003,6 +7080,8 @@ async function answerQuestion(
 
       plannerSource:
         "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
     };
   }
 
@@ -7205,6 +7284,8 @@ async function answerQuestion(
 
         plannerSource:
           "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
       };
     }
   }
@@ -7791,6 +7872,8 @@ async function answerQuestion(
 
         plannerSource:
           "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
       };
     }
   }
@@ -7847,6 +7930,8 @@ async function answerQuestion(
         ...previousIdentityResult,
         plannerSource:
           "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
       };
     }
   }
@@ -8153,6 +8238,8 @@ async function answerQuestion(
       ),
       debugPlan: distributedWorksheetFollowUp.plan,
       plannerSource: "conversation-multi-worksheet",
+
+      ...buildGroqHandoffDiagnostics(),
     };
   }
 

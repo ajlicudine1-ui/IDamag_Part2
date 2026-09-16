@@ -4227,6 +4227,94 @@ test('V7.36.5b keeps Groq-first routing ahead of deterministic direct-field hand
   );
 });
 
+
+test('local referential fallback preserves current requested field and previous verified pair column', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    /const valueColumn\s*=\s*findLiveColumn\(\s*plan\.column\s*\)/m.test(
+      source
+    )
+  );
+
+  assert(
+    source.includes(
+      'Upgrade to a relationship lookup only when a distinct verified pair'
+    )
+  );
+
+  assert(
+    /labelColumn\s*:\s*pairColumn/m.test(
+      source
+    )
+  );
+});
+
+test('conversation-family responses expose Groq handoff diagnostics', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'const buildGroqHandoffDiagnostics'
+    )
+  );
+
+  assert(
+    /plannerSource\s*:\s*"conversation-local"\s*,\s*\.\.\.buildGroqHandoffDiagnostics\(\)/m.test(
+      source
+    )
+  );
+
+  assert(
+    /plannerSource\s*:\s*"conversation"\s*,\s*\.\.\.buildGroqHandoffDiagnostics\(\)/m.test(
+      source
+    )
+  );
+});
+
+test('Groq failure on referential follow-up can recover a paired local lookup', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'localReferentialRecovery'
+    )
+  );
+
+  assert(
+    /operation\s*:\s*"lookup"/m.test(
+      source
+    )
+  );
+
+  assert(
+    /conversationalPairColumn\s*:\s*pairColumn/m.test(
+      source
+    )
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
