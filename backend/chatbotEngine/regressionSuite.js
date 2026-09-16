@@ -3444,6 +3444,98 @@ test('strong morphological referential resolver selects municipality and rejects
   assert.strictEqual(resolved.column, 'Municipality');
 });
 
+
+test('human relationship narrative deduplicates case variants across grouped values', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer =
+    buildSemanticVerifiedAnswer({
+      question:
+        'What climate-related risks do they face?',
+      plan: {
+        operation: 'lookup',
+        column: 'Climate-related Risks/Hazards',
+        labelColumn: 'Amia Villages',
+        filters: [
+          {
+            column: 'Province',
+            operator: 'equals',
+            value: 'Pangasinan',
+          },
+        ],
+      },
+      result: {
+        success: true,
+        operation: 'lookup',
+        column: 'Climate-related Risks/Hazards',
+        labelColumn: 'Amia Villages',
+        results: [
+          {
+            'Amia Villages': 'Sison',
+            'Climate-related Risks/Hazards':
+              'Landslide, Soil Erosion, Typhoon, Drought, Flood',
+          },
+          {
+            'Amia Villages': 'Binalonan',
+            'Climate-related Risks/Hazards':
+              'Typhoon, Flood, Drought',
+          },
+          {
+            'Amia Villages': 'Anda',
+            'Climate-related Risks/Hazards':
+              'Typhoon, Storm Surge, Drought, Sea level rise, Soil erosion',
+          },
+          {
+            'Amia Villages': 'Mabini',
+            'Climate-related Risks/Hazards':
+              'Typhoon, Drought, Landslide, erosion',
+          },
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    answer,
+    'They face Landslide, Soil Erosion, Typhoon, Drought, Flood, Storm Surge, Sea level rise, and erosion. Sison faces Landslide, Soil Erosion, Typhoon, Drought, and Flood, Binalonan faces Typhoon, Flood, and Drought, Anda faces Typhoon, Storm Surge, Drought, Sea level rise, and Soil erosion, and Mabini faces Typhoon, Drought, Landslide, and erosion.'
+  );
+});
+
+test('human relationship narrative uses a natural comma-and detail sentence for many groups', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer =
+    buildSemanticVerifiedAnswer({
+      question:
+        'What AMIA villages are they from?',
+      plan: {
+        operation: 'lookup',
+        column: 'Amia Villages',
+        labelColumn: 'Association',
+      },
+      result: {
+        success: true,
+        operation: 'lookup',
+        column: 'Amia Villages',
+        labelColumn: 'Association',
+        results: [
+          { Association: 'Association A', 'Amia Villages': 'Sison' },
+          { Association: 'Association B', 'Amia Villages': 'Binalonan' },
+          { Association: 'Association C', 'Amia Villages': 'Anda' },
+          { Association: 'Association D', 'Amia Villages': 'Mabini' },
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    answer,
+    'They are from Sison, Binalonan, Anda, and Mabini. Association A is from Sison, Association B is from Binalonan, Association C is from Anda, and Association D is from Mabini.'
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
