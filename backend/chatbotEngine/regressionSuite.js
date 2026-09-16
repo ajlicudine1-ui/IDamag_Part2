@@ -662,7 +662,7 @@ test('plain list narrative uses standardized count-and-list formatting', () => {
 
   assert.strictEqual(
     answer,
-    `3 organizations:\n1. Org A\n2. Org B\n3. Org C`
+    '3 organizations received support:\n1. Org A\n2. Org B\n3. Org C'
   );
 });
 
@@ -870,7 +870,7 @@ test('small filtered list narrative uses standardized count-and-list formatting'
 
   assert.strictEqual(
     answer,
-    `5 beneficiary subtypes in Individual:\n1. Farmer\n2. Others\n3. School\n4. FCA\n5. NGO`
+    'The beneficiary subtypes under Individual are Farmer, Others, School, FCA, and NGO.'
   );
 });
 
@@ -3111,7 +3111,7 @@ test('all simple list answers use the same format across planner sources', () =>
 
     assert.strictEqual(
       answer,
-      `3 associations:\n1. Association A\n2. Association B\n3. Association C`
+      'The associations for SEC,DOLE are Association A, Association B, and Association C.'
     );
   }
 });
@@ -3149,7 +3149,7 @@ test('single equals filter may add a natural scope while retaining count-and-lis
 
   assert.strictEqual(
     answer,
-    `2 associations in Phase 2:\n1. Association A\n2. Association B`
+    'The associations in Phase 2 are Association A and Association B.'
   );
 });
 
@@ -3186,7 +3186,7 @@ test('IN filters do not render array values as awkward list scopes', () => {
 
   assert.strictEqual(
     answer,
-    `2 associations:\n1. Association A\n2. Association B`
+    'The associations for SEC,DOLE are Association A and Association B.'
   );
 });
 
@@ -3212,7 +3212,7 @@ test('verified list formatting is preserved from Groq language rewriting', () =>
         ],
       },
       semanticAnswer:
-        `2 associations:\n1. Association A\n2. Association B`,
+        'The associations for SEC,DOLE are Association A and Association B.',
     }),
     true
   );
@@ -3414,6 +3414,58 @@ test('relationship narrative remains human-like instead of becoming a raw list',
   assert.strictEqual(
     answer,
     'They produce rice, corn, vegetables, and sugarcane. Sison, Anda, and Binalonan produce rice, corn, and vegetables, while Mabini produces rice, vegetables, and sugarcane.'
+  );
+});
+
+
+test('referential municipality question prefers Municipality over short substring fields', () => {
+  const {
+    findExplicitSchemaColumn,
+    inferRequestedColumnFromQuestion,
+  } = require('./plannerNormalizer');
+
+  const schema = [
+    {
+      name: 'Main_Table_2026',
+      columns: [
+        { name: 'Association' },
+        { name: 'Municipality' },
+        { name: 'IP' },
+        { name: 'Province' },
+      ],
+    },
+  ];
+
+  const question =
+    'What municipalities are they from?';
+
+  const explicit =
+    findExplicitSchemaColumn({
+      schema,
+      question,
+      preferredDataset:
+        'Main_Table_2026',
+    });
+
+  const inferred =
+    inferRequestedColumnFromQuestion({
+      schema,
+      question,
+      preferredDataset:
+        'Main_Table_2026',
+      excludedColumns: [],
+    });
+
+  assert(explicit);
+  assert.strictEqual(
+    explicit.column,
+    'Municipality'
+  );
+
+  assert(inferred);
+  assert.strictEqual(
+    inferred.column,
+    'Municipality'
   );
 });
 
