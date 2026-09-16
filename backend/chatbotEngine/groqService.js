@@ -1314,6 +1314,16 @@ RULES
     identity/name field only from the CURRENT SCHEMA and rank by X.
 13. For follow-ups, inherit only missing pieces from CONVERSATION CONTEXT.
     Current explicit field/entity wording overrides old context.
+    For referential follow-ups using wording such as "they", "them", "these",
+    "those", "it", "he", or "she", preserve the previously VERIFIED
+    relationship identity when it is still applicable.
+    If the previous verified plan established a meaningful labelColumn,
+    groupBy, or conversational pair column and the current follow-up asks for
+    a new related field about the same entities, keep that relationship column
+    in labelColumn unless the current question explicitly changes the
+    subject/entity.
+    Do not reduce a verified relationship lookup into a plain list merely
+    because the current target column is obvious.
 14. If genuinely ambiguous, return route "clarify".
 15. If the user challenges a prior answer, create an executable dataset plan
     so JavaScript verifies the claim. Never accept the correction as fact.

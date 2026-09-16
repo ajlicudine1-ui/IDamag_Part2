@@ -4315,6 +4315,134 @@ test('Groq failure on referential follow-up can recover a paired local lookup', 
   );
 });
 
+
+test('Groq confidence rejects referential list plans that drop a verified prior pair column', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'referential-label-dropped-from-verified-context'
+    )
+  );
+
+  assert(
+    source.includes(
+      'priorPairCandidates'
+    )
+  );
+
+  assert(
+    source.includes(
+      'verifiedPriorPair'
+    )
+  );
+
+  assert(
+    source.includes(
+      'liveColumns.has'
+    )
+  );
+});
+
+test('Groq referential relationship guard compares prior pair against the current output column', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    /normalized\s*!==\s*normalizeText\(\s*plan\.column\s*\)/m.test(
+      source
+    )
+  );
+});
+
+
+test('Groq planner prompt preserves verified relationship labels on referential follow-ups', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'groqService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'preserve the previously VERIFIED'
+    )
+  );
+
+  assert(
+    source.includes(
+      'keep that relationship column'
+    )
+  );
+
+  assert(
+    source.includes(
+      'Do not reduce a verified relationship lookup into a plain list'
+    )
+  );
+
+  assert(
+    source.includes(
+      'Current explicit field/entity wording overrides old context'
+    )
+  );
+});
+
+test('Groq referential prompt strengthening is generic and contains no AMIA-specific production rule', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'groqService.js'
+      ),
+      'utf8'
+    );
+
+  const start =
+    source.indexOf(
+      'For referential follow-ups using wording'
+    );
+
+  const end =
+    source.indexOf(
+      '14. If genuinely ambiguous',
+      start
+    );
+
+  assert(
+    start >= 0 &&
+    end > start
+  );
+
+  const policy =
+    source.slice(
+      start,
+      end
+    );
+
+  assert(
+    !/Amia Villages|Climate-related Risks\/Hazards|Commodities|Pangasinan/.test(
+      policy
+    )
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
