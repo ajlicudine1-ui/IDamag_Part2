@@ -18,6 +18,7 @@ const {
 const {
   answerGeneralQuestion,
   createSchemaAwarePlan,
+  classifyGroqError,
 } = require("./groqService");
 
 const {
@@ -7668,6 +7669,12 @@ async function answerQuestion(
   let groqPlan = null;
   let groqPlanningError = null;
   let groqReferentialRecovery = false;
+  let groqDiagnostic = {
+    status: "not_attempted",
+    httpStatus: null,
+    code: null,
+    message: null,
+  };
 
   /**
    * IMPORTANT:
@@ -7689,13 +7696,34 @@ async function answerQuestion(
 
         retrievalContext,
       });
+
+    groqDiagnostic = {
+      status: "ok",
+      httpStatus: 200,
+      code: null,
+      message: null,
+    };
   } catch (error) {
     groqPlanningError =
       error;
 
+    groqDiagnostic =
+      classifyGroqError(
+        error
+      );
+
     console.error(
       "Groq planning failed; local fallback will be used:",
-      error
+      {
+        status:
+          groqDiagnostic.status,
+        httpStatus:
+          groqDiagnostic.httpStatus,
+        code:
+          groqDiagnostic.code,
+        message:
+          groqDiagnostic.message,
+      }
     );
   }
 
@@ -8385,6 +8413,15 @@ async function answerQuestion(
        * This tells us WHY Groq was unavailable without changing
        * the dataset answer.
        */
+      groqStatus:
+        groqDiagnostic.status,
+
+      groqHttpStatus:
+        groqDiagnostic.httpStatus,
+
+      groqErrorCode:
+        groqDiagnostic.code,
+
       groqPlanningError:
         groqPlanningError?.message ||
         null,
@@ -8406,6 +8443,15 @@ async function answerQuestion(
 
       plannerSource:
         "local-fallback",
+
+      groqStatus:
+        groqDiagnostic.status,
+
+      groqHttpStatus:
+        groqDiagnostic.httpStatus,
+
+      groqErrorCode:
+        groqDiagnostic.code,
 
       groqPlanningError:
         groqPlanningError?.message ||

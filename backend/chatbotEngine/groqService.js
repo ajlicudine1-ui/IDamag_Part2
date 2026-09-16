@@ -5,9 +5,141 @@
   const GROQ_URL =
     "https://api.groq.com/openai/v1/chat/completions";
 
+
   const GROQ_MODEL =
     process.env.GROQ_MODEL ||
     "llama-3.3-70b-versatile";
+
+function classifyGroqError(error) {
+  if (!error) {
+    return {
+      status: "not_attempted",
+      httpStatus: null,
+      code: null,
+      message: null,
+    };
+  }
+
+  const message =
+    String(error?.message || "");
+
+  const lower =
+    message.toLowerCase();
+
+  const parsedHttpStatus =
+    Number(error?.httpStatus);
+
+  const httpStatus =
+    Number.isInteger(parsedHttpStatus)
+      ? parsedHttpStatus
+      : null;
+
+  const code =
+    error?.groqCode ||
+    error?.code ||
+    null;
+
+  let status =
+    "unknown_error";
+
+  if (
+    lower.includes(
+      "groq_api_key is missing"
+    )
+  ) {
+    status =
+      "missing_api_key";
+  } else if (
+    error?.groqErrorType ===
+      "invalid_json" ||
+    lower.includes(
+      "did not return valid json"
+    ) ||
+    lower.includes(
+      "malformed json"
+    )
+  ) {
+    status =
+      "invalid_json";
+  } else if (
+    httpStatus === 429 ||
+    lower.includes(
+      "rate limit"
+    ) ||
+    lower.includes(
+      "too many requests"
+    ) ||
+    lower.includes(
+      "quota"
+    )
+  ) {
+    status =
+      "rate_limited";
+  } else if (
+    httpStatus === 401 ||
+    httpStatus === 403 ||
+    lower.includes(
+      "unauthorized"
+    ) ||
+    lower.includes(
+      "invalid api key"
+    ) ||
+    lower.includes(
+      "authentication"
+    )
+  ) {
+    status =
+      "authentication_error";
+  } else if (
+    error?.name ===
+      "AbortError" ||
+    lower.includes(
+      "timeout"
+    ) ||
+    lower.includes(
+      "timed out"
+    )
+  ) {
+    status =
+      "timeout";
+  } else if (
+    httpStatus !== null &&
+    httpStatus >= 500
+  ) {
+    status =
+      "server_error";
+  } else if (
+    httpStatus !== null &&
+    httpStatus >= 400
+  ) {
+    status =
+      "http_error";
+  } else if (
+    lower.includes(
+      "fetch failed"
+    ) ||
+    lower.includes(
+      "network"
+    ) ||
+    lower.includes(
+      "econn"
+    ) ||
+    lower.includes(
+      "enotfound"
+    )
+  ) {
+    status =
+      "network_error";
+  }
+
+  return {
+    status,
+    httpStatus,
+    code,
+    message:
+      message || null,
+  };
+}
 
 async function callGroq(messages, options = {}) {
   const apiKey = process.env.GROQ_API_KEY;
@@ -37,10 +169,24 @@ async function callGroq(messages, options = {}) {
     .catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(
-      body?.error?.message ||
-        `Groq request failed with HTTP ${response.status}.`
-    );
+    const error =
+      new Error(
+        body?.error?.message ||
+          `Groq request failed with HTTP ${response.status}.`
+      );
+
+    error.httpStatus =
+      response.status;
+
+    error.groqCode =
+      body?.error?.code ||
+      null;
+
+    error.groqErrorType =
+      body?.error?.type ||
+      "http_error";
+
+    throw error;
   }
 
   return (
@@ -132,14 +278,35 @@ function extractJsonObject(text) {
     end === -1 ||
     end <= start
   ) {
-    throw new Error(
-      "Groq did not return valid JSON."
-    );
+    const error =
+      new Error(
+        "Groq did not return valid JSON."
+      );
+
+    error.groqErrorType =
+      "invalid_json";
+
+    throw error;
   }
 
-  return JSON.parse(
-    cleaned.slice(start, end + 1)
-  );
+  try {
+    return JSON.parse(
+      cleaned.slice(start, end + 1)
+    );
+  } catch (cause) {
+    const error =
+      new Error(
+        "Groq returned malformed JSON."
+      );
+
+    error.groqErrorType =
+      "invalid_json";
+
+    error.cause =
+      cause;
+
+    throw error;
+  }
 }
 
 
@@ -1442,4 +1609,5 @@ module.exports = {
   callGroq,
   answerGeneralQuestion,
   createSchemaAwarePlan,
+  classifyGroqError,
 };

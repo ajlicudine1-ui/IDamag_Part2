@@ -3729,6 +3729,115 @@ test('direct field relationship cleanup is generic outside commodities', () => {
   );
 });
 
+
+test('Groq diagnostics distinguish invalid JSON, rate limit, and authentication failures', () => {
+  const {
+    classifyGroqError,
+  } = require('./groqService');
+
+  const invalidJson =
+    new Error(
+      'Groq did not return valid JSON.'
+    );
+  invalidJson.groqErrorType =
+    'invalid_json';
+
+  assert.strictEqual(
+    classifyGroqError(
+      invalidJson
+    ).status,
+    'invalid_json'
+  );
+
+  const rateLimit =
+    new Error(
+      'Rate limit reached for model.'
+    );
+  rateLimit.httpStatus =
+    429;
+  rateLimit.groqCode =
+    'rate_limit_exceeded';
+
+  const rateDiagnostic =
+    classifyGroqError(
+      rateLimit
+    );
+
+  assert.strictEqual(
+    rateDiagnostic.status,
+    'rate_limited'
+  );
+  assert.strictEqual(
+    rateDiagnostic.httpStatus,
+    429
+  );
+  assert.strictEqual(
+    rateDiagnostic.code,
+    'rate_limit_exceeded'
+  );
+
+  const auth =
+    new Error(
+      'Invalid API key'
+    );
+  auth.httpStatus =
+    401;
+
+  assert.strictEqual(
+    classifyGroqError(
+      auth
+    ).status,
+    'authentication_error'
+  );
+});
+
+test('Groq diagnostics identify missing key, timeout, network, and server failures', () => {
+  const {
+    classifyGroqError,
+  } = require('./groqService');
+
+  assert.strictEqual(
+    classifyGroqError(
+      new Error(
+        'GROQ_API_KEY is missing from the backend environment.'
+      )
+    ).status,
+    'missing_api_key'
+  );
+
+  assert.strictEqual(
+    classifyGroqError(
+      new Error(
+        'Request timed out'
+      )
+    ).status,
+    'timeout'
+  );
+
+  assert.strictEqual(
+    classifyGroqError(
+      new Error(
+        'fetch failed: network connection reset'
+      )
+    ).status,
+    'network_error'
+  );
+
+  const server =
+    new Error(
+      'Groq unavailable'
+    );
+  server.httpStatus =
+    503;
+
+  assert.strictEqual(
+    classifyGroqError(
+      server
+    ).status,
+    'server_error'
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
