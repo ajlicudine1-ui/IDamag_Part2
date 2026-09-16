@@ -3536,6 +3536,75 @@ test('human relationship narrative uses a natural comma-and detail sentence for 
   );
 });
 
+
+test('explicit referential copular lookup uses semantic human-like relationship narrative', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const question =
+    'What AMIA villages are they from?';
+
+  const plan = {
+    route: 'dataset',
+    dataset: 'Main_Table_2026',
+    operation: 'lookup',
+    column: 'Amia Villages',
+    labelColumn: 'Association',
+    filters: [
+      {
+        column: 'Province',
+        operator: 'equals',
+        value: 'Pangasinan',
+      },
+    ],
+    conversationalPairColumn:
+      'Association',
+    explicitReferentialField: true,
+  };
+
+  const result = {
+    success: true,
+    operation: 'lookup',
+    column: 'Amia Villages',
+    labelColumn: 'Association',
+    results: [
+      {
+        Association:
+          'Calia Gawis Farmers Association Inc.',
+        'Amia Villages': 'Sison',
+      },
+      {
+        Association:
+          'Brgy. Mangkasuy Binalonan Farmers Association Inc.',
+        'Amia Villages': 'Binalonan',
+      },
+      {
+        Association:
+          'Anda Mushroom Growers and Organic Farmers Association',
+        'Amia Villages': 'Anda',
+      },
+      {
+        Association:
+          'San Pedro Mabini Farmers Agriculture Cooperative',
+        'Amia Villages': 'Mabini',
+      },
+    ],
+  };
+
+  const answer =
+    buildSemanticVerifiedAnswer({
+      question,
+      plan,
+      result,
+    });
+
+  assert.strictEqual(
+    answer,
+    'They are from Sison, Binalonan, Anda, and Mabini. Calia Gawis Farmers Association Inc. is from Sison, Brgy. Mangkasuy Binalonan Farmers Association Inc. is from Binalonan, Anda Mushroom Growers and Organic Farmers Association is from Anda, and San Pedro Mabini Farmers Agriculture Cooperative is from Mabini.'
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];

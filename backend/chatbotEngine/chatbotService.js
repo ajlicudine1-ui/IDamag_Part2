@@ -2469,23 +2469,26 @@ function normalizeSemanticReferentialQuestion(question) {
     );
 
   /**
-   * Copular/prepositional relations are intentionally NOT rewritten.
+   * Copular/prepositional relationships should keep their original wording.
    *
    * Examples:
-   *   "What municipalities are they from?"
+   *   "What AMIA villages are they from?"
    *   "Which office are they under?"
    *   "What category are they in?"
    *
-   * These are relationships, but "from", "under", and "in" are not action
-   * verbs. Keeping them on the verified pair formatter avoids bad grammar
-   * such as "They from ..." or "froms ...".
+   * responseNarrativeEngine understands these relationships directly and can
+   * safely produce human-like paired answers such as:
+   *   "They are from Sison, Binalonan, Anda, and Mabini..."
+   *
+   * Returning the original question here enables the semantic narrative while
+   * preserving the exact verified dataset plan/result.
    */
   if (
     /\b(?:are|were|is|was)\s+(?:they|these|those|them|it|he|she)\s+(?:from|in|at|under|within|inside|on|of|for|with|without|near|around|through|across|over|below|above|between|among|into|onto|to)\b/i.test(
       original
     )
   ) {
-    return null;
+    return original;
   }
 
   /**
