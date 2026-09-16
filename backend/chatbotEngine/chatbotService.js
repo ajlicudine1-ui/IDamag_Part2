@@ -102,6 +102,7 @@ const {
 
 const {
   attachLocalConfidence,
+  evaluateLocalPlanConfidence,
 } = require("./planConfidenceEngine");
 
 const {
@@ -5397,6 +5398,526 @@ async function answerQuestion(
 
 
 
+
+  // ========================================================
+  // V7.36.5 — GROQ-FIRST PRIMARY PLANNER
+  // ========================================================
+  //
+  // New planning policy:
+  //   1. Groq gets the first semantic planning attempt.
+  //   2. Its plan is checked against the live schema/data and conversation.
+  //   3. Only a high-confidence Groq plan is executed.
+  //   4. A weak/invalid Groq plan is handed to deterministic/local logic.
+  //
+  // Pure calculations over already verified prior results may still be
+  // resolved earlier because they do not require a new dataset plan.
+  //
+  let groqPlan = null;
+  let groqPlanningError = null;
+  let groqReferentialRecovery = false;
+  let groqPrimaryAttempted = false;
+  let groqPrimaryConfidence = null;
+  let groqPrimaryIssues = [];
+  let groqDiagnostic = {
+    status: "not_attempted",
+    httpStatus: null,
+    code: null,
+    message: null,
+    jsonRetryUsed: false,
+    jsonRetryRecovered: false,
+  };
+
+  const sameSimpleFilters = (
+    left = [],
+    right = []
+  ) => {
+    const normalizeFilters =
+      (filters) =>
+        (Array.isArray(filters)
+          ? filters
+          : []
+        )
+          .map(
+            (filter) => ({
+              column:
+                normalizeText(
+                  filter?.column
+                ),
+              operator:
+                normalizeText(
+                  filter?.operator ||
+                  "equals"
+                ),
+              value:
+                Array.isArray(
+                  filter?.value
+                )
+                  ? filter.value
+                      .map(
+                        (value) =>
+                          normalizeText(
+                            value
+                          )
+                      )
+                      .sort()
+                      .join("|")
+                  : normalizeText(
+                      filter?.value
+                    ),
+            })
+          )
+          .sort(
+            (a, b) =>
+              JSON.stringify(a)
+                .localeCompare(
+                  JSON.stringify(b)
+                )
+          );
+
+    return (
+      JSON.stringify(
+        normalizeFilters(left)
+      ) ===
+      JSON.stringify(
+        normalizeFilters(right)
+      )
+    );
+  };
+
+  const evaluateGroqPrimaryConfidence =
+    (plan) => {
+      const base =
+        evaluateLocalPlanConfidence({
+          plan,
+          datasets,
+          schema,
+        });
+
+      let score =
+        Number(
+          base.score || 0
+        );
+
+      const issues = [
+        ...(base.issues || []),
+      ];
+
+      if (
+        base.critical
+      ) {
+        return {
+          score,
+          issues,
+          critical: true,
+        };
+      }
+
+      /**
+       * Current explicit field/value questions are used only as a
+       * deterministic cross-check. They do not answer before Groq anymore.
+       */
+      const directFieldCandidate =
+        resolveDirectFilteredFieldPlan({
+          question:
+            cleanQuestion,
+          schema,
+          datasets,
+        });
+
+      if (
+        directFieldCandidate
+      ) {
+        if (
+          normalizeText(
+            plan?.column
+          ) !==
+          normalizeText(
+            directFieldCandidate
+              ?.column
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.45
+            );
+          issues.push(
+            "explicit-field-mismatch"
+          );
+        }
+
+        if (
+          directFieldCandidate
+            ?.dataset &&
+          plan?.dataset &&
+          normalizeText(
+            plan.dataset
+          ) !==
+          normalizeText(
+            directFieldCandidate
+              .dataset
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.5
+            );
+          issues.push(
+            "dataset-mismatch"
+          );
+        }
+
+        if (
+          Array.isArray(
+            directFieldCandidate
+              ?.filters
+          ) &&
+          directFieldCandidate
+            .filters.length &&
+          !sameSimpleFilters(
+            plan?.filters,
+            directFieldCandidate
+              .filters
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.65
+            );
+          issues.push(
+            "scope-filter-mismatch"
+          );
+        }
+      }
+
+      const directAggregateCandidate =
+        resolveDirectFilteredAggregatePlan({
+          question:
+            cleanQuestion,
+          schema,
+          datasets,
+        });
+
+      if (
+        directAggregateCandidate
+      ) {
+        if (
+          normalizeText(
+            plan?.operation
+          ) !==
+          normalizeText(
+            directAggregateCandidate
+              ?.operation
+          ) ||
+          (
+            directAggregateCandidate
+              ?.column &&
+            normalizeText(
+              plan?.column
+            ) !==
+            normalizeText(
+              directAggregateCandidate
+                ?.column
+            )
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.5
+            );
+          issues.push(
+            "aggregate-intent-mismatch"
+          );
+        }
+      }
+
+      /**
+       * Referential questions are also cross-checked against verified
+       * conversation scope. If Groq drops the identity/label relationship,
+       * do not execute it merely because its column exists.
+       */
+      const referentialCandidate =
+        buildExplicitReferentialFieldPlan({
+          schema,
+          context:
+            conversationContext,
+          question:
+            cleanQuestion,
+        });
+
+      if (
+        referentialCandidate
+      ) {
+        if (
+          normalizeText(
+            plan?.column
+          ) !==
+          normalizeText(
+            referentialCandidate
+              ?.column
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.4
+            );
+          issues.push(
+            "referential-field-mismatch"
+          );
+        }
+
+        if (
+          referentialCandidate
+            ?.labelColumn &&
+          normalizeText(
+            plan?.labelColumn
+          ) !==
+          normalizeText(
+            referentialCandidate
+              .labelColumn
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.55
+            );
+          issues.push(
+            "referential-label-missing-or-mismatched"
+          );
+        }
+
+        if (
+          Array.isArray(
+            referentialCandidate
+              ?.filters
+          ) &&
+          referentialCandidate
+            .filters.length &&
+          !sameSimpleFilters(
+            plan?.filters,
+            referentialCandidate
+              .filters
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.65
+            );
+          issues.push(
+            "referential-scope-mismatch"
+          );
+        }
+      }
+
+      return {
+        score:
+          Number(
+            score.toFixed(4)
+          ),
+        issues:
+          [...new Set(issues)],
+        critical: false,
+      };
+    };
+
+  const GROQ_PRIMARY_THRESHOLD =
+    0.85;
+
+  try {
+    groqPrimaryAttempted =
+      true;
+
+    groqPlan =
+      await createSchemaAwarePlan({
+        question:
+          cleanQuestion,
+        schema,
+        context:
+          conversationContext,
+        retrievalContext,
+      });
+
+    const groqPlanDiagnostics =
+      groqPlan?.__groqDiagnostics ||
+      null;
+
+    groqDiagnostic = {
+      status:
+        groqPlanDiagnostics
+          ?.jsonRetryRecovered
+          ? "ok_after_json_retry"
+          : "ok",
+      httpStatus: 200,
+      code: null,
+      message: null,
+      jsonRetryUsed:
+        Boolean(
+          groqPlanDiagnostics
+            ?.jsonRetryUsed
+        ),
+      jsonRetryRecovered:
+        Boolean(
+          groqPlanDiagnostics
+            ?.jsonRetryRecovered
+        ),
+    };
+
+    groqPlan =
+      normalizePlannerPlan({
+        datasets,
+        schema,
+        plan:
+          groqPlan,
+        question:
+          cleanQuestion,
+      });
+
+    groqPlan =
+      reconcileExplicitDatasetMention({
+        plan:
+          groqPlan,
+        question:
+          cleanQuestion,
+        datasets,
+        schema,
+      });
+
+    groqPlan =
+      repairMultiEntityFilters({
+        datasets,
+        plan:
+          groqPlan,
+        question:
+          cleanQuestion,
+      });
+
+    groqPlan =
+      enforceExplicitQuestionColumn({
+        plan:
+          groqPlan,
+        schema,
+        question:
+          cleanQuestion,
+      });
+
+    const confidence =
+      evaluateGroqPrimaryConfidence(
+        groqPlan
+      );
+
+    groqPrimaryConfidence =
+      confidence.score;
+
+    groqPrimaryIssues =
+      confidence.issues;
+
+    if (
+      !confidence.critical &&
+      confidence.score >=
+        GROQ_PRIMARY_THRESHOLD
+    ) {
+      const result =
+        await executeResolvedPlan(
+          groqPlan
+        );
+
+      const semanticAnswer =
+        buildSemanticVerifiedAnswer({
+          question:
+            cleanQuestion,
+          plan:
+            groqPlan,
+          result,
+        });
+
+      updateConversation(
+        sessionId,
+        {
+          question:
+            cleanQuestion,
+          plan:
+            groqPlan,
+          result,
+        }
+      );
+
+      return {
+        ...result,
+
+        answer:
+          formatUserFacingAnswer(
+            semanticAnswer ||
+            result?.answer
+          ),
+
+        plannerSource:
+          groqDiagnostic
+            .status ===
+            "ok_after_json_retry"
+            ? "groq-json-recovered"
+            : "groq",
+
+        groqStatus:
+          groqDiagnostic.status,
+
+        groqPlanConfidence:
+          groqPrimaryConfidence,
+
+        groqConfidenceIssues:
+          groqPrimaryIssues,
+
+        groqJsonRetryUsed:
+          Boolean(
+            groqDiagnostic
+              .jsonRetryUsed
+          ),
+
+        groqJsonRetryRecovered:
+          Boolean(
+            groqDiagnostic
+              .jsonRetryRecovered
+          ),
+      };
+    }
+
+    groqDiagnostic = {
+      ...groqDiagnostic,
+      status:
+        "low_confidence",
+      message:
+        `Groq plan confidence ${confidence.score} was below ${GROQ_PRIMARY_THRESHOLD}.`,
+    };
+
+    groqPlan =
+      null;
+  } catch (error) {
+    groqPlanningError =
+      error;
+
+    groqDiagnostic = {
+      ...classifyGroqError(
+        error
+      ),
+      jsonRetryUsed:
+        Boolean(
+          error
+            ?.groqJsonRetryUsed
+        ),
+      jsonRetryRecovered:
+        false,
+    };
+
+    groqPlan =
+      null;
+  }
+
+
   // ========================================================
   // DETERMINISTIC LINKED MULTI-FIELD LOOKUP
   // ========================================================
@@ -7771,92 +8292,16 @@ async function answerQuestion(
   // 1. GROQ FIRST
   // ========================================================
 
-  let groqPlan = null;
-  let groqPlanningError = null;
-  let groqReferentialRecovery = false;
-  let groqDiagnostic = {
-    status: "not_attempted",
-    httpStatus: null,
-    code: null,
-    message: null,
-    jsonRetryUsed: false,
-    jsonRetryRecovered: false,
-  };
-
   /**
-   * IMPORTANT:
-   * Only GROQ PLANNING is inside this try/catch.
-   *
-   * If Groq successfully returns a plan, execution errors must
-   * not silently cause a second planner to choose another field.
+   * Groq already ran before deterministic/local semantic planning.
+   * A low-confidence/failed Groq plan intentionally reaches this point
+   * as null so the local fallback can take over without a second API call.
    */
-  try {
-    groqPlan =
-      await createSchemaAwarePlan({
-        question:
-          cleanQuestion,
-
-        schema,
-
-        context:
-          conversationContext,
-
-        retrievalContext,
-      });
-
-    const groqPlanDiagnostics =
-      groqPlan?.__groqDiagnostics ||
-      null;
-
-    groqDiagnostic = {
-      status:
-        groqPlanDiagnostics
-          ?.jsonRetryRecovered
-          ? "ok_after_json_retry"
-          : "ok",
-      httpStatus: 200,
-      code: null,
-      message: null,
-      jsonRetryUsed:
-        Boolean(
-          groqPlanDiagnostics
-            ?.jsonRetryUsed
-        ),
-      jsonRetryRecovered:
-        Boolean(
-          groqPlanDiagnostics
-            ?.jsonRetryRecovered
-        ),
-    };
-  } catch (error) {
-    groqPlanningError =
-      error;
-
-    groqDiagnostic = {
-      ...classifyGroqError(
-        error
-      ),
-      jsonRetryUsed:
-        Boolean(
-          error
-            ?.groqJsonRetryUsed
-        ),
-      jsonRetryRecovered:
-        false,
-    };
-
-    console.error(
-      "Groq planning failed; local fallback will be used:",
-      {
-        status:
-          groqDiagnostic.status,
-        httpStatus:
-          groqDiagnostic.httpStatus,
-        code:
-          groqDiagnostic.code,
-        message:
-          groqDiagnostic.message,
-      }
+  if (
+    !groqPrimaryAttempted
+  ) {
+    throw new Error(
+      "Groq primary planner was not initialized."
     );
   }
 
@@ -7882,6 +8327,7 @@ async function answerQuestion(
    * supplies the verified referent/scope.
    */
   if (
+    false &&
     !groqPlan &&
     conversationContext?.isFollowUp === true &&
     normalizeSemanticReferentialQuestion(
@@ -8549,6 +8995,12 @@ async function answerQuestion(
       groqStatus:
         groqDiagnostic.status,
 
+      groqPlanConfidence:
+        groqPrimaryConfidence,
+
+      groqConfidenceIssues:
+        groqPrimaryIssues,
+
       groqHttpStatus:
         groqDiagnostic.httpStatus,
 
@@ -8591,6 +9043,12 @@ async function answerQuestion(
 
       groqStatus:
         groqDiagnostic.status,
+
+      groqPlanConfidence:
+        groqPrimaryConfidence,
+
+      groqConfidenceIssues:
+        groqPrimaryIssues,
 
       groqHttpStatus:
         groqDiagnostic.httpStatus,

@@ -3192,7 +3192,7 @@ test('IN filters do not render array values as awkward list scopes', () => {
   );
 });
 
-test('verified list formatting is preserved from Groq language rewriting', () => {
+test('actual V7.36.2 response behavior allows simple verified lists to receive optional language polish', () => {
   const {
     shouldPreserveDeterministicSemanticAnswer,
   } = require('./responseGenerator');
@@ -3216,7 +3216,7 @@ test('verified list formatting is preserved from Groq language rewriting', () =>
       semanticAnswer:
         `2 associations:\n1. Association A\n2. Association B`,
     }),
-    true
+    false
   );
 });
 
@@ -4018,6 +4018,211 @@ test('Groq JSON repair prompt preserves planner context and demands JSON only', 
   assert(
     messages[1].content.includes(
       '{bad json}'
+    )
+  );
+});
+
+
+test('Groq-first primary planner is placed before deterministic direct-field routes', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const groqFirst =
+    source.indexOf(
+      'V7.36.5 — GROQ-FIRST PRIMARY PLANNER'
+    );
+
+  const directField =
+    source.indexOf(
+      'DIRECT FILTERED FIELD LOOKUP — PLANNER INDEPENDENT'
+    );
+
+  assert(
+    groqFirst >= 0
+  );
+
+  assert(
+    directField > groqFirst
+  );
+
+  assert(
+    source.includes(
+      'GROQ_PRIMARY_THRESHOLD'
+    )
+  );
+
+  assert(
+    source.includes(
+      '"low_confidence"'
+    )
+  );
+});
+
+test('Groq-first handoff cross-checks explicit fields, filters, and referential labels', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'explicit-field-mismatch'
+    )
+  );
+
+  assert(
+    source.includes(
+      'scope-filter-mismatch'
+    )
+  );
+
+  assert(
+    source.includes(
+      'referential-label-missing-or-mismatched'
+    )
+  );
+
+  assert(
+    source.includes(
+      'groqPlanConfidence'
+    )
+  );
+
+  assert(
+    source.includes(
+      'groqConfidenceIssues'
+    )
+  );
+});
+
+test('Groq-first low-confidence handoff avoids a second normal Groq retry before local', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'Groq already ran before deterministic/local semantic planning.'
+    )
+  );
+
+  assert(
+    /false\s*&&\s*!groqPlan\s*&&/.test(
+      source
+    )
+  );
+});
+
+
+test('V7.36.5b production response generator matches the actual uploaded V7.36.2 response policy', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'responseGenerator.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    !source.includes(
+      'require("./responseStyleRouter")'
+    )
+  );
+
+  assert(
+    source.includes(
+      'optional Groq language polish'
+    )
+  );
+
+  assert(
+    source.includes(
+      'a paired/relationship lookup'
+    )
+  );
+});
+
+test('V7.36.5b keeps paired relationship answers deterministic like actual V7.36.2', () => {
+  const {
+    shouldPreserveDeterministicSemanticAnswer,
+  } = require('./responseGenerator');
+
+  assert.strictEqual(
+    shouldPreserveDeterministicSemanticAnswer({
+      plan: {
+        operation: 'lookup',
+        column: 'Commodities',
+        labelColumn: 'Amia Villages',
+      },
+      result: {
+        success: true,
+        operation: 'lookup',
+        column: 'Commodities',
+        labelColumn: 'Amia Villages',
+        results: [
+          {
+            'Amia Villages': 'Sison',
+            Commodities: 'rice, corn, vegetables',
+          },
+        ],
+      },
+      semanticAnswer:
+        'They produce rice, corn, and vegetables. Sison produces rice, corn, and vegetables.',
+    }),
+    true
+  );
+});
+
+test('V7.36.5b keeps Groq-first routing ahead of deterministic direct-field handlers', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const groqFirst =
+    source.indexOf(
+      'V7.36.5 — GROQ-FIRST PRIMARY PLANNER'
+    );
+
+  const directField =
+    source.indexOf(
+      'DIRECT FILTERED FIELD LOOKUP — PLANNER INDEPENDENT'
+    );
+
+  assert(
+    groqFirst >= 0 &&
+    directField > groqFirst
+  );
+
+  assert(
+    source.includes(
+      'GROQ_PRIMARY_THRESHOLD'
+    )
+  );
+
+  assert(
+    source.includes(
+      'referential-label-missing-or-mismatched'
     )
   );
 });
