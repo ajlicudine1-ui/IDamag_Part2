@@ -11,6 +11,7 @@ import {
   Maximize2,
   X,
   ChevronRight,
+  ChevronLeft,
   Search,
 } from "lucide-react";
 
@@ -113,6 +114,62 @@ const UserGuide = () => {
 
   const filteredIdamagSteps = filterGuideSteps(idamagSteps);
   const filteredChatbotSteps = filterGuideSteps(chatbotSteps);
+
+  const getSelectedSectionSteps = () => {
+    if (!selectedImage) {
+      return [];
+    }
+
+    return selectedImage.section === "How to Use Chatbot"
+      ? chatbotSteps
+      : idamagSteps;
+  };
+
+  const getSelectedStepIndex = () => {
+    const sectionSteps = getSelectedSectionSteps();
+
+    return sectionSteps.findIndex(
+      (step) => step.id === selectedImage?.id
+    );
+  };
+
+  const goToPreviousStep = () => {
+    const sectionSteps = getSelectedSectionSteps();
+    const currentIndex = getSelectedStepIndex();
+
+    if (currentIndex <= 0) {
+      return;
+    }
+
+    setSelectedImage({
+      ...sectionSteps[currentIndex - 1],
+      section: selectedImage.section,
+    });
+  };
+
+  const goToNextStep = () => {
+    const sectionSteps = getSelectedSectionSteps();
+    const currentIndex = getSelectedStepIndex();
+
+    if (
+      currentIndex < 0 ||
+      currentIndex >= sectionSteps.length - 1
+    ) {
+      return;
+    }
+
+    setSelectedImage({
+      ...sectionSteps[currentIndex + 1],
+      section: selectedImage.section,
+    });
+  };
+
+  const selectedSectionSteps = getSelectedSectionSteps();
+  const selectedStepIndex = getSelectedStepIndex();
+  const hasPreviousStep = selectedStepIndex > 0;
+  const hasNextStep =
+    selectedStepIndex >= 0 &&
+    selectedStepIndex < selectedSectionSteps.length - 1;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -816,6 +873,65 @@ const UserGuide = () => {
                 border-slate-200
               "
             />
+
+            {/* Previous / Next Navigation */}
+            <div className="mt-5 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={goToPreviousStep}
+                disabled={!hasPreviousStep}
+                className={`
+                  inline-flex
+                  items-center
+                  gap-2
+                  rounded-xl
+                  border
+                  px-4
+                  py-2.5
+                  text-sm
+                  font-bold
+                  transition-all
+                  ${
+                    hasPreviousStep
+                      ? "border-slate-200 bg-white text-slate-700 hover:border-[#235E26] hover:text-[#235E26] hover:shadow-sm"
+                      : "cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300"
+                  }
+                `}
+              >
+                <ChevronLeft size={18} />
+                Previous
+              </button>
+
+              <div className="text-center text-xs font-bold text-slate-400 sm:text-sm">
+                Step {selectedImage.id} of {selectedSectionSteps.length}
+              </div>
+
+              <button
+                type="button"
+                onClick={goToNextStep}
+                disabled={!hasNextStep}
+                className={`
+                  inline-flex
+                  items-center
+                  gap-2
+                  rounded-xl
+                  border
+                  px-4
+                  py-2.5
+                  text-sm
+                  font-bold
+                  transition-all
+                  ${
+                    hasNextStep
+                      ? "border-[#235E26] bg-[#235E26] text-white hover:bg-[#1d4f20] hover:shadow-sm"
+                      : "cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300"
+                  }
+                `}
+              >
+                Next
+                <ChevronRight size={18} />
+              </button>
+            </div>
 
             {/* Instructions */}
             <div
