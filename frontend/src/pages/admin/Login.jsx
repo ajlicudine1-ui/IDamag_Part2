@@ -108,9 +108,6 @@ function Login() {
         </form>
         
         <div className="mt-6 pt-6 border-t border-slate-100 text-center space-y-3">
-          <p className="text-xs text-slate-500 font-medium">
-            Don't have an account? <Link to="/register" className="text-moss-600 font-bold hover:underline">Register</Link>
-          </p>
           <div className="block">
             <Link to="/" className="text-slate-400 hover:text-moss-600 text-[11px] font-bold transition-colors">
               ← Back to Public Site
