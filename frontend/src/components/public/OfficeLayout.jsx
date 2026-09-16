@@ -189,6 +189,15 @@ function OfficeLayout() {
     };
   }, [officeId]);
 
+  // Auto-collapse the sidebar when a report opens.
+  // Because this only runs when selectedReport changes, the user can
+  // still expand/collapse the sidebar manually while viewing the report.
+  useEffect(() => {
+    if (selectedReport) {
+      setIsManualCollapsed(true);
+    }
+  }, [selectedReport]);
+
   // Load reports when the selected division changes
   useEffect(() => {
     let isMounted = true;
@@ -278,9 +287,7 @@ function OfficeLayout() {
         {/* Sidebar */}
         <Sidebar
           activeOfficeId={office.id}
-          isCollapsed={
-            Boolean(selectedReport) || isManualCollapsed
-          }
+          isCollapsed={isManualCollapsed}
           isOpen={isSidebarOpen}
           onClose={() => setIsSidebarOpen(false)}
           isManualCollapsed={isManualCollapsed}
