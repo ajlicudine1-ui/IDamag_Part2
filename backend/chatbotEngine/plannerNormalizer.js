@@ -3218,6 +3218,77 @@ function normalizeSchemaPhraseMorphology(value) {
     .trim();
 }
 
+function findStrongMorphologicalQuestionColumn({
+  schema,
+  question,
+  preferredDataset = null,
+}) {
+  const morphologicalQuestion =
+    normalizeSchemaPhraseMorphology(question);
+
+  if (!morphologicalQuestion) {
+    return null;
+  }
+
+  const candidates = [];
+
+  for (const dataset of schema || []) {
+    if (
+      preferredDataset &&
+      String(dataset?.name || "") !== String(preferredDataset)
+    ) {
+      continue;
+    }
+
+    for (const column of dataset?.columns || []) {
+      const name = column?.name;
+      if (!name) continue;
+
+      const morphologicalColumn =
+        normalizeSchemaPhraseMorphology(name);
+
+      if (!morphologicalColumn) continue;
+
+      const escaped = morphologicalColumn.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&"
+      );
+
+      const regex = new RegExp(
+        `(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`,
+        "u"
+      );
+
+      if (!regex.test(morphologicalQuestion)) {
+        continue;
+      }
+
+      candidates.push({
+        dataset: dataset.name,
+        column: name,
+        score: 97 + morphologicalColumn.length / 10000,
+        length: morphologicalColumn.length,
+      });
+    }
+  }
+
+  if (!candidates.length && preferredDataset) {
+    return findStrongMorphologicalQuestionColumn({
+      schema,
+      question,
+      preferredDataset: null,
+    });
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score - a.score ||
+      b.length - a.length
+  );
+
+  return candidates[0] || null;
+}
+
 function findExplicitSchemaColumn({
   schema,
   question,
@@ -4065,6 +4136,7 @@ module.exports = {
   normalizePlannerPlan,
   singularizeSchemaToken,
   normalizeSchemaPhraseMorphology,
+  findStrongMorphologicalQuestionColumn,
   findExplicitSchemaColumn,
   operationUsesMetricColumn,
   enforceExplicitQuestionColumn,

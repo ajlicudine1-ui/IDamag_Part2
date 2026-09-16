@@ -143,6 +143,7 @@ const {
   normalizePlannerPlan,
   singularizeSchemaToken,
   normalizeSchemaPhraseMorphology,
+  findStrongMorphologicalQuestionColumn,
   findExplicitSchemaColumn,
   operationUsesMetricColumn,
   enforceExplicitQuestionColumn,
@@ -3694,6 +3695,12 @@ function buildExplicitReferentialFieldPlan({
   }
 
   const requested =
+    findStrongMorphologicalQuestionColumn({
+      schema,
+      question,
+      preferredDataset:
+        context.lastDataset,
+    }) ||
     findExplicitSchemaColumn({
       schema,
       question,

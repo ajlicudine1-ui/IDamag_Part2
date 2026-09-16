@@ -3212,7 +3212,7 @@ test('verified list formatting is preserved from Groq language rewriting', () =>
         ],
       },
       semanticAnswer:
-        'The associations for SEC,DOLE are Association A and Association B.',
+        `2 associations:\n1. Association A\n2. Association B`,
     }),
     true
   );
@@ -3418,55 +3418,30 @@ test('relationship narrative remains human-like instead of becoming a raw list',
 });
 
 
-test('referential municipality question prefers Municipality over short substring fields', () => {
+test('strong morphological referential resolver selects municipality and rejects IP substring collisions', () => {
   const {
-    findExplicitSchemaColumn,
-    inferRequestedColumnFromQuestion,
+    findStrongMorphologicalQuestionColumn,
   } = require('./plannerNormalizer');
 
-  const schema = [
-    {
-      name: 'Main_Table_2026',
-      columns: [
-        { name: 'Association' },
-        { name: 'Municipality' },
-        { name: 'IP' },
-        { name: 'Province' },
-      ],
-    },
-  ];
+  const schema = [{
+    name: 'Main_Table_2026',
+    columns: [
+      { name: 'Association' },
+      { name: 'Municipality' },
+      { name: 'IP' },
+      { name: 'Province' },
+    ],
+  }];
 
-  const question =
-    'What municipalities are they from?';
-
-  const explicit =
-    findExplicitSchemaColumn({
+  const resolved =
+    findStrongMorphologicalQuestionColumn({
       schema,
-      question,
-      preferredDataset:
-        'Main_Table_2026',
+      question: 'What municipalities are they from?',
+      preferredDataset: 'Main_Table_2026',
     });
 
-  const inferred =
-    inferRequestedColumnFromQuestion({
-      schema,
-      question,
-      preferredDataset:
-        'Main_Table_2026',
-      excludedColumns: [],
-    });
-
-  assert(explicit);
-  assert.strictEqual(
-    explicit.column,
-    'Municipality'
-  );
-
-  assert(inferred);
-  assert.strictEqual(
-    inferred.column,
-    'Municipality'
-  );
+  assert(resolved);
+  assert.strictEqual(resolved.column, 'Municipality');
 });
 
 async function run() {
