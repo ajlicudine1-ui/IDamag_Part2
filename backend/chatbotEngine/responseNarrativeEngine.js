@@ -103,6 +103,23 @@ function joinNaturalList(values) {
   return `${unique.slice(0, -1).join(', ')}, and ${unique[unique.length - 1]}`;
 }
 
+function uniqueDisplayValues(values) {
+  const seen = new Set();
+  const output = [];
+
+  for (const value of values || []) {
+    const display = String(value ?? '').trim();
+    const key = normalizeText(display);
+
+    if (!display || !key || seen.has(key)) continue;
+
+    seen.add(key);
+    output.push(display);
+  }
+
+  return output;
+}
+
 function thirdPersonSingularVerb(baseVerb) {
   const verb = normalizeText(baseVerb);
   if (!verb) return 'has';
@@ -314,7 +331,8 @@ function buildLookupPairNarrative({ question, plan, result } = {}) {
   } else if (clauses.length === 2) {
     detailSentence = `${clauses[0]}, while ${clauses[1]}.`;
   } else {
-    detailSentence = `${clauses.slice(0, -1).join('; ')}, while ${clauses[clauses.length - 1]}.`;
+    detailSentence =
+      `${clauses.slice(0, -1).join(', ')}, and ${clauses[clauses.length - 1]}.`;
   }
 
   return `${firstSentence} ${detailSentence}`;
@@ -724,6 +742,89 @@ function buildNaturalListNarrative({
     !unique.length
   ) {
     return null;
+  }
+
+  /**
+   * Multi-value categorical cells:
+   *
+   * A worksheet may store several categorical values in one cell, e.g.
+   * "Risk A, Risk B, Risk C". A normal row-level list would repeat those
+   * values across rows. For a natural question asking what values apply,
+   * flatten the verified cells, deduplicate individual values
+   * case-insensitively, and answer them once.
+   *
+   * This is generic and applies to any comma/semicolon/pipe/line-break
+   * separated categorical field, not to a specific dashboard or column.
+   */
+  const splitRows =
+    unique.map(
+      (value) =>
+        splitDisplayValues(
+          value
+        )
+    );
+
+  const hasMultiValueCell =
+    splitRows.some(
+      (values) =>
+        values.length > 1
+    );
+
+  if (hasMultiValueCell) {
+    const flattened =
+      uniqueDisplayValues(
+        splitRows.flat()
+      );
+
+    if (flattened.length) {
+      const relation =
+        extractQuestionRelation(
+          question
+        );
+
+      const subject =
+        questionUsesThey(
+          question
+        )
+          ? "They"
+          : null;
+
+      if (
+        subject &&
+        relation.type !==
+          "neutral"
+      ) {
+        return `${subject} ${relationPhrase(
+          relation,
+          {
+            singular:
+              false,
+          }
+        )} ${joinNaturalList(
+          flattened
+        )}.`;
+      }
+
+      const fieldLabel =
+        pluralizeDisplayLabel(
+          plan?.column
+        );
+
+      const scopePhrase =
+        deriveFilteredListScopePhrase({
+          question,
+          plan,
+        });
+
+      const noun =
+        fieldLabel
+          ? `The ${fieldLabel.toLowerCase()}${scopePhrase}`
+          : `The matching values${scopePhrase}`;
+
+      return `${noun} are ${joinNaturalList(
+        flattened
+      )}.`;
+    }
   }
 
   const continuityNarrative =
