@@ -303,7 +303,7 @@ function StaffDashboard() {
 
       if (!reportData.divisionId) {
         setFormError(
-          "Please select a division."
+          "Please select a Category."
         );
 
         setShowConfirmModal(false);
@@ -760,7 +760,7 @@ function StaffDashboard() {
                     onChange={
                       setSelectedOffice
                     }
-                    placeholder="Search Office..."
+                    placeholder="Search Subcategory..."
                   />
 
                   <SearchableSelect
@@ -786,7 +786,7 @@ function StaffDashboard() {
               ) : (
                 <>
                   <p className="mb-2 text-[10px] font-black uppercase leading-none tracking-[0.2em] text-slate-400">
-                    Office
+                    Subcategory
                   </p>
 
                   <h3 className="mb-1 text-lg font-black leading-tight text-slate-900">
@@ -1000,7 +1000,7 @@ function StaffDashboard() {
                     >
 
                       No reports found for
-                      this division.
+                      this Category.
 
                     </td>
 

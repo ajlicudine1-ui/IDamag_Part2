@@ -261,7 +261,7 @@ function App() {
           throw new Error(
             data.message ||
               data.error ||
-              "Unable to load divisions."
+              "Unable to load Category."
           );
         }
 
@@ -303,7 +303,7 @@ function App() {
         }
       } catch (error) {
         console.error(
-          "Unable to load chatbot divisions:",
+          "Unable to load chatbot Category:",
           error
         );
 
@@ -369,7 +369,7 @@ function App() {
           throw new Error(
             data.message ||
               data.error ||
-              "Unable to load offices or sections."
+              "Unable to load Subcategory or sections."
           );
         }
 
@@ -396,7 +396,7 @@ function App() {
 
               name:
                 office.name ||
-                "Unnamed Office or Section",
+                "Unnamed Subcategory or Section",
 
               divisionId: Number(
                 office.divisionId
@@ -406,7 +406,7 @@ function App() {
         }
       } catch (error) {
         console.error(
-          "Unable to load chatbot offices:",
+          "Unable to load chatbot Subcategory:",
           error
         );
 
@@ -415,7 +415,7 @@ function App() {
 
           setSelectionError(
             error.message ||
-              "Unable to load offices or sections."
+              "Unable to load Subcategory or sections."
           );
         }
       } finally {
@@ -1176,11 +1176,11 @@ function App() {
               <div className="min-h-0 flex-1 overflow-y-auto bg-[#F5FAF4] p-4">
                 <div className="mb-4">
                   <h3 className="text-base font-bold text-[#235E26]">
-                    Select a division
+                    Select a Category
                   </h3>
 
                   <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                    Choose the division whose
+                    Choose the Category whose
                     data you want to ask about.
                   </p>
                 </div>
@@ -1262,11 +1262,11 @@ function App() {
                 ) : (
                   <div className="flex min-h-[200px] flex-col items-center justify-center text-center">
                     <p className="text-sm font-semibold text-slate-800">
-                      No divisions available
+                      No Category available
                     </p>
 
                     <p className="mt-2 text-xs text-slate-500">
-                      No divisions were returned
+                      No Category were returned
                       from the database.
                     </p>
                   </div>
@@ -1285,11 +1285,11 @@ function App() {
               <div className="min-h-0 flex-1 overflow-y-auto bg-[#F5FAF4] p-4">
                 <div className="mb-4">
                   <h3 className="text-base font-bold text-[#235E26]">
-                    Select an Category or section
+                    Select an Subcategory or section
                   </h3>
 
                   <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                    Choose an Category or section
+                    Choose an Subcategory or section
                     under{" "}
                     <strong className="text-[#2F6F32]">
                       {selectedDivision.name}
@@ -1358,12 +1358,12 @@ function App() {
                 ) : (
                   <div className="flex min-h-[200px] flex-col items-center justify-center text-center">
                     <p className="text-sm font-semibold text-slate-800">
-                      No Category or sections
+                      No Subcategory or sections
                     </p>
 
                     <p className="mt-2 text-xs text-slate-500">
-                      This division currently has
-                      no Category or sections.
+                      This Category currently has
+                      no Subcategory or sections.
                     </p>
                   </div>
                 )}
@@ -1451,7 +1451,7 @@ function App() {
                     </p>
 
                     <p className="mt-2 text-xs text-slate-500">
-                      This Category or section
+                      This Subcategory or section
                       currently has no reports.
                     </p>
                   </div>
