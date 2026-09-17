@@ -71,7 +71,7 @@ function OfficeDivisionManagement() {
     );
 
     if (nameExists) {
-      setValidationError('An office with this name already exists.');
+      setValidationError('An Subcategory with this name already exists.');
       return;
     }
 
@@ -99,15 +99,15 @@ function OfficeDivisionManagement() {
       setShowConfirmModal(false);
       fetchData();
     } catch (err) {
-      alert('Error saving office: ' + err.message);
+      alert('Error saving subcategory: ' + err.message);
       setShowConfirmModal(false);
     }
   };
 
   const handleDeleteOffice = (id) => {
     setConfirmConfig({
-      title: 'Delete Office?',
-      message: 'Are you sure you want to delete this office? All associated sections and reports will be removed. This action cannot be undone.',
+      title: 'Delete Subcategory?',
+      message: 'Are you sure you want to delete this subcategory? All associated sections and reports will be removed. This action cannot be undone.',
       type: 'delete',
       action: () => executeDeleteOffice(id)
     });
@@ -120,7 +120,7 @@ function OfficeDivisionManagement() {
       setShowConfirmModal(false);
       fetchData();
     } catch (err) {
-      alert('Error deleting office: ' + err.message);
+      alert('Error deleting subcategory: ' + err.message);
       setShowConfirmModal(false);
     }
   };
@@ -150,7 +150,7 @@ function OfficeDivisionManagement() {
     );
 
     if (nameExists) {
-      setValidationError('A section with this name already exists in the selected office.');
+      setValidationError('A section with this name already exists in the selected subcategory.');
       return;
     }
 
@@ -263,7 +263,7 @@ function OfficeDivisionManagement() {
   };
 
   return (
-    <ManagementLayout title="Office Management">
+    <ManagementLayout title="Category Management">
       <div className="space-y-8 animate-in fade-in duration-500">
         {/* Combined Navigation Header */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 pb-2">
@@ -325,10 +325,10 @@ function OfficeDivisionManagement() {
                         </td>
                         <td className="px-8 py-5 text-right">
                           <div className="flex items-center justify-end gap-1.5">
-                            <button onClick={() => openOfficeModal(office)} className="p-2 text-slate-400 hover:text-moss-600 hover:bg-moss-50 rounded-xl transition-all" title="Edit Office">
+                            <button onClick={() => openOfficeModal(office)} className="p-2 text-slate-400 hover:text-moss-600 hover:bg-moss-50 rounded-xl transition-all" title="Edit subcategory">
                               <Edit3 size={16} />
                             </button>
-                            <button onClick={() => handleDeleteOffice(office.id)} className="p-2 text-slate-300 hover:text-amber-600 hover:bg-amber-50 rounded-xl transition-all" title="Delete Office">
+                            <button onClick={() => handleDeleteOffice(office.id)} className="p-2 text-slate-300 hover:text-amber-600 hover:bg-amber-50 rounded-xl transition-all" title="Delete Subcategory">
                               <Trash2 size={16} />
                             </button>
                           </div>
@@ -351,7 +351,7 @@ function OfficeDivisionManagement() {
                     <tr className="bg-slate-50/50">
                       <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Section Name</th>
                       <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">Acronym</th>
-                      <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Parent Office</th>
+                      <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Parent Subcategory</th>
                       <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Actions</th>
                     </tr>
                   </thead>
@@ -396,11 +396,11 @@ function OfficeDivisionManagement() {
             <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setIsOfficeModalOpen(false)}></div>
             <div className="relative w-full max-w-lg bg-white rounded-[2.5rem] shadow-2xl p-10 animate-in zoom-in-95 duration-200">
               <h3 className="text-2xl font-extrabold text-slate-900 mb-8 tracking-tight">
-                {editingOffice ? 'Edit Office' : 'Add New Office'}
+                {editingOffice ? 'Edit Subcategory' : 'Add New Subcategory'}
               </h3>
               <form onSubmit={handleSaveOffice} className="space-y-6">
                 <div>
-                  <label className="block text-sm font-bold text-slate-700 mb-2">Office Name</label>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">Subcategory Name</label>
                   <input 
                     type="text" 
                     required
@@ -443,7 +443,7 @@ function OfficeDivisionManagement() {
                     type="submit"
                     className="flex-1 bg-moss-600 hover:bg-moss-700 text-white font-bold py-4 rounded-2xl shadow-lg shadow-moss-600/20 transition-all"
                   >
-                    Save Office
+                    Save Subcategory
                   </button>
                 </div>
               </form>
