@@ -34,9 +34,9 @@ const idamagSteps = [
   },
   {
     id: 3,
-    title: "Select a Division or Section",
+    title: "Select a Subcategory or Section",
     description:
-      "From the selected category, choose the division or section whose reports and dashboards you want to view.",
+      "From the selected category, choose the subcategory or section whose reports and dashboards you want to view.",
     image: "/iDAMAG/For Public Users/3.png",
     icon: Building2,
   },
@@ -44,7 +44,7 @@ const idamagSteps = [
     id: 4,
     title: "Choose a Dashboard",
     description:
-      "Select one of the available dashboards under the chosen division or section to open its report.",
+      "Select one of the available dashboards under the chosen subcategory or section to open its report.",
     image: "/iDAMAG/For Public Users/4.png",
     icon: FileText,
   },

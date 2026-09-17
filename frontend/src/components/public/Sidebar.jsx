@@ -496,7 +496,7 @@ function Sidebar({
             {/* Loading */}
             {officesLoading && (
               <div className="px-4 py-4 text-sm text-slate-400">
-                Loading offices...
+                Loading Subcategories...
               </div>
             )}
 
