@@ -538,8 +538,11 @@ function Help() {
               shadow-2xl
               max-w-6xl
               w-full
-              max-h-full
+              max-h-[calc(100vh-2rem)]
+              md:max-h-[calc(100vh-5rem)]
               overflow-hidden
+              flex
+              flex-col
               animate-in
               zoom-in-95
               duration-300
@@ -564,7 +567,7 @@ function Help() {
               <X size={24} />
             </button>
 
-            <div className="h-full overflow-y-auto pr-2 custom-scrollbar">
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain pr-2 custom-scrollbar">
               <div className="mb-6 flex items-center gap-4">
                 <div className="w-12 h-12 bg-moss-50 rounded-2xl flex items-center justify-center">
                   {React.createElement(selectedImage.icon, {
