@@ -195,7 +195,7 @@ function Sidebar({
         if (!isMounted) return;
 
         console.error(
-          "Error loading offices:",
+          "Error loading Subcategories:",
           error
         );
 
@@ -203,7 +203,7 @@ function Sidebar({
 
         setOfficesError(
           error.message ||
-            "Unable to load offices."
+            "Unable to load Subcategories."
         );
       } finally {
         if (isMounted) {
@@ -489,7 +489,7 @@ function Sidebar({
                   mb-4
                 "
               >
-                Offices
+                Subcategories
               </p>
             )}
 
@@ -505,7 +505,7 @@ function Sidebar({
               officesError && (
                 <div className="px-4 py-4">
                   <p className="text-xs font-semibold text-red-600">
-                    Unable to load offices
+                    Unable to load Subcategories
                   </p>
 
                   <p className="mt-1 text-[10px] text-slate-400">
@@ -519,11 +519,11 @@ function Sidebar({
               !officesError &&
               offices.length === 0 && (
                 <div className="px-4 py-4 text-sm text-slate-400">
-                  No offices available.
+                  No Subcategories available.
                 </div>
               )}
 
-            {/* Office Items */}
+            {/* Subcategory Items */}
             {!officesLoading &&
               !officesError &&
               offices.map((office) => {
