@@ -1,4 +1,6 @@
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { buildSchema } = require('./schemaBuilder');
 const {
   refineStoredMetricOperation,
@@ -638,7 +640,7 @@ test('categorical list plans do not get numeric metric semantics', () => {
   assert.strictEqual(plan.metricMeaningSkipped, true);
 });
 
-test('plain list narrative uses the user question as a natural introduction', () => {
+test('plain list narrative uses standardized count-and-list formatting', () => {
   const {
     buildSemanticVerifiedAnswer,
   } = require('./responseNarrativeEngine');
@@ -660,9 +662,10 @@ test('plain list narrative uses the user question as a natural introduction', ()
     },
   });
 
-  assert(answer.startsWith('3 organizations received support:'));
-  assert(answer.includes('1. Org A'));
-  assert(answer.includes('3. Org C'));
+  assert.strictEqual(
+    answer,
+    '3 organizations received support:\n1. Org A\n2. Org B\n3. Org C'
+  );
 });
 
 test('list introduction avoids copying do-they grammar incorrectly', () => {
@@ -836,7 +839,7 @@ test('filtered plural field with appear wording scans all matching rows', () => 
   assert.strictEqual(plan.limit, 100);
 });
 
-test('small filtered list narrative uses a natural sentence', () => {
+test('small filtered list narrative uses standardized count-and-list formatting', () => {
   const {
     buildSemanticVerifiedAnswer,
   } = require('./responseNarrativeEngine');
@@ -2711,6 +2714,2161 @@ test('direct filtered Association narrative is consistent for phase wording', ()
   assert.strictEqual(
     literal,
     expected
+  );
+});
+
+
+test('universal grounding rejects a requested object that does not exist', () => {
+  const {
+    enforceUniversalGrounding,
+  } = require('./universalGroundingEngine');
+
+  const rows = [
+    {
+      'Intervention Details': 'Vermicast',
+      'Unit of Measurement': 'kilograms',
+      Quantity: 10,
+    },
+    {
+      'Intervention Details': 'OPV Vegetable Seeds',
+      'Unit of Measurement': 'kilograms',
+      Quantity: 5,
+    },
+  ];
+
+  const grounding =
+    enforceUniversalGrounding({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'sum',
+        column: 'Quantity',
+        filters: [
+          {
+            column: 'Unit of Measurement',
+            operator: 'equals',
+            value: 'kilograms',
+          },
+        ],
+      },
+      question:
+        'How many kilograms of fertilizer were released?',
+      rows,
+      columns: [
+        'Intervention Details',
+        'Unit of Measurement',
+        'Quantity',
+      ],
+    });
+
+  assert.strictEqual(
+    grounding.valid,
+    false
+  );
+  assert.strictEqual(
+    grounding.plan.route,
+    'clarify'
+  );
+  assert.strictEqual(
+    grounding.plan.universalGroundingFailed,
+    true
+  );
+});
+
+test('universal grounding repairs an omitted live value filter', () => {
+  const {
+    enforceUniversalGrounding,
+  } = require('./universalGroundingEngine');
+
+  const rows = [
+    {
+      Association: 'A',
+      Phase: 'Phase 2',
+    },
+    {
+      Association: 'B',
+      Phase: 'Phase 3',
+    },
+  ];
+
+  const grounding =
+    enforceUniversalGrounding({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'list',
+        column: 'Association',
+        filters: [],
+      },
+      question:
+        'List associations in Phase 2',
+      rows,
+      columns: [
+        'Association',
+        'Phase',
+      ],
+    });
+
+  assert.strictEqual(
+    grounding.valid,
+    true
+  );
+
+  const phase =
+    grounding.plan.filters.find(
+      (filter) =>
+        filter.column === 'Phase'
+    );
+
+  assert(phase);
+  assert.strictEqual(
+    phase.value,
+    'Phase 2'
+  );
+  assert.strictEqual(
+    grounding.plan.universalGroundingRepaired,
+    true
+  );
+});
+
+test('universal grounding validates filters emitted by any planner source', () => {
+  const {
+    enforceUniversalGrounding,
+  } = require('./universalGroundingEngine');
+
+  const rows = [
+    {
+      Province: 'Pangasinan',
+      Status: 'Active',
+    },
+  ];
+
+  const grounding =
+    enforceUniversalGrounding({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'list',
+        column: 'Province',
+        filters: [
+          {
+            column: 'Status',
+            operator: 'equals',
+            value: 'Imaginary',
+          },
+        ],
+      },
+      question:
+        'List Province where Status is Imaginary',
+      rows,
+      columns: [
+        'Province',
+        'Status',
+      ],
+    });
+
+  assert.strictEqual(
+    grounding.valid,
+    false
+  );
+});
+
+test('complex filter parity collapses same-column OR into IN plus AND filter', () => {
+  const {
+    resolveComplexFilterPlan,
+  } = require('./complexFilterParityEngine');
+
+  const rows = [
+    {
+      Province: 'Pangasinan',
+      Status: 'Active',
+      Project: 'A',
+    },
+    {
+      Province: 'La Union',
+      Status: 'Active',
+      Project: 'B',
+    },
+    {
+      Province: 'Ilocos Norte',
+      Status: 'Pending',
+      Project: 'C',
+    },
+  ];
+
+  const plan =
+    resolveComplexFilterPlan({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'list',
+        column: 'Project',
+        filters: [],
+      },
+      question:
+        'List Project in Pangasinan or La Union and Active',
+      rows,
+    });
+
+  assert.strictEqual(
+    plan.complexFilterResolved,
+    true
+  );
+  assert.strictEqual(
+    plan.filterGroups.length,
+    0
+  );
+
+  const province =
+    plan.filters.find(
+      (filter) =>
+        filter.column === 'Province'
+    );
+
+  const status =
+    plan.filters.find(
+      (filter) =>
+        filter.column === 'Status'
+    );
+
+  assert(province);
+  assert.strictEqual(
+    province.operator,
+    'in'
+  );
+  assert.deepStrictEqual(
+    province.value,
+    [
+      'Pangasinan',
+      'La Union',
+    ]
+  );
+
+  assert(status);
+  assert.strictEqual(
+    status.value,
+    'Active'
+  );
+});
+
+test('complex filter parity creates OR-of-AND groups for independent alternatives', () => {
+  const {
+    resolveComplexFilterPlan,
+  } = require('./complexFilterParityEngine');
+
+  const rows = [
+    {
+      Province: 'Pangasinan',
+      Status: 'Active',
+      Project: 'A',
+    },
+    {
+      Province: 'La Union',
+      Status: 'Pending',
+      Project: 'B',
+    },
+    {
+      Province: 'Pangasinan',
+      Status: 'Pending',
+      Project: 'C',
+    },
+  ];
+
+  const plan =
+    resolveComplexFilterPlan({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'lookup',
+        column: 'Project',
+        filters: [],
+      },
+      question:
+        'Pangasinan and Active or La Union and Pending',
+      rows,
+    });
+
+  assert.strictEqual(
+    plan.complexFilterResolved,
+    true
+  );
+  assert.strictEqual(
+    plan.filterGroupLogic,
+    'or'
+  );
+  assert.strictEqual(
+    plan.filterGroups.length,
+    2
+  );
+
+  assert.deepStrictEqual(
+    plan.filterGroups[0].filters.map(
+      (filter) => [
+        filter.column,
+        filter.value,
+      ]
+    ),
+    [
+      ['Province', 'Pangasinan'],
+      ['Status', 'Active'],
+    ]
+  );
+
+  assert.deepStrictEqual(
+    plan.filterGroups[1].filters.map(
+      (filter) => [
+        filter.column,
+        filter.value,
+      ]
+    ),
+    [
+      ['Province', 'La Union'],
+      ['Status', 'Pending'],
+    ]
+  );
+});
+
+test('complex filter parity refuses partial AND OR grounding', () => {
+  const {
+    resolveComplexFilterPlan,
+  } = require('./complexFilterParityEngine');
+
+  const rows = [
+    {
+      Province: 'Pangasinan',
+      Status: 'Active',
+      Project: 'A',
+    },
+  ];
+
+  const plan =
+    resolveComplexFilterPlan({
+      plan: {
+        route: 'dataset',
+        dataset: 'Sheet1',
+        operation: 'list',
+        column: 'Project',
+        filters: [],
+      },
+      question:
+        'Pangasinan and ImaginaryStatus',
+      rows,
+    });
+
+  assert.strictEqual(
+    plan.complexFilterGroundingFailed,
+    true
+  );
+  assert.deepStrictEqual(
+    plan.complexFilterUngroundedClauses,
+    [
+      'ImaginaryStatus',
+    ]
+  );
+});
+
+
+test('all simple list answers use the same format across planner sources', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const plannerSources = [
+    'groq',
+    'local-fallback',
+    'conversation',
+    'conversation-local',
+    'deterministic-direct',
+  ];
+
+  for (const plannerSource of plannerSources) {
+    const answer =
+      buildSemanticVerifiedAnswer({
+        question:
+          'Which associations are registered with SEC or DOLE?',
+        plan: {
+          route: 'dataset',
+          operation: 'list',
+          column: 'Association',
+          filters: [
+            {
+              column: 'SEC/DOLE/CDA',
+              operator: 'in',
+              value: ['SEC', 'DOLE'],
+            },
+          ],
+          plannerSource,
+        },
+        result: {
+          success: true,
+          operation: 'list',
+          count: 3,
+          results: [
+            'Association A',
+            'Association B',
+            'Association C',
+          ],
+        },
+      });
+
+    assert.strictEqual(
+      answer,
+      'The associations for SEC,DOLE are Association A, Association B, and Association C.'
+    );
+  }
+});
+
+test('single equals filter may add a natural scope while retaining count-and-list format', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer =
+    buildSemanticVerifiedAnswer({
+      question: 'What associations are in Phase 2?',
+      plan: {
+        route: 'dataset',
+        operation: 'list',
+        column: 'Association',
+        filters: [
+          {
+            column: 'Phase',
+            operator: 'equals',
+            value: 'Phase 2',
+          },
+        ],
+      },
+      result: {
+        success: true,
+        operation: 'list',
+        count: 2,
+        results: [
+          'Association A',
+          'Association B',
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    answer,
+    'The associations in Phase 2 are Association A and Association B.'
+  );
+});
+
+test('IN filters do not render array values as awkward list scopes', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer =
+    buildSemanticVerifiedAnswer({
+      question:
+        'Which associations are registered with SEC or DOLE?',
+      plan: {
+        route: 'dataset',
+        operation: 'list',
+        column: 'Association',
+        filters: [
+          {
+            column: 'SEC/DOLE/CDA',
+            operator: 'in',
+            value: ['SEC', 'DOLE'],
+          },
+        ],
+      },
+      result: {
+        success: true,
+        operation: 'list',
+        results: [
+          'Association A',
+          'Association B',
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    answer,
+    'The associations for SEC,DOLE are Association A and Association B.'
+  );
+});
+
+test('actual V7.36.2 response behavior allows simple verified lists to receive optional language polish', () => {
+  const {
+    shouldPreserveDeterministicSemanticAnswer,
+  } = require('./responseGenerator');
+
+  assert.strictEqual(
+    shouldPreserveDeterministicSemanticAnswer({
+      plan: {
+        route: 'dataset',
+        operation: 'list',
+        column: 'Association',
+        labelColumn: null,
+      },
+      result: {
+        success: true,
+        operation: 'list',
+        results: [
+          'Association A',
+          'Association B',
+        ],
+      },
+      semanticAnswer:
+        `2 associations:\n1. Association A\n2. Association B`,
+    }),
+    false
+  );
+});
+
+
+test('response style router keeps simple scalar lists as clean lists', () => {
+  const {
+    classifyResponseStyle,
+  } = require('./responseStyleRouter');
+
+  const style =
+    classifyResponseStyle({
+      question:
+        'Which associations are in Pangasinan?',
+      plan: {
+        operation: 'list',
+        column: 'Association',
+      },
+      result: {
+        operation: 'list',
+        results: [
+          'Association A',
+          'Association B',
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    style,
+    'simple_list'
+  );
+});
+
+test('response style router sends paired lookups to human-like relationship narrative', () => {
+  const {
+    classifyResponseStyle,
+  } = require('./responseStyleRouter');
+
+  const style =
+    classifyResponseStyle({
+      question:
+        'What commodities do they produce?',
+      plan: {
+        operation: 'lookup',
+        column: 'Commodities',
+        labelColumn: 'Municipality',
+      },
+      result: {
+        operation: 'lookup',
+        column: 'Commodities',
+        labelColumn: 'Municipality',
+        results: [
+          {
+            Municipality: 'Sison',
+            Commodities: 'rice, corn, vegetables',
+          },
+          {
+            Municipality: 'Mabini',
+            Commodities: 'rice, vegetables, sugarcane',
+          },
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    style,
+    'relationship_grouped'
+  );
+});
+
+test('response style router sends scalar calculations to concise numeric analysis', () => {
+  const {
+    classifyResponseStyle,
+  } = require('./responseStyleRouter');
+
+  const style =
+    classifyResponseStyle({
+      question:
+        'What is the total land area?',
+      plan: {
+        operation: 'sum',
+        column: 'Total Land Area (ha)',
+      },
+      result: {
+        operation: 'sum',
+        value: 123.45,
+      },
+    });
+
+  assert.strictEqual(
+    style,
+    'numeric_analysis'
+  );
+});
+
+test('response style router prioritizes ranking over generic grouped output', () => {
+  const {
+    classifyResponseStyle,
+  } = require('./responseStyleRouter');
+
+  const style =
+    classifyResponseStyle({
+      question:
+        'Which association has the largest land area?',
+      plan: {
+        operation: 'rank_groups',
+        column: 'Total Land Area (ha)',
+        groupBy: 'Association',
+        direction: 'desc',
+      },
+      result: {
+        operation: 'rank_groups',
+        groupBy: 'Association',
+        direction: 'desc',
+        results: [
+          {
+            label: 'Association A',
+            value: 161.6967,
+          },
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    style,
+    'ranking'
+  );
+});
+
+test('response style router prioritizes conversational continuation for follow-ups', () => {
+  const {
+    classifyResponseStyle,
+  } = require('./responseStyleRouter');
+
+  const style =
+    classifyResponseStyle({
+      question:
+        'What about Phase 3?',
+      plan: {
+        operation: 'list',
+        column: 'Association',
+        conversationalFilterSwitch: true,
+      },
+      result: {
+        operation: 'list',
+        results: [
+          'Association A',
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    style,
+    'follow_up'
+  );
+});
+
+test('relationship narrative remains human-like instead of becoming a raw list', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer =
+    buildSemanticVerifiedAnswer({
+      question:
+        'What commodities do they produce?',
+      plan: {
+        operation: 'lookup',
+        column: 'Commodities',
+        labelColumn: 'Municipality',
+      },
+      result: {
+        success: true,
+        operation: 'lookup',
+        column: 'Commodities',
+        labelColumn: 'Municipality',
+        results: [
+          {
+            Municipality: 'Sison',
+            Commodities: 'rice, corn, vegetables',
+          },
+          {
+            Municipality: 'Anda',
+            Commodities: 'rice, corn, vegetables',
+          },
+          {
+            Municipality: 'Binalonan',
+            Commodities: 'rice, corn, vegetables',
+          },
+          {
+            Municipality: 'Mabini',
+            Commodities: 'rice, vegetables, sugarcane',
+          },
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    answer,
+    'They produce rice, corn, vegetables, and sugarcane. Sison, Anda, and Binalonan produce rice, corn, and vegetables, while Mabini produces rice, vegetables, and sugarcane.'
+  );
+});
+
+
+test('strong morphological referential resolver selects municipality and rejects IP substring collisions', () => {
+  const {
+    findStrongMorphologicalQuestionColumn,
+  } = require('./plannerNormalizer');
+
+  const schema = [{
+    name: 'Main_Table_2026',
+    columns: [
+      { name: 'Association' },
+      { name: 'Municipality' },
+      { name: 'IP' },
+      { name: 'Province' },
+    ],
+  }];
+
+  const resolved =
+    findStrongMorphologicalQuestionColumn({
+      schema,
+      question: 'What municipalities are they from?',
+      preferredDataset: 'Main_Table_2026',
+    });
+
+  assert(resolved);
+  assert.strictEqual(resolved.column, 'Municipality');
+});
+
+
+test('human relationship narrative deduplicates case variants across grouped values', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer =
+    buildSemanticVerifiedAnswer({
+      question:
+        'What climate-related risks do they face?',
+      plan: {
+        operation: 'lookup',
+        column: 'Climate-related Risks/Hazards',
+        labelColumn: 'Amia Villages',
+        filters: [
+          {
+            column: 'Province',
+            operator: 'equals',
+            value: 'Pangasinan',
+          },
+        ],
+      },
+      result: {
+        success: true,
+        operation: 'lookup',
+        column: 'Climate-related Risks/Hazards',
+        labelColumn: 'Amia Villages',
+        results: [
+          {
+            'Amia Villages': 'Sison',
+            'Climate-related Risks/Hazards':
+              'Landslide, Soil Erosion, Typhoon, Drought, Flood',
+          },
+          {
+            'Amia Villages': 'Binalonan',
+            'Climate-related Risks/Hazards':
+              'Typhoon, Flood, Drought',
+          },
+          {
+            'Amia Villages': 'Anda',
+            'Climate-related Risks/Hazards':
+              'Typhoon, Storm Surge, Drought, Sea level rise, Soil erosion',
+          },
+          {
+            'Amia Villages': 'Mabini',
+            'Climate-related Risks/Hazards':
+              'Typhoon, Drought, Landslide, erosion',
+          },
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    answer,
+    'They face Landslide, Soil Erosion, Typhoon, Drought, Flood, Storm Surge, Sea level rise, and erosion. Sison faces Landslide, Soil Erosion, Typhoon, Drought, and Flood, Binalonan faces Typhoon, Flood, and Drought, Anda faces Typhoon, Storm Surge, Drought, Sea level rise, and Soil erosion, and Mabini faces Typhoon, Drought, Landslide, and erosion.'
+  );
+});
+
+test('human relationship narrative uses a natural comma-and detail sentence for many groups', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const answer =
+    buildSemanticVerifiedAnswer({
+      question:
+        'What AMIA villages are they from?',
+      plan: {
+        operation: 'lookup',
+        column: 'Amia Villages',
+        labelColumn: 'Association',
+      },
+      result: {
+        success: true,
+        operation: 'lookup',
+        column: 'Amia Villages',
+        labelColumn: 'Association',
+        results: [
+          { Association: 'Association A', 'Amia Villages': 'Sison' },
+          { Association: 'Association B', 'Amia Villages': 'Binalonan' },
+          { Association: 'Association C', 'Amia Villages': 'Anda' },
+          { Association: 'Association D', 'Amia Villages': 'Mabini' },
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    answer,
+    'They are from Sison, Binalonan, Anda, and Mabini. Association A is from Sison, Association B is from Binalonan, Association C is from Anda, and Association D is from Mabini.'
+  );
+});
+
+
+test('explicit referential copular lookup uses semantic human-like relationship narrative', () => {
+  const {
+    buildSemanticVerifiedAnswer,
+  } = require('./responseNarrativeEngine');
+
+  const question =
+    'What AMIA villages are they from?';
+
+  const plan = {
+    route: 'dataset',
+    dataset: 'Main_Table_2026',
+    operation: 'lookup',
+    column: 'Amia Villages',
+    labelColumn: 'Association',
+    filters: [
+      {
+        column: 'Province',
+        operator: 'equals',
+        value: 'Pangasinan',
+      },
+    ],
+    conversationalPairColumn:
+      'Association',
+    explicitReferentialField: true,
+  };
+
+  const result = {
+    success: true,
+    operation: 'lookup',
+    column: 'Amia Villages',
+    labelColumn: 'Association',
+    results: [
+      {
+        Association:
+          'Calia Gawis Farmers Association Inc.',
+        'Amia Villages': 'Sison',
+      },
+      {
+        Association:
+          'Brgy. Mangkasuy Binalonan Farmers Association Inc.',
+        'Amia Villages': 'Binalonan',
+      },
+      {
+        Association:
+          'Anda Mushroom Growers and Organic Farmers Association',
+        'Amia Villages': 'Anda',
+      },
+      {
+        Association:
+          'San Pedro Mabini Farmers Agriculture Cooperative',
+        'Amia Villages': 'Mabini',
+      },
+    ],
+  };
+
+  const answer =
+    buildSemanticVerifiedAnswer({
+      question,
+      plan,
+      result,
+    });
+
+  assert.strictEqual(
+    answer,
+    'They are from Sison, Binalonan, Anda, and Mabini. Calia Gawis Farmers Association Inc. is from Sison, Brgy. Mangkasuy Binalonan Farmers Association Inc. is from Binalonan, Anda Mushroom Growers and Organic Farmers Association is from Anda, and San Pedro Mabini Farmers Agriculture Cooperative is from Mabini.'
+  );
+});
+
+
+test('current explicit distinct field wins over relationship subject in direct filtered question', () => {
+  const {
+    resolveDirectFilteredFieldPlan,
+    normalizeDirectRequestedFieldPhrase,
+  } = require('./directQueryResolver');
+
+  assert.strictEqual(
+    normalizeDirectRequestedFieldPhrase(
+      'distinct commodities are produced by associations'
+    ),
+    'commodities'
+  );
+
+  const datasets = {
+    Main_Table_2026: [
+      {
+        Association: 'Association A',
+        Commodities: 'rice, corn, vegetables',
+        Province: 'Pangasinan',
+      },
+      {
+        Association: 'Association B',
+        Commodities: 'rice, vegetables, sugarcane',
+        Province: 'Pangasinan',
+      },
+      {
+        Association: 'Association C',
+        Commodities: 'corn',
+        Province: 'La Union',
+      },
+    ],
+  };
+
+  const schema = [{
+    name: 'Main_Table_2026',
+    columns: [
+      { name: 'Association', type: 'text' },
+      { name: 'Commodities', type: 'text' },
+      { name: 'Province', type: 'text' },
+    ],
+  }];
+
+  const plan =
+    resolveDirectFilteredFieldPlan({
+      question:
+        'What distinct commodities are produced by associations in Pangasinan?',
+      schema,
+      datasets,
+    });
+
+  assert(plan);
+  assert.strictEqual(
+    plan.operation,
+    'list'
+  );
+  assert.strictEqual(
+    plan.column,
+    'Commodities'
+  );
+  assert.deepStrictEqual(
+    plan.filters,
+    [
+      {
+        column: 'Province',
+        operator: 'equals',
+        value: 'Pangasinan',
+      },
+    ]
+  );
+});
+
+test('direct field relationship cleanup is generic outside commodities', () => {
+  const {
+    resolveDirectFilteredFieldPlan,
+  } = require('./directQueryResolver');
+
+  const datasets = {
+    Sheet1: [
+      {
+        Project: 'Project A',
+        Status: 'Completed',
+        Province: 'Pangasinan',
+      },
+      {
+        Project: 'Project B',
+        Status: 'Active',
+        Province: 'Pangasinan',
+      },
+    ],
+  };
+
+  const schema = [{
+    name: 'Sheet1',
+    columns: [
+      { name: 'Project', type: 'text' },
+      { name: 'Status', type: 'text' },
+      { name: 'Province', type: 'text' },
+    ],
+  }];
+
+  const plan =
+    resolveDirectFilteredFieldPlan({
+      question:
+        'What unique projects are located in Pangasinan?',
+      schema,
+      datasets,
+    });
+
+  assert(plan);
+  assert.strictEqual(
+    plan.column,
+    'Project'
+  );
+  assert.strictEqual(
+    plan.filters[0].column,
+    'Province'
+  );
+  assert.strictEqual(
+    plan.filters[0].value,
+    'Pangasinan'
+  );
+});
+
+
+test('Groq diagnostics distinguish invalid JSON, rate limit, and authentication failures', () => {
+  const {
+    classifyGroqError,
+  } = require('./groqService');
+
+  const invalidJson =
+    new Error(
+      'Groq did not return valid JSON.'
+    );
+  invalidJson.groqErrorType =
+    'invalid_json';
+
+  assert.strictEqual(
+    classifyGroqError(
+      invalidJson
+    ).status,
+    'invalid_json'
+  );
+
+  const rateLimit =
+    new Error(
+      'Rate limit reached for model.'
+    );
+  rateLimit.httpStatus =
+    429;
+  rateLimit.groqCode =
+    'rate_limit_exceeded';
+
+  const rateDiagnostic =
+    classifyGroqError(
+      rateLimit
+    );
+
+  assert.strictEqual(
+    rateDiagnostic.status,
+    'rate_limited'
+  );
+  assert.strictEqual(
+    rateDiagnostic.httpStatus,
+    429
+  );
+  assert.strictEqual(
+    rateDiagnostic.code,
+    'rate_limit_exceeded'
+  );
+
+  const auth =
+    new Error(
+      'Invalid API key'
+    );
+  auth.httpStatus =
+    401;
+
+  assert.strictEqual(
+    classifyGroqError(
+      auth
+    ).status,
+    'authentication_error'
+  );
+});
+
+test('Groq diagnostics identify missing key, timeout, network, and server failures', () => {
+  const {
+    classifyGroqError,
+  } = require('./groqService');
+
+  assert.strictEqual(
+    classifyGroqError(
+      new Error(
+        'GROQ_API_KEY is missing from the backend environment.'
+      )
+    ).status,
+    'missing_api_key'
+  );
+
+  assert.strictEqual(
+    classifyGroqError(
+      new Error(
+        'Request timed out'
+      )
+    ).status,
+    'timeout'
+  );
+
+  assert.strictEqual(
+    classifyGroqError(
+      new Error(
+        'fetch failed: network connection reset'
+      )
+    ).status,
+    'network_error'
+  );
+
+  const server =
+    new Error(
+      'Groq unavailable'
+    );
+  server.httpStatus =
+    503;
+
+  assert.strictEqual(
+    classifyGroqError(
+      server
+    ).status,
+    'server_error'
+  );
+});
+
+
+test('distinct multi-value cells normalize to individual semantic values in local direct path', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'function splitDistinctCellValues'
+    )
+  );
+
+  assert(
+    source.includes(
+      'wantsDistinctValues'
+    )
+  );
+
+  assert(
+    source.includes(
+      'multiValueNormalized'
+    )
+  );
+});
+
+test('distinct cell splitter is generic for categorical comma lists and preserves long name-like values', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const helperStart =
+    source.indexOf(
+      'function splitDistinctCellValues'
+    );
+
+  const helperEnd =
+    source.indexOf(
+      'function normalizeDirectSingleFieldResult',
+      helperStart
+    );
+
+  assert(
+    helperStart >= 0 &&
+    helperEnd > helperStart
+  );
+
+  const helperSource =
+    source.slice(
+      helperStart,
+      helperEnd
+    );
+
+  const makeHelper =
+    new Function(
+      `${helperSource}; return splitDistinctCellValues;`
+    );
+
+  const splitDistinctCellValues =
+    makeHelper();
+
+  assert.deepStrictEqual(
+    splitDistinctCellValues(
+      'rice, corn, vegetables'
+    ),
+    [
+      'rice',
+      'corn',
+      'vegetables',
+    ]
+  );
+
+  assert.deepStrictEqual(
+    splitDistinctCellValues(
+      'Typhoon, Flood, Drought'
+    ),
+    [
+      'Typhoon',
+      'Flood',
+      'Drought',
+    ]
+  );
+
+  assert.deepStrictEqual(
+    splitDistinctCellValues(
+      'A very long organization name with many descriptive words, another very long descriptive organization value'
+    ),
+    [
+      'A very long organization name with many descriptive words, another very long descriptive organization value',
+    ]
+  );
+});
+
+
+test('Groq invalid JSON is eligible for one JSON repair retry only', () => {
+  const {
+    shouldRetryGroqJsonError,
+  } = require('./groqService');
+
+  const invalid =
+    new Error(
+      'Groq returned malformed JSON.'
+    );
+  invalid.groqErrorType =
+    'invalid_json';
+
+  assert.strictEqual(
+    shouldRetryGroqJsonError(
+      invalid
+    ),
+    true
+  );
+
+  const rateLimited =
+    new Error(
+      'Rate limit reached'
+    );
+  rateLimited.httpStatus =
+    429;
+
+  assert.strictEqual(
+    shouldRetryGroqJsonError(
+      rateLimited
+    ),
+    false
+  );
+});
+
+test('Groq JSON repair prompt preserves planner context and demands JSON only', () => {
+  const {
+    buildGroqJsonRepairMessages,
+  } = require('./groqService');
+
+  const messages =
+    buildGroqJsonRepairMessages({
+      originalSystemPrompt:
+        'SYSTEM CONTRACT',
+      originalUserPrompt:
+        'QUESTION: test',
+      invalidResponse:
+        'Here is your answer: {bad json}',
+    });
+
+  assert.strictEqual(
+    messages.length,
+    2
+  );
+
+  assert(
+    messages[0].content.includes(
+      'SYSTEM CONTRACT'
+    )
+  );
+
+  assert(
+    messages[0].content.includes(
+      'exactly ONE syntactically valid JSON object only'
+    )
+  );
+
+  assert(
+    messages[1].content.includes(
+      'QUESTION: test'
+    )
+  );
+
+  assert(
+    messages[1].content.includes(
+      '{bad json}'
+    )
+  );
+});
+
+
+test('Groq-first primary planner is placed before deterministic direct-field routes', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const groqFirst =
+    source.indexOf(
+      'V7.36.5 — GROQ-FIRST PRIMARY PLANNER'
+    );
+
+  const directField =
+    source.indexOf(
+      'DIRECT FILTERED FIELD LOOKUP — PLANNER INDEPENDENT'
+    );
+
+  assert(
+    groqFirst >= 0
+  );
+
+  assert(
+    directField > groqFirst
+  );
+
+  assert(
+    source.includes(
+      'GROQ_PRIMARY_THRESHOLD'
+    )
+  );
+
+  assert(
+    source.includes(
+      '"low_confidence"'
+    )
+  );
+});
+
+test('Groq-first handoff cross-checks explicit fields, filters, and referential labels', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'explicit-field-mismatch'
+    )
+  );
+
+  assert(
+    source.includes(
+      'scope-filter-mismatch'
+    )
+  );
+
+  assert(
+    source.includes(
+      'referential-label-missing-or-mismatched'
+    )
+  );
+
+  assert(
+    source.includes(
+      'groqPlanConfidence'
+    )
+  );
+
+  assert(
+    source.includes(
+      'groqConfidenceIssues'
+    )
+  );
+});
+
+test('Groq-first low-confidence handoff avoids a second normal Groq retry before local', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'Groq already ran before deterministic/local semantic planning.'
+    )
+  );
+
+  assert(
+    /false\s*&&\s*!groqPlan\s*&&/.test(
+      source
+    )
+  );
+});
+
+
+test('V7.36.5b production response generator matches the actual uploaded V7.36.2 response policy', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'responseGenerator.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    !source.includes(
+      'require("./responseStyleRouter")'
+    )
+  );
+
+  assert(
+    source.includes(
+      'optional Groq language polish'
+    )
+  );
+
+  assert(
+    source.includes(
+      'a paired/relationship lookup'
+    )
+  );
+});
+
+test('V7.36.5b keeps paired relationship answers deterministic like actual V7.36.2', () => {
+  const {
+    shouldPreserveDeterministicSemanticAnswer,
+  } = require('./responseGenerator');
+
+  assert.strictEqual(
+    shouldPreserveDeterministicSemanticAnswer({
+      plan: {
+        operation: 'lookup',
+        column: 'Commodities',
+        labelColumn: 'Amia Villages',
+      },
+      result: {
+        success: true,
+        operation: 'lookup',
+        column: 'Commodities',
+        labelColumn: 'Amia Villages',
+        results: [
+          {
+            'Amia Villages': 'Sison',
+            Commodities: 'rice, corn, vegetables',
+          },
+        ],
+      },
+      semanticAnswer:
+        'They produce rice, corn, and vegetables. Sison produces rice, corn, and vegetables.',
+    }),
+    true
+  );
+});
+
+test('V7.36.5b keeps Groq-first routing ahead of deterministic direct-field handlers', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const groqFirst =
+    source.indexOf(
+      'V7.36.5 — GROQ-FIRST PRIMARY PLANNER'
+    );
+
+  const directField =
+    source.indexOf(
+      'DIRECT FILTERED FIELD LOOKUP — PLANNER INDEPENDENT'
+    );
+
+  assert(
+    groqFirst >= 0 &&
+    directField > groqFirst
+  );
+
+  assert(
+    source.includes(
+      'GROQ_PRIMARY_THRESHOLD'
+    )
+  );
+
+  assert(
+    source.includes(
+      'referential-label-missing-or-mismatched'
+    )
+  );
+});
+
+
+test('local referential fallback preserves current requested field and previous verified pair column', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    /const valueColumn\s*=\s*findLiveColumn\(\s*plan\.column\s*\)/m.test(
+      source
+    )
+  );
+
+  assert(
+    source.includes(
+      'Upgrade to a relationship lookup only when a distinct verified pair'
+    )
+  );
+
+  assert(
+    /labelColumn\s*:\s*pairColumn/m.test(
+      source
+    )
+  );
+});
+
+test('conversation-family responses expose Groq handoff diagnostics', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'const buildGroqHandoffDiagnostics'
+    )
+  );
+
+  assert(
+    /plannerSource\s*:\s*"conversation-local"\s*,\s*\.\.\.buildGroqHandoffDiagnostics\(\)/m.test(
+      source
+    )
+  );
+
+  assert(
+    /plannerSource\s*:\s*"conversation"\s*,\s*\.\.\.buildGroqHandoffDiagnostics\(\)/m.test(
+      source
+    )
+  );
+});
+
+test('Groq failure on referential follow-up can recover a paired local lookup', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'localReferentialRecovery'
+    )
+  );
+
+  assert(
+    /operation\s*:\s*"lookup"/m.test(
+      source
+    )
+  );
+
+  assert(
+    /conversationalPairColumn\s*:\s*pairColumn/m.test(
+      source
+    )
+  );
+});
+
+
+test('Groq confidence rejects referential list plans that drop a verified prior pair column', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'referential-label-dropped-from-verified-context'
+    )
+  );
+
+  assert(
+    source.includes(
+      'priorPairCandidates'
+    )
+  );
+
+  assert(
+    source.includes(
+      'verifiedPriorPair'
+    )
+  );
+
+  assert(
+    source.includes(
+      'liveColumns.has'
+    )
+  );
+});
+
+test('Groq referential relationship guard compares prior pair against the current output column', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    /normalized\s*!==\s*normalizeText\(\s*plan\.column\s*\)/m.test(
+      source
+    )
+  );
+});
+
+
+test('Groq planner prompt preserves verified relationship labels on referential follow-ups', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'groqService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'preserve the previously VERIFIED'
+    )
+  );
+
+  assert(
+    source.includes(
+      'keep that relationship column'
+    )
+  );
+
+  assert(
+    source.includes(
+      'Do not reduce a verified relationship lookup into a plain list'
+    )
+  );
+
+  assert(
+    source.includes(
+      'Current explicit field/entity wording overrides old context'
+    )
+  );
+});
+
+test('Groq referential prompt strengthening is generic and contains no AMIA-specific production rule', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'groqService.js'
+      ),
+      'utf8'
+    );
+
+  const start =
+    source.indexOf(
+      'For referential follow-ups using wording'
+    );
+
+  const end =
+    source.indexOf(
+      '14. If genuinely ambiguous',
+      start
+    );
+
+  assert(
+    start >= 0 &&
+    end > start
+  );
+
+  const policy =
+    source.slice(
+      start,
+      end
+    );
+
+  assert(
+    !/Amia Villages|Climate-related Risks\/Hazards|Commodities|Pangasinan/.test(
+      policy
+    )
+  );
+});
+
+
+test('Groq correct-but-incomplete referential plans are repaired before confidence rejection', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const repairCall =
+    source.indexOf(
+      'const groqRepair ='
+    );
+
+  const confidenceCall =
+    source.indexOf(
+      'const confidence =',
+      repairCall
+    );
+
+  assert(
+    repairCall >= 0 &&
+    confidenceCall > repairCall
+  );
+
+  assert(
+    source.includes(
+      'verified-referential-label-restored'
+    )
+  );
+
+  assert(
+    source.includes(
+      '"groq-repaired"'
+    )
+  );
+
+  assert(
+    source.includes(
+      'groqPlanRepaired:'
+    )
+  );
+});
+
+test('Groq referential repair refuses to graft stale context across a changed scope', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'Current explicit scope must win'
+    )
+  );
+
+  assert(
+    source.includes(
+      '!sameSimpleFilters('
+    )
+  );
+});
+
+test('Groq referential repair only restores live schema pair columns', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'const priorPairCandidates = ['
+    )
+  );
+
+  assert(
+    source.includes(
+      'findLiveColumn('
+    )
+  );
+
+  assert(
+    source.includes(
+      'conversationalPairColumn:'
+    )
+  );
+});
+
+
+test('successful Groq list path shares central distinct multi-value normalization', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const parityIndex =
+    source.indexOf(
+      'V7.36.5g — DISTINCT MULTI-VALUE PARITY'
+    );
+
+  const validationIndex =
+    source.lastIndexOf(
+      'resultValidation.result',
+      parityIndex
+    );
+
+  const saveIndex =
+    source.indexOf(
+      'SAVE VERIFIED CONVERSATION STATE',
+      parityIndex
+    );
+
+  assert(
+    validationIndex >= 0 &&
+    parityIndex > validationIndex &&
+    saveIndex > parityIndex
+  );
+
+  assert(
+    source.slice(
+      parityIndex,
+      saveIndex
+    ).includes(
+      'normalizeDirectSingleFieldResult({'
+    )
+  );
+});
+
+test('number-of numeric metric resolver outranks generic unit-number interpretation', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'function resolveExplicitNumericMetricPlan'
+    )
+  );
+
+  assert(
+    source.includes(
+      'explicit-live-numeric-metric-restored'
+    )
+  );
+
+  assert(
+    source.includes(
+      'prevents "number" in "number of X"'
+    )
+  );
+
+  assert(
+    source.includes(
+      'explicitNumericMetricResolved'
+    )
+  );
+});
+
+test('Groq numeric metric repair runs before Groq confidence evaluation', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const metricRepair =
+    source.indexOf(
+      'const numericMetricRepair ='
+    );
+
+  const confidence =
+    source.indexOf(
+      'const confidence =',
+      metricRepair
+    );
+
+  assert(
+    metricRepair >= 0 &&
+    confidence > metricRepair
+  );
+});
+
+test('numeric metric repair is also applied centrally for local and conversation parity', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const executeStart =
+    source.indexOf(
+      'const executeResolvedPlan ='
+    );
+
+  const parityRepair =
+    source.indexOf(
+      'const explicitNumericMetricRepair =',
+      executeStart
+    );
+
+  assert(
+    executeStart >= 0 &&
+    parityRepair > executeStart
+  );
+});
+
+test('numeric metric field normalization generically equates number-of and No.-of style schema names', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'function normalizeLooseMetricPhrase'
+    )
+  );
+
+  assert(
+    source.includes(
+      '(?:no|num|number|count)'
+    )
+  );
+});
+
+
+test('V7.36.2 one-to-many compatibility is checked before Groq referential repair', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const helper =
+    source.indexOf(
+      'const resolveGroqOneToManyCompatibility ='
+    );
+
+  const repair =
+    source.indexOf(
+      'const repairIncompleteGroqReferentialPlan ='
+    );
+
+  assert(
+    helper >= 0 &&
+    repair > helper
+  );
+});
+
+test('recoverable one-to-many Groq list does not require labelColumn repair', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const repairStart =
+    source.indexOf(
+      'const repairIncompleteGroqReferentialPlan ='
+    );
+
+  const confidenceStart =
+    source.indexOf(
+      'const evaluateGroqPrimaryConfidence =',
+      repairStart
+    );
+
+  const repairBlock =
+    source.slice(
+      repairStart,
+      confidenceStart
+    );
+
+  assert(
+    repairBlock.includes(
+      'resolveGroqOneToManyCompatibility('
+    )
+  );
+
+  assert(
+    repairBlock.includes(
+      'oneToManyCompatibility:'
+    )
+  );
+});
+
+test('Groq confidence keeps a recoverable one-to-many list despite missing referential label', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const confidenceStart =
+    source.indexOf(
+      'const evaluateGroqPrimaryConfidence ='
+    );
+
+  const threshold =
+    source.indexOf(
+      'const GROQ_PRIMARY_THRESHOLD',
+      confidenceStart
+    );
+
+  const block =
+    source.slice(
+      confidenceStart,
+      threshold
+    );
+
+  assert(
+    block.includes(
+      'resolveGroqOneToManyCompatibility('
+    )
+  );
+
+  assert(
+    block.includes(
+      'referential-label-dropped-from-verified-context'
+    )
+  );
+});
+
+test('primary Groq success path prioritizes V7.36.2 row-aware one-to-many answer', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const oneToManyAnswerIndex =
+    source.indexOf(
+      'const oneToManyAnswer ='
+    );
+
+  const answerPriorityIndex =
+    source.indexOf(
+      'oneToManyAnswer ||',
+      oneToManyAnswerIndex
+    );
+
+  const resolvedFlagIndex =
+    source.indexOf(
+      'oneToManyResolved:',
+      answerPriorityIndex
+    );
+
+  assert(
+    oneToManyAnswerIndex >= 0 &&
+    answerPriorityIndex > oneToManyAnswerIndex &&
+    resolvedFlagIndex > answerPriorityIndex
+  );
+});
+
+test('V7.36.2 compatibility does not hardcode AMIA relationship field names', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const start =
+    source.indexOf(
+      'const resolveGroqOneToManyCompatibility ='
+    );
+
+  const end =
+    source.indexOf(
+      'const repairIncompleteGroqReferentialPlan =',
+      start
+    );
+
+  const block =
+    source.slice(
+      start,
+      end
+    );
+
+  assert(
+    !/Amia Villages|Climate-related Risks\/Hazards|Pangasinan|Commodities/.test(
+      block
+    )
   );
 });
 
