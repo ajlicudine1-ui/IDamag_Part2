@@ -5449,6 +5449,8 @@ async function answerQuestion(
   let groqPrimaryAttempted = false;
   let groqPrimaryConfidence = null;
   let groqPrimaryIssues = [];
+  let groqPlanRepaired = false;
+  let groqRepairReasons = [];
   let groqDiagnostic = {
     status: "not_attempted",
     httpStatus: null,
@@ -5514,6 +5516,364 @@ async function answerQuestion(
       )
     );
   };
+
+
+  /**
+   * V7.36.5f — repair correct-but-incomplete Groq referential plans.
+   *
+   * If Groq correctly identifies the CURRENT target field and scope but
+   * omits a previously VERIFIED relationship label, restore only that
+   * missing relationship context before confidence evaluation.
+   *
+   * Wrong field, wrong dataset, or changed scope are NOT repaired here.
+   * Those still fall through to local validation/fallback.
+   */
+  const repairIncompleteGroqReferentialPlan =
+    (plan) => {
+      if (
+        !plan ||
+        conversationContext?.isFollowUp !==
+          true ||
+        !looksLikeContinuousFollowUp(
+          cleanQuestion
+        ) ||
+        !plan?.dataset ||
+        !plan?.column
+      ) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      const operation =
+        normalizeText(
+          plan?.operation
+        );
+
+      if (
+        operation &&
+        ![
+          "list",
+          "lookup",
+        ].includes(
+          operation
+        )
+      ) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      const datasetSchema =
+        (schema || []).find(
+          (item) =>
+            normalizeText(
+              item?.name
+            ) ===
+            normalizeText(
+              plan.dataset
+            )
+        );
+
+      const liveColumns =
+        (datasetSchema?.columns || [])
+          .map(
+            (item) =>
+              typeof item === "string"
+                ? item
+                : item?.name
+          )
+          .filter(Boolean);
+
+      const findLiveColumn =
+        (candidate) => {
+          const normalized =
+            normalizeText(
+              candidate
+            );
+
+          if (!normalized) {
+            return null;
+          }
+
+          return (
+            liveColumns.find(
+              (column) =>
+                normalizeText(
+                  column
+                ) ===
+                normalized
+            ) ||
+            null
+          );
+        };
+
+      const liveValueColumn =
+        findLiveColumn(
+          plan.column
+        );
+
+      if (!liveValueColumn) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      const previousFilters =
+        Array.isArray(
+          conversationContext
+            ?.lastFilters
+        )
+          ? conversationContext
+              .lastFilters
+          : [];
+
+      /**
+       * Current explicit scope must win. Never graft stale verified
+       * relationship context across a changed scope.
+       */
+      if (
+        previousFilters.length &&
+        Array.isArray(
+          plan?.filters
+        ) &&
+        plan.filters.length &&
+        !sameSimpleFilters(
+          plan.filters,
+          previousFilters
+        )
+      ) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      const explicitCandidate =
+        buildExplicitReferentialFieldPlan({
+          schema,
+          context:
+            conversationContext,
+          question:
+            cleanQuestion,
+        });
+
+      let pairColumn =
+        null;
+
+      if (
+        explicitCandidate &&
+        normalizeText(
+          explicitCandidate
+            ?.dataset
+        ) ===
+        normalizeText(
+          plan.dataset
+        ) &&
+        normalizeText(
+          explicitCandidate
+            ?.column
+        ) ===
+        normalizeText(
+          liveValueColumn
+        ) &&
+        (
+          !Array.isArray(
+            explicitCandidate
+              ?.filters
+          ) ||
+          !explicitCandidate
+            .filters.length ||
+          !Array.isArray(
+            plan?.filters
+          ) ||
+          !plan.filters.length ||
+          sameSimpleFilters(
+            plan.filters,
+            explicitCandidate
+              .filters
+          )
+        )
+      ) {
+        pairColumn =
+          findLiveColumn(
+            explicitCandidate
+              ?.labelColumn
+          );
+      }
+
+      if (!pairColumn) {
+        const priorPairCandidates = [
+          conversationContext
+            ?.lastPlan
+            ?.conversationalPairColumn,
+          conversationContext
+            ?.lastPlan
+            ?.labelColumn,
+          conversationContext
+            ?.semanticPlan
+            ?.labelColumn,
+          conversationContext
+            ?.semanticPlan
+            ?.groupBy,
+        ];
+
+        for (
+          const candidate
+          of priorPairCandidates
+        ) {
+          const live =
+            findLiveColumn(
+              candidate
+            );
+
+          if (
+            live &&
+            normalizeText(
+              live
+            ) !==
+            normalizeText(
+              liveValueColumn
+            )
+          ) {
+            pairColumn =
+              live;
+            break;
+          }
+        }
+      }
+
+      if (
+        !pairColumn ||
+        normalizeText(
+          pairColumn
+        ) ===
+        normalizeText(
+          liveValueColumn
+        )
+      ) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      if (
+        normalizeText(
+          plan?.labelColumn
+        ) ===
+        normalizeText(
+          pairColumn
+        ) &&
+        normalizeText(
+          plan?.operation
+        ) ===
+        "lookup"
+      ) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      const repairedFilters =
+        (
+          Array.isArray(
+            plan?.filters
+          ) &&
+          plan.filters.length
+            ? plan.filters
+            : previousFilters
+        )
+          .map(
+            (filter) => ({
+              ...filter,
+              value:
+                Array.isArray(
+                  filter?.value
+                )
+                  ? [
+                      ...filter.value,
+                    ]
+                  : filter?.value,
+            })
+          );
+
+      const selectColumns =
+        [
+          pairColumn,
+          liveValueColumn,
+        ]
+          .filter(Boolean)
+          .filter(
+            (column, index, all) =>
+              all.findIndex(
+                (item) =>
+                  normalizeText(
+                    item
+                  ) ===
+                  normalizeText(
+                    column
+                  )
+              ) === index
+          );
+
+      return {
+        plan: {
+          ...plan,
+          route:
+            "dataset",
+          dataset:
+            plan.dataset,
+          operation:
+            "lookup",
+          column:
+            liveValueColumn,
+          labelColumn:
+            pairColumn,
+          groupBy:
+            null,
+          aggregation:
+            null,
+          direction:
+            null,
+          filters:
+            repairedFilters,
+          selectColumns,
+          outputRequested:
+            true,
+          transform:
+            null,
+          showAll:
+            true,
+          limit:
+            Math.max(
+              Number(
+                plan?.limit
+              ) || 10,
+              100
+            ),
+          conversationalPairColumn:
+            pairColumn,
+          groqContextRepaired:
+            true,
+        },
+        repaired: true,
+        reasons: [
+          "verified-referential-label-restored",
+        ],
+      };
+    };
+
 
   const evaluateGroqPrimaryConfidence =
     (plan) => {
@@ -5746,6 +6106,106 @@ async function answerQuestion(
         }
       }
 
+      /**
+       * Safety net after repair: if a referential follow-up still drops a
+       * previously verified live pair column, lower confidence and let the
+       * local path verify/repair it.
+       */
+      if (
+        conversationContext?.isFollowUp ===
+          true &&
+        looksLikeContinuousFollowUp(
+          cleanQuestion
+        ) &&
+        plan?.dataset &&
+        plan?.column
+      ) {
+        const liveDatasetSchema =
+          (schema || []).find(
+            (datasetSchema) =>
+              normalizeText(
+                datasetSchema?.name
+              ) ===
+              normalizeText(
+                plan.dataset
+              )
+          );
+
+        const liveColumns =
+          new Set(
+            (
+              liveDatasetSchema
+                ?.columns ||
+              []
+            ).map(
+              (column) =>
+                normalizeText(
+                  typeof column ===
+                    "string"
+                    ? column
+                    : column?.name
+                )
+            )
+          );
+
+        const priorPairCandidates = [
+          conversationContext
+            ?.lastPlan
+            ?.conversationalPairColumn,
+          conversationContext
+            ?.lastPlan
+            ?.labelColumn,
+          conversationContext
+            ?.semanticPlan
+            ?.labelColumn,
+          conversationContext
+            ?.semanticPlan
+            ?.groupBy,
+        ];
+
+        const verifiedPriorPair =
+          priorPairCandidates.find(
+            (candidate) => {
+              const normalized =
+                normalizeText(
+                  candidate
+                );
+
+              return (
+                normalized &&
+                normalized !==
+                  normalizeText(
+                    plan.column
+                  ) &&
+                liveColumns.has(
+                  normalized
+                )
+              );
+            }
+          ) ||
+          null;
+
+        if (
+          verifiedPriorPair &&
+          normalizeText(
+            plan?.labelColumn
+          ) !==
+          normalizeText(
+            verifiedPriorPair
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.55
+            );
+
+          issues.push(
+            "referential-label-dropped-from-verified-context"
+          );
+        }
+      }
+
       return {
         score:
           Number(
@@ -5837,6 +6297,23 @@ async function answerQuestion(
           cleanQuestion,
       });
 
+    const groqRepair =
+      repairIncompleteGroqReferentialPlan(
+        groqPlan
+      );
+
+    groqPlan =
+      groqRepair.plan;
+
+    groqPlanRepaired =
+      Boolean(
+        groqRepair.repaired
+      );
+
+    groqRepairReasons =
+      groqRepair.reasons ||
+      [];
+
     const confidence =
       evaluateGroqPrimaryConfidence(
         groqPlan
@@ -5888,11 +6365,21 @@ async function answerQuestion(
           ),
 
         plannerSource:
-          groqDiagnostic
-            .status ===
-            "ok_after_json_retry"
-            ? "groq-json-recovered"
-            : "groq",
+          groqPlanRepaired
+            ? "groq-repaired"
+            : (
+                groqDiagnostic
+                  .status ===
+                  "ok_after_json_retry"
+                  ? "groq-json-recovered"
+                  : "groq"
+              ),
+
+        groqPlanRepaired:
+          groqPlanRepaired,
+
+        groqRepairReasons:
+          groqRepairReasons,
 
         groqStatus:
           groqDiagnostic.status,
@@ -5982,6 +6469,12 @@ async function answerQuestion(
       groqPlanningError:
         groqPlanningError?.message ||
         null,
+
+      groqPlanRepaired:
+        groqPlanRepaired,
+
+      groqRepairReasons:
+        groqRepairReasons,
     });
 
 

@@ -4443,6 +4443,104 @@ test('Groq referential prompt strengthening is generic and contains no AMIA-spec
   );
 });
 
+
+test('Groq correct-but-incomplete referential plans are repaired before confidence rejection', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const repairCall =
+    source.indexOf(
+      'const groqRepair ='
+    );
+
+  const confidenceCall =
+    source.indexOf(
+      'const confidence =',
+      repairCall
+    );
+
+  assert(
+    repairCall >= 0 &&
+    confidenceCall > repairCall
+  );
+
+  assert(
+    source.includes(
+      'verified-referential-label-restored'
+    )
+  );
+
+  assert(
+    source.includes(
+      '"groq-repaired"'
+    )
+  );
+
+  assert(
+    source.includes(
+      'groqPlanRepaired:'
+    )
+  );
+});
+
+test('Groq referential repair refuses to graft stale context across a changed scope', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'Current explicit scope must win'
+    )
+  );
+
+  assert(
+    source.includes(
+      '!sameSimpleFilters('
+    )
+  );
+});
+
+test('Groq referential repair only restores live schema pair columns', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'const priorPairCandidates = ['
+    )
+  );
+
+  assert(
+    source.includes(
+      'findLiveColumn('
+    )
+  );
+
+  assert(
+    source.includes(
+      'conversationalPairColumn:'
+    )
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
