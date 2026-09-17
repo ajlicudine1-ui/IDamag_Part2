@@ -1285,11 +1285,11 @@ function App() {
               <div className="min-h-0 flex-1 overflow-y-auto bg-[#F5FAF4] p-4">
                 <div className="mb-4">
                   <h3 className="text-base font-bold text-[#235E26]">
-                    Select an office or section
+                    Select an Category or section
                   </h3>
 
                   <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                    Choose an office or section
+                    Choose an Category or section
                     under{" "}
                     <strong className="text-[#2F6F32]">
                       {selectedDivision.name}
@@ -1358,12 +1358,12 @@ function App() {
                 ) : (
                   <div className="flex min-h-[200px] flex-col items-center justify-center text-center">
                     <p className="text-sm font-semibold text-slate-800">
-                      No offices or sections
+                      No Category or sections
                     </p>
 
                     <p className="mt-2 text-xs text-slate-500">
                       This division currently has
-                      no offices or sections.
+                      no Category or sections.
                     </p>
                   </div>
                 )}
@@ -1451,7 +1451,7 @@ function App() {
                     </p>
 
                     <p className="mt-2 text-xs text-slate-500">
-                      This office or section
+                      This Category or section
                       currently has no reports.
                     </p>
                   </div>
