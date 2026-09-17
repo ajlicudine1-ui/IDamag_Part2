@@ -103,24 +103,6 @@ function joinNaturalList(values) {
   return `${unique.slice(0, -1).join(', ')}, and ${unique[unique.length - 1]}`;
 }
 
-
-function uniqueDisplayValues(values) {
-  const seen = new Set();
-  const output = [];
-
-  for (const value of values || []) {
-    const display = String(value ?? '').trim();
-    const key = normalizeText(display);
-
-    if (!display || !key || seen.has(key)) continue;
-
-    seen.add(key);
-    output.push(display);
-  }
-
-  return output;
-}
-
 function thirdPersonSingularVerb(baseVerb) {
   const verb = normalizeText(baseVerb);
   if (!verb) return 'has';
@@ -293,7 +275,7 @@ function buildLookupPairNarrative({ question, plan, result } = {}) {
   // associations, projects, offices, etc.
   const allValues = [];
   for (const values of grouped.values()) allValues.push(...values);
-  const distinctValues = uniqueDisplayValues(allValues);
+  const distinctValues = [...new Set(allValues.map((v) => String(v).trim()).filter(Boolean))];
 
   if (!distinctValues.length) return null;
 
@@ -308,7 +290,7 @@ function buildLookupPairNarrative({ question, plan, result } = {}) {
   // Merge labels that share the same value set so the explanation is concise.
   const clusters = new Map();
   for (const [label, values] of grouped.entries()) {
-    const uniqueValues = uniqueDisplayValues(values);
+    const uniqueValues = [...new Set(values.map((v) => String(v).trim()).filter(Boolean))];
     const key = canonicalValueSet(uniqueValues);
     if (!clusters.has(key)) clusters.set(key, { labels: [], values: uniqueValues });
     clusters.get(key).labels.push(label);
@@ -332,7 +314,7 @@ function buildLookupPairNarrative({ question, plan, result } = {}) {
   } else if (clauses.length === 2) {
     detailSentence = `${clauses[0]}, while ${clauses[1]}.`;
   } else {
-    detailSentence = `${clauses.slice(0, -1).join(', ')}, and ${clauses[clauses.length - 1]}.`;
+    detailSentence = `${clauses.slice(0, -1).join('; ')}, while ${clauses[clauses.length - 1]}.`;
   }
 
   return `${firstSentence} ${detailSentence}`;
