@@ -4541,6 +4541,162 @@ test('Groq referential repair only restores live schema pair columns', () => {
   );
 });
 
+
+test('successful Groq list path shares central distinct multi-value normalization', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const parityIndex =
+    source.indexOf(
+      'V7.36.5g — DISTINCT MULTI-VALUE PARITY'
+    );
+
+  const validationIndex =
+    source.lastIndexOf(
+      'resultValidation.result',
+      parityIndex
+    );
+
+  const saveIndex =
+    source.indexOf(
+      'SAVE VERIFIED CONVERSATION STATE',
+      parityIndex
+    );
+
+  assert(
+    validationIndex >= 0 &&
+    parityIndex > validationIndex &&
+    saveIndex > parityIndex
+  );
+
+  assert(
+    source.slice(
+      parityIndex,
+      saveIndex
+    ).includes(
+      'normalizeDirectSingleFieldResult({'
+    )
+  );
+});
+
+test('number-of numeric metric resolver outranks generic unit-number interpretation', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'function resolveExplicitNumericMetricPlan'
+    )
+  );
+
+  assert(
+    source.includes(
+      'explicit-live-numeric-metric-restored'
+    )
+  );
+
+  assert(
+    source.includes(
+      'prevents "number" in "number of X"'
+    )
+  );
+
+  assert(
+    source.includes(
+      'explicitNumericMetricResolved'
+    )
+  );
+});
+
+test('Groq numeric metric repair runs before Groq confidence evaluation', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const metricRepair =
+    source.indexOf(
+      'const numericMetricRepair ='
+    );
+
+  const confidence =
+    source.indexOf(
+      'const confidence =',
+      metricRepair
+    );
+
+  assert(
+    metricRepair >= 0 &&
+    confidence > metricRepair
+  );
+});
+
+test('numeric metric repair is also applied centrally for local and conversation parity', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  const executeStart =
+    source.indexOf(
+      'const executeResolvedPlan ='
+    );
+
+  const parityRepair =
+    source.indexOf(
+      'const explicitNumericMetricRepair =',
+      executeStart
+    );
+
+  assert(
+    executeStart >= 0 &&
+    parityRepair > executeStart
+  );
+});
+
+test('numeric metric field normalization generically equates number-of and No.-of style schema names', () => {
+  const source =
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        'chatbotService.js'
+      ),
+      'utf8'
+    );
+
+  assert(
+    source.includes(
+      'function normalizeLooseMetricPhrase'
+    )
+  );
+
+  assert(
+    source.includes(
+      '(?:no|num|number|count)'
+    )
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];

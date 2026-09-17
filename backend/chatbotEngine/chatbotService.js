@@ -1377,6 +1377,511 @@ function splitDistinctCellValues(
 }
 
 
+function normalizeLooseMetricPhrase(
+  value
+) {
+  return normalizeText(
+    value || ""
+  )
+    .replace(
+      /^(?:the\s+)?(?:total\s+)?(?:no|num|number|count)\s*(?:of\s+)?/,
+      ""
+    )
+    .replace(
+      /^(?:total|overall|combined)\s+/,
+      ""
+    )
+    .replace(
+      /\b(?:the|all)\b/g,
+      " "
+    )
+    .replace(
+      /\s+/g,
+      " "
+    )
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(
+      (token) => {
+        if (
+          token.endsWith("ies") &&
+          token.length > 3
+        ) {
+          return (
+            token.slice(
+              0,
+              -3
+            ) + "y"
+          );
+        }
+
+        if (
+          token.endsWith("s") &&
+          !token.endsWith("ss") &&
+          token.length > 3
+        ) {
+          return token.slice(
+            0,
+            -1
+          );
+        }
+
+        return token;
+      }
+    )
+    .join(" ");
+}
+
+
+function resolveExplicitNumericMetricPlan({
+  plan,
+  question,
+  schema,
+  datasets,
+  context = null,
+}) {
+  const text =
+    normalizeText(
+      question || ""
+    );
+
+  if (!text) {
+    return {
+      plan,
+      repaired: false,
+      reasons: [],
+    };
+  }
+
+  let operation =
+    null;
+
+  if (
+    /\b(?:sum|total|overall|combined|altogether)\b/.test(
+      text
+    )
+  ) {
+    operation =
+      "sum";
+  } else if (
+    /\b(?:average|avg|mean)\b/.test(
+      text
+    )
+  ) {
+    operation =
+      "average";
+  } else if (
+    /\bmedian\b/.test(
+      text
+    )
+  ) {
+    operation =
+      "median";
+  } else if (
+    /\b(?:minimum|min|lowest|smallest)\b/.test(
+      text
+    )
+  ) {
+    operation =
+      "minimum";
+  } else if (
+    /\b(?:maximum|max|highest|largest)\b/.test(
+      text
+    )
+  ) {
+    operation =
+      "maximum";
+  }
+
+  if (!operation) {
+    return {
+      plan,
+      repaired: false,
+      reasons: [],
+    };
+  }
+
+  const numberOfMatch =
+    text.match(
+      /\bnumber\s+of\s+(.+?)(?=\s+(?:in|from|within|at|under)\b|[?.!]|$)/
+    );
+
+  if (!numberOfMatch?.[1]) {
+    return {
+      plan,
+      repaired: false,
+      reasons: [],
+    };
+  }
+
+  const targetPhrase =
+    normalizeLooseMetricPhrase(
+      numberOfMatch[1]
+    );
+
+  if (!targetPhrase) {
+    return {
+      plan,
+      repaired: false,
+      reasons: [],
+    };
+  }
+
+  const preferredDatasets =
+    new Set(
+      [
+        plan?.dataset,
+        context?.lastDataset,
+      ]
+        .filter(Boolean)
+        .map(
+          (value) =>
+            normalizeText(
+              value
+            )
+        )
+    );
+
+  const candidates = [];
+
+  for (
+    const datasetSchema
+    of schema || []
+  ) {
+    const datasetName =
+      datasetSchema?.name;
+
+    const rows =
+      datasets?.[
+        datasetName
+      ];
+
+    if (
+      !datasetName ||
+      !Array.isArray(rows) ||
+      !rows.length
+    ) {
+      continue;
+    }
+
+    for (
+      const column
+      of datasetSchema?.columns || []
+    ) {
+      const columnName =
+        typeof column ===
+          "string"
+          ? column
+          : column?.name;
+
+      if (!columnName) {
+        continue;
+      }
+
+      const columnSchema =
+        typeof column ===
+          "string"
+          ? {
+              name:
+                columnName,
+            }
+          : column;
+
+      if (
+        !isNumericLikeColumn({
+          column:
+            columnSchema,
+          rows,
+        })
+      ) {
+        continue;
+      }
+
+      const fieldPhrase =
+        normalizeLooseMetricPhrase(
+          columnName
+        );
+
+      if (!fieldPhrase) {
+        continue;
+      }
+
+      const targetTokens =
+        new Set(
+          targetPhrase
+            .split(/\s+/)
+            .filter(Boolean)
+        );
+
+      const fieldTokens =
+        new Set(
+          fieldPhrase
+            .split(/\s+/)
+            .filter(Boolean)
+        );
+
+      const shared =
+        [
+          ...targetTokens,
+        ].filter(
+          (token) =>
+            fieldTokens.has(
+              token
+            )
+        ).length;
+
+      const coverage =
+        targetTokens.size
+          ? shared /
+            targetTokens.size
+          : 0;
+
+      const reverseCoverage =
+        fieldTokens.size
+          ? shared /
+            fieldTokens.size
+          : 0;
+
+      let score =
+        0;
+
+      if (
+        fieldPhrase ===
+        targetPhrase
+      ) {
+        score = 1;
+      } else if (
+        coverage === 1 &&
+        reverseCoverage >= 0.75
+      ) {
+        score = 0.96;
+      } else {
+        score =
+          Math.max(
+            similarity(
+              targetPhrase,
+              fieldPhrase
+            ),
+            (
+              coverage *
+              0.65
+            ) +
+            (
+              reverseCoverage *
+              0.35
+            )
+          );
+      }
+
+      if (
+        preferredDatasets.has(
+          normalizeText(
+            datasetName
+          )
+        )
+      ) {
+        score += 0.025;
+      }
+
+      candidates.push({
+        dataset:
+          datasetName,
+        column:
+          columnName,
+        score:
+          Math.min(
+            1,
+            score
+          ),
+      });
+    }
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score -
+      a.score
+  );
+
+  const best =
+    candidates[0] ||
+    null;
+
+  const second =
+    candidates[1] ||
+    null;
+
+  if (
+    !best ||
+    best.score < 0.82 ||
+    (
+      second &&
+      second.dataset !==
+        best.dataset &&
+      Math.abs(
+        best.score -
+        second.score
+      ) < 0.03
+    )
+  ) {
+    return {
+      plan,
+      repaired: false,
+      reasons: [],
+    };
+  }
+
+  const rows =
+    datasets?.[
+      best.dataset
+    ] || [];
+
+  /**
+   * Infer filters only from an explicit trailing scope phrase.
+   * This prevents "number" in "number of X" from being interpreted
+   * as a categorical filter value such as Unit = "number".
+   */
+  const scopeMatch =
+    text.match(
+      /\b(?:in|from|within|at|under)\s+(.+?)(?:[?.!]|$)/
+    );
+
+  const scopeText =
+    scopeMatch?.[1]
+      ? String(
+          scopeMatch[1]
+        ).trim()
+      : "";
+
+  const filters =
+    scopeText
+      ? inferCoherentFilters(
+          rows,
+          scopeText
+        )
+      : [];
+
+  const repairedPlan = {
+    ...(plan &&
+    typeof plan ===
+      "object"
+      ? plan
+      : {}),
+
+    route:
+      "dataset",
+
+    dataset:
+      best.dataset,
+
+    operation,
+
+    column:
+      best.column,
+
+    labelColumn:
+      null,
+
+    groupBy:
+      null,
+
+    aggregation:
+      null,
+
+    direction:
+      null,
+
+    filters:
+      Array.isArray(filters)
+        ? filters
+        : [],
+
+    filterGroups:
+      [],
+
+    filterGroupLogic:
+      null,
+
+    selectColumns: [
+      best.column,
+    ],
+
+    outputRequested:
+      true,
+
+    transform:
+      null,
+
+    showAll:
+      false,
+
+    limit:
+      10,
+
+    explicitNumericMetricResolved:
+      true,
+
+    explicitNumericMetricTarget:
+      targetPhrase,
+
+    explicitNumericMetricConfidence:
+      Number(
+        best.score.toFixed(
+          4
+        )
+      ),
+  };
+
+  const changed =
+    normalizeText(
+      plan?.route
+    ) !==
+      "dataset" ||
+    normalizeText(
+      plan?.dataset
+    ) !==
+      normalizeText(
+        repairedPlan.dataset
+      ) ||
+    normalizeText(
+      plan?.column
+    ) !==
+      normalizeText(
+        repairedPlan.column
+      ) ||
+    normalizeText(
+      plan?.operation
+    ) !==
+      normalizeText(
+        repairedPlan.operation
+      ) ||
+    JSON.stringify(
+      plan?.filters ||
+      []
+    ) !==
+      JSON.stringify(
+        repairedPlan.filters
+      );
+
+  return {
+    plan:
+      repairedPlan,
+
+    repaired:
+      changed,
+
+    reasons:
+      changed
+        ? [
+            "explicit-live-numeric-metric-restored",
+          ]
+        : [],
+  };
+}
+
+
+
 function normalizeDirectSingleFieldResult({
   plan,
   result,
@@ -4918,6 +5423,27 @@ async function answerQuestion(
       // ====================================================
       // SEMANTIC PLAN GUARDS
       // ====================================================
+
+      /**
+       * V7.36.5g — planner-source parity for explicit numeric metrics.
+       * Strong live numeric fields outrank generic "number" unit/value
+       * interpretations for Groq, local, conversation, and deterministic
+       * plans alike.
+       */
+      const explicitNumericMetricRepair =
+        resolveExplicitNumericMetricPlan({
+          plan,
+          question:
+            cleanQuestion,
+          schema,
+          datasets,
+          context:
+            conversationContext,
+        });
+
+      plan =
+        explicitNumericMetricRepair.plan;
+
       // 1) Align explicit aggregate wording with a verified numeric field.
       // 2) Suppress weak/report-context substring filters.
       // These run for Groq, local fallback, and conversational plans.
@@ -5161,6 +5687,32 @@ async function answerQuestion(
 
       result =
         resultValidation.result;
+
+      /**
+       * V7.36.5g — DISTINCT MULTI-VALUE PARITY
+       *
+       * Apply the same distinct/unique/different multi-value cell
+       * normalization after execution for every planner source.
+       */
+      if (
+        plan?.route ===
+          "dataset" &&
+        String(
+          plan?.operation ||
+          ""
+        )
+          .trim()
+          .toLowerCase() ===
+          "list"
+      ) {
+        result =
+          normalizeDirectSingleFieldResult({
+            plan,
+            result,
+            question:
+              cleanQuestion,
+          });
+      }
 
       if (plan?.route === "dataset") {
         const dataQuality = buildDataQualitySummary({ datasets, plan });
@@ -6297,6 +6849,41 @@ async function answerQuestion(
           cleanQuestion,
       });
 
+    const numericMetricRepair =
+      resolveExplicitNumericMetricPlan({
+        plan:
+          groqPlan,
+        question:
+          cleanQuestion,
+        schema,
+        datasets,
+        context:
+          conversationContext,
+      });
+
+    groqPlan =
+      numericMetricRepair.plan;
+
+    if (
+      numericMetricRepair.repaired
+    ) {
+      groqPlanRepaired =
+        true;
+
+      groqRepairReasons = [
+        ...new Set(
+          [
+            ...groqRepairReasons,
+            ...(
+              numericMetricRepair
+                .reasons ||
+              []
+            ),
+          ]
+        ),
+      ];
+    }
+
     const groqRepair =
       repairIncompleteGroqReferentialPlan(
         groqPlan
@@ -6306,13 +6893,22 @@ async function answerQuestion(
       groqRepair.plan;
 
     groqPlanRepaired =
+      groqPlanRepaired ||
       Boolean(
         groqRepair.repaired
       );
 
-    groqRepairReasons =
-      groqRepair.reasons ||
-      [];
+    groqRepairReasons = [
+      ...new Set(
+        [
+          ...groqRepairReasons,
+          ...(
+            groqRepair.reasons ||
+            []
+          ),
+        ]
+      ),
+    ];
 
     const confidence =
       evaluateGroqPrimaryConfidence(
