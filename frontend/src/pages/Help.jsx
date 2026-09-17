@@ -113,7 +113,7 @@ const managementSteps = [
     id: 9,
     title: "Open Office Management",
     description:
-      "Use Office Management to view and maintain the offices configured in the iDAMAG management portal.",
+      "Use Office Management to view and maintain the subcategories configured in the iDAMAG management portal.",
     image: "/iDAMAG/For Management Users/9.png",
     icon: Building2,
     section: "offices-sections",
@@ -140,7 +140,7 @@ const managementSteps = [
     id: 12,
     title: "View and Manage Sections",
     description:
-      "Switch to the Sections tab to view all sections, their acronyms, and their parent offices.",
+      "Switch to the Sections tab to view all sections, their acronyms, and their parent subcategories.",
     image: "/iDAMAG/For Management Users/12.png",
     icon: Settings,
     section: "offices-sections",
@@ -188,9 +188,9 @@ const guideSections = [
   },
   {
     id: "offices-sections",
-    title: "How to Manage Offices and Sections",
+    title: "How to Manage subcategories and Sections",
     description:
-      "Learn how to maintain offices, view sections, and add or edit section records.",
+      "Learn how to maintain subcategories, view sections, and add or edit section records.",
     icon: Building2,
   },
 ];
@@ -249,7 +249,7 @@ function Help() {
               </h1>
 
               <p className="text-slate-500 font-medium">
-                This guide is divided into sections so administrators can easily follow the steps for reports, users, offices, and sections.
+                This guide is divided into sections so administrators can easily follow the steps for reports, users, subcategories, and sections.
               </p>
             </div>
 
