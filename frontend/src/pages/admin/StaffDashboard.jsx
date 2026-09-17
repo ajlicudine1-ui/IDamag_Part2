@@ -751,7 +751,7 @@ function StaffDashboard() {
                 <div className="space-y-4">
 
                   <SearchableSelect
-                    label="Office"
+                    label="Category"
                     variant="ghost"
                     options={offices}
                     value={
