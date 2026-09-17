@@ -6070,95 +6070,6 @@ async function answerQuestion(
   };
 
 
-
-  /**
-   * V7.36.5h — V7.36.2 one-to-many compatibility check.
-   *
-   * A Groq list plan can be semantically correct even when labelColumn is
-   * null. The older V7.36.2 path already had a generic row-aware resolver
-   * that could reconstruct the relationship from filtered source rows.
-   *
-   * Return a verified contextual rendering when that recovery is possible.
-   * No dataset, worksheet, field, or value name is hardcoded here.
-   */
-  const resolveGroqOneToManyCompatibility =
-    (plan) => {
-      if (
-        !plan ||
-        normalizeText(
-          plan?.operation
-        ) !==
-          "list" ||
-        !plan?.dataset ||
-        !plan?.column ||
-        !Array.isArray(
-          plan?.filters
-        ) ||
-        !plan.filters.length
-      ) {
-        return {
-          recoverable: false,
-          answer: null,
-          matchingRows: [],
-        };
-      }
-
-      const sourceRows =
-        Array.isArray(
-          datasets?.[
-            plan.dataset
-          ]
-        )
-          ? datasets[
-              plan.dataset
-            ]
-          : [];
-
-      if (!sourceRows.length) {
-        return {
-          recoverable: false,
-          answer: null,
-          matchingRows: [],
-        };
-      }
-
-      const matchingRows =
-        filterRowsBySimpleFilters(
-          sourceRows,
-          plan.filters
-        );
-
-      if (!matchingRows.length) {
-        return {
-          recoverable: false,
-          answer: null,
-          matchingRows: [],
-        };
-      }
-
-      const answer =
-        buildOneToManyListAnswer({
-          rows:
-            matchingRows,
-          subjectColumn:
-            plan.column,
-          filters:
-            plan.filters,
-        });
-
-      return {
-        recoverable:
-          Boolean(
-            answer
-          ) &&
-          matchingRows.length > 1,
-        answer:
-          answer || null,
-        matchingRows,
-      };
-    };
-
-
   /**
    * V7.36.5f — repair correct-but-incomplete Groq referential plans.
    *
@@ -6294,24 +6205,6 @@ async function answerQuestion(
           plan,
           repaired: false,
           reasons: [],
-        };
-      }
-
-      const v7362Compatibility =
-        resolveGroqOneToManyCompatibility(
-          plan
-        );
-
-      if (
-        v7362Compatibility
-          .recoverable
-      ) {
-        return {
-          plan,
-          repaired: false,
-          reasons: [],
-          oneToManyCompatibility:
-            true,
         };
       }
 
@@ -6731,24 +6624,14 @@ async function answerQuestion(
               .labelColumn
           )
         ) {
-          const oneToManyCompatibility =
-            resolveGroqOneToManyCompatibility(
-              plan
+          score =
+            Math.min(
+              score,
+              0.55
             );
-
-          if (
-            !oneToManyCompatibility
-              .recoverable
-          ) {
-            score =
-              Math.min(
-                score,
-                0.55
-              );
-            issues.push(
-              "referential-label-missing-or-mismatched"
-            );
-          }
+          issues.push(
+            "referential-label-missing-or-mismatched"
+          );
         }
 
         if (
@@ -6863,25 +6746,15 @@ async function answerQuestion(
             verifiedPriorPair
           )
         ) {
-          const oneToManyCompatibility =
-            resolveGroqOneToManyCompatibility(
-              plan
+          score =
+            Math.min(
+              score,
+              0.55
             );
 
-          if (
-            !oneToManyCompatibility
-              .recoverable
-          ) {
-            score =
-              Math.min(
-                score,
-                0.55
-              );
-
-            issues.push(
-              "referential-label-dropped-from-verified-context"
-            );
-          }
+          issues.push(
+            "referential-label-dropped-from-verified-context"
+          );
         }
       }
 
@@ -7067,18 +6940,6 @@ async function answerQuestion(
           result,
         });
 
-      const oneToManyCompatibility =
-        resolveGroqOneToManyCompatibility(
-          groqPlan
-        );
-
-      const oneToManyAnswer =
-        oneToManyCompatibility
-          .recoverable
-          ? oneToManyCompatibility
-              .answer
-          : null;
-
       updateConversation(
         sessionId,
         {
@@ -7095,16 +6956,9 @@ async function answerQuestion(
 
         answer:
           formatUserFacingAnswer(
-            oneToManyAnswer ||
             semanticAnswer ||
             result?.answer
           ),
-
-        oneToManyResolved:
-          oneToManyCompatibility
-            .recoverable
-            ? true
-            : undefined,
 
         plannerSource:
           groqPlanRepaired
