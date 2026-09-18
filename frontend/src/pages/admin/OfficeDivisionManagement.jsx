@@ -178,15 +178,15 @@ function OfficeDivisionManagement() {
       setShowConfirmModal(false);
       fetchData();
     } catch (err) {
-      alert('Error saving subcategory: ' + err.message);
+      alert('Error saving: ' + err.message);
       setShowConfirmModal(false);
     }
   };
 
   const handleDeleteSection = (id) => {
     setConfirmConfig({
-      title: 'Delete Category?',
-      message: 'Are you sure you want to delete this category? All associated reports will be removed. This action cannot be undone.',
+      title: 'Delete?',
+      message: 'Are you sure you want to delete this? All associated reports will be removed. This action cannot be undone.',
       type: 'delete',
       action: () => executeDeleteSection(id)
     });
