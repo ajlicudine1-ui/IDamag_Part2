@@ -167,7 +167,7 @@ function UserManagement() {
               <thead>
                 <tr className="bg-slate-50/50">
                   <th className="px-6 py-3 text-[9px] font-bold text-slate-400 uppercase tracking-widest">User Full Name</th>
-                  <th className="px-6 py-3 text-[9px] font-bold text-slate-400 uppercase tracking-widest">Office and Section</th>
+                  <th className="px-6 py-3 text-[9px] font-bold text-slate-400 uppercase tracking-widest">Category and Subcategory</th>
                   <th className="px-6 py-3 text-[9px] font-bold text-slate-400 uppercase tracking-widest">Role</th>
                   <th className="px-6 py-3 text-[9px] font-bold text-slate-400 uppercase tracking-widest">Account Status</th>
                   <th className="px-6 py-3 text-[9px] font-bold text-slate-400 uppercase tracking-widest text-right">Actions</th>
