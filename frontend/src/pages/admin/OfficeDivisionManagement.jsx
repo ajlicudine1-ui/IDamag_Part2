@@ -289,7 +289,7 @@ function OfficeDivisionManagement() {
               }`}
             >
               <Layout size={16} className={activeTab === 'sections' ? 'text-moss-600' : 'text-slate-300'} />
-              Subcategory
+              Subcategories
             </button>
           </div>
           <button 
