@@ -5,9 +5,141 @@
   const GROQ_URL =
     "https://api.groq.com/openai/v1/chat/completions";
 
+
   const GROQ_MODEL =
     process.env.GROQ_MODEL ||
     "llama-3.3-70b-versatile";
+
+function classifyGroqError(error) {
+  if (!error) {
+    return {
+      status: "not_attempted",
+      httpStatus: null,
+      code: null,
+      message: null,
+    };
+  }
+
+  const message =
+    String(error?.message || "");
+
+  const lower =
+    message.toLowerCase();
+
+  const parsedHttpStatus =
+    Number(error?.httpStatus);
+
+  const httpStatus =
+    Number.isInteger(parsedHttpStatus)
+      ? parsedHttpStatus
+      : null;
+
+  const code =
+    error?.groqCode ||
+    error?.code ||
+    null;
+
+  let status =
+    "unknown_error";
+
+  if (
+    lower.includes(
+      "groq_api_key is missing"
+    )
+  ) {
+    status =
+      "missing_api_key";
+  } else if (
+    error?.groqErrorType ===
+      "invalid_json" ||
+    lower.includes(
+      "did not return valid json"
+    ) ||
+    lower.includes(
+      "malformed json"
+    )
+  ) {
+    status =
+      "invalid_json";
+  } else if (
+    httpStatus === 429 ||
+    lower.includes(
+      "rate limit"
+    ) ||
+    lower.includes(
+      "too many requests"
+    ) ||
+    lower.includes(
+      "quota"
+    )
+  ) {
+    status =
+      "rate_limited";
+  } else if (
+    httpStatus === 401 ||
+    httpStatus === 403 ||
+    lower.includes(
+      "unauthorized"
+    ) ||
+    lower.includes(
+      "invalid api key"
+    ) ||
+    lower.includes(
+      "authentication"
+    )
+  ) {
+    status =
+      "authentication_error";
+  } else if (
+    error?.name ===
+      "AbortError" ||
+    lower.includes(
+      "timeout"
+    ) ||
+    lower.includes(
+      "timed out"
+    )
+  ) {
+    status =
+      "timeout";
+  } else if (
+    httpStatus !== null &&
+    httpStatus >= 500
+  ) {
+    status =
+      "server_error";
+  } else if (
+    httpStatus !== null &&
+    httpStatus >= 400
+  ) {
+    status =
+      "http_error";
+  } else if (
+    lower.includes(
+      "fetch failed"
+    ) ||
+    lower.includes(
+      "network"
+    ) ||
+    lower.includes(
+      "econn"
+    ) ||
+    lower.includes(
+      "enotfound"
+    )
+  ) {
+    status =
+      "network_error";
+  }
+
+  return {
+    status,
+    httpStatus,
+    code,
+    message:
+      message || null,
+  };
+}
 
 async function callGroq(messages, options = {}) {
   const apiKey = process.env.GROQ_API_KEY;
@@ -37,10 +169,24 @@ async function callGroq(messages, options = {}) {
     .catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(
-      body?.error?.message ||
-        `Groq request failed with HTTP ${response.status}.`
-    );
+    const error =
+      new Error(
+        body?.error?.message ||
+          `Groq request failed with HTTP ${response.status}.`
+      );
+
+    error.httpStatus =
+      response.status;
+
+    error.groqCode =
+      body?.error?.code ||
+      null;
+
+    error.groqErrorType =
+      body?.error?.type ||
+      "http_error";
+
+    throw error;
   }
 
   return (
@@ -132,14 +278,35 @@ function extractJsonObject(text) {
     end === -1 ||
     end <= start
   ) {
-    throw new Error(
-      "Groq did not return valid JSON."
-    );
+    const error =
+      new Error(
+        "Groq did not return valid JSON."
+      );
+
+    error.groqErrorType =
+      "invalid_json";
+
+    throw error;
   }
 
-  return JSON.parse(
-    cleaned.slice(start, end + 1)
-  );
+  try {
+    return JSON.parse(
+      cleaned.slice(start, end + 1)
+    );
+  } catch (cause) {
+    const error =
+      new Error(
+        "Groq returned malformed JSON."
+      );
+
+    error.groqErrorType =
+      "invalid_json";
+
+    error.cause =
+      cause;
+
+    throw error;
+  }
 }
 
 
@@ -958,6 +1125,48 @@ function compactConversationContext(
  *
  * JavaScript performs the real lookup/calculation.
  */
+
+function shouldRetryGroqJsonError(
+  error
+) {
+  return (
+    error?.groqErrorType ===
+      "invalid_json" ||
+    classifyGroqError(
+      error
+    ).status ===
+      "invalid_json"
+  );
+}
+
+function buildGroqJsonRepairMessages({
+  originalSystemPrompt,
+  originalUserPrompt,
+  invalidResponse,
+}) {
+  return [
+    {
+      role: "system",
+      content:
+        `${originalSystemPrompt}\n\n` +
+        `IMPORTANT RECOVERY RULE:\n` +
+        `Your previous planner response was not valid JSON. ` +
+        `Return exactly ONE syntactically valid JSON object only. ` +
+        `Do not use Markdown fences, comments, explanations, trailing commas, ` +
+        `or text before/after the JSON object.`,
+    },
+    {
+      role: "user",
+      content:
+        `${originalUserPrompt}\n\n` +
+        `INVALID PREVIOUS PLANNER RESPONSE:\n` +
+        `${String(invalidResponse || "").slice(0, 6000)}\n\n` +
+        `Repair the planner response and return ONE valid JSON object only.`,
+    },
+  ];
+}
+
+
 async function createSchemaAwarePlan({
   question,
   schema,
@@ -1041,6 +1250,19 @@ Dataset:
       "value":"scalar or array for in/not_in"
     }
   ],
+  "filterGroups":[
+    {
+      "logic":"and",
+      "filters":[
+        {
+          "column":"exact column",
+          "operator":"equals|not_equals|contains|starts_with|ends_with|greater_than|greater_or_equal|less_than|less_or_equal|in|not_in",
+          "value":"scalar or array"
+        }
+      ]
+    }
+  ],
+  "filterGroupLogic":"or|null",
   "selectColumns":["exact requested output columns"],
   "outputRequested":true,
   "transform":"first_word|last_word|null",
@@ -1092,50 +1314,145 @@ RULES
     identity/name field only from the CURRENT SCHEMA and rank by X.
 13. For follow-ups, inherit only missing pieces from CONVERSATION CONTEXT.
     Current explicit field/entity wording overrides old context.
+    For referential follow-ups using wording such as "they", "them", "these",
+    "those", "it", "he", or "she", preserve the previously VERIFIED
+    relationship identity when it is still applicable.
+    If the previous verified plan established a meaningful labelColumn,
+    groupBy, or conversational pair column and the current follow-up asks for
+    a new related field about the same entities, keep that relationship column
+    in labelColumn unless the current question explicitly changes the
+    subject/entity.
+    Do not reduce a verified relationship lookup into a plain list merely
+    because the current target column is obvious.
 14. If genuinely ambiguous, return route "clarify".
 15. If the user challenges a prior answer, create an executable dataset plan
     so JavaScript verifies the claim. Never accept the correction as fact.
+16. Preserve explicit boolean logic. For simple same-column alternatives use
+    an "in" filter. For expressions that require OR across independent
+    conditions, use filterGroups as OR-of-AND groups. Never silently drop an
+    AND/OR condition.
+17. Every explicit requested object/category/value must be grounded to the
+    live schema or RETRIEVED REAL DATA. If it cannot be grounded, return
+    route "clarify" instead of broadening the query.
 
 Return JSON only.
 `;
 
-  const response = await callGroq(
-    [
-      {
-        role: "system",
-        content: systemPrompt,
-      },
+  const plannerUserPrompt =
+    `SCHEMA:\n${JSON.stringify(
+      compactSchema
+    )}\n\n` +
 
-      {
-        role: "user",
-        content:
-          `SCHEMA:\n${JSON.stringify(
-            compactSchema
-          )}\n\n` +
+    `SEMANTIC HINTS:\n${JSON.stringify(
+      semanticHints
+    )}\n\n` +
 
-          `SEMANTIC HINTS:\n${JSON.stringify(
-            semanticHints
-          )}\n\n` +
+    `RETRIEVED REAL DATA:\n${JSON.stringify(
+      safeRetrievalContext
+    )}\n\n` +
 
-          `RETRIEVED REAL DATA:\n${JSON.stringify(
-            safeRetrievalContext
-          )}\n\n` +
+    `CONVERSATION CONTEXT:\n${JSON.stringify(
+      safeContext
+    )}\n\n` +
 
-          `CONVERSATION CONTEXT:\n${JSON.stringify(
-            safeContext
-          )}\n\n` +
+    `QUESTION:\n${question}`;
 
-          `QUESTION:\n${question}`,
-      },
-    ],
+  const plannerMessages = [
     {
-      temperature: 0,
-      maxTokens: 600,
+      role: "system",
+      content: systemPrompt,
+    },
+    {
+      role: "user",
+      content:
+        plannerUserPrompt,
+    },
+  ];
+
+  let response =
+    await callGroq(
+      plannerMessages,
+      {
+        temperature: 0,
+        maxTokens: 600,
+      }
+    );
+
+  let plan = null;
+  let groqJsonRetryUsed =
+    false;
+
+  try {
+    plan =
+      extractJsonObject(
+        response
+      );
+  } catch (error) {
+    if (
+      !shouldRetryGroqJsonError(
+        error
+      )
+    ) {
+      throw error;
+    }
+
+    groqJsonRetryUsed =
+      true;
+
+    const repairMessages =
+      buildGroqJsonRepairMessages({
+        originalSystemPrompt:
+          systemPrompt,
+        originalUserPrompt:
+          plannerUserPrompt,
+        invalidResponse:
+          response,
+      });
+
+    response =
+      await callGroq(
+        repairMessages,
+        {
+          temperature: 0,
+          maxTokens: 600,
+        }
+      );
+
+    try {
+      plan =
+        extractJsonObject(
+          response
+        );
+    } catch (retryError) {
+      if (
+        shouldRetryGroqJsonError(
+          retryError
+        )
+      ) {
+        retryError.groqJsonRetryUsed =
+          true;
+        retryError.groqJsonRetryRecovered =
+          false;
+      }
+
+      throw retryError;
+    }
+  }
+
+  Object.defineProperty(
+    plan,
+    "__groqDiagnostics",
+    {
+      value: {
+        jsonRetryUsed:
+          groqJsonRetryUsed,
+        jsonRetryRecovered:
+          groqJsonRetryUsed,
+      },
+      enumerable: false,
+      configurable: true,
     }
   );
-
-  const plan =
-    extractJsonObject(response);
 
   // ==========================================================
   // EXACT SCHEMA COLUMN SAFETY NET
@@ -1422,4 +1739,7 @@ module.exports = {
   callGroq,
   answerGeneralQuestion,
   createSchemaAwarePlan,
+  classifyGroqError,
+  shouldRetryGroqJsonError,
+  buildGroqJsonRepairMessages,
 };

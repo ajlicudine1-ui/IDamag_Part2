@@ -10,6 +10,14 @@ const {
   formatNumber,
 } = require("./utils");
 
+const {
+  buildSemanticVerifiedAnswer,
+} = require("./responseNarrativeEngine");
+
+const {
+  finalizeUserFacingGrammar,
+} = require("./responseGrammarEngine");
+
 
 /**
  * ============================================================
@@ -66,7 +74,7 @@ function decorateVerifiedAnswer(answer, plan, result) {
   let text = String(answer || "").trim();
   if (!text) return text;
 
-  const unit = result?.unit || plan?.unit || null;
+  const unit = result?.displayUnit || plan?.displayUnit || result?.unit || plan?.unit || null;
   const scalarValue = result?.value;
   if (unit && scalarValue !== null && scalarValue !== undefined) {
     const formatted = formatNumber(scalarValue);
@@ -88,10 +96,65 @@ function buildLocalNaturalAnswer({
   plan,
   result,
 }) {
-  return decorateVerifiedAnswer(
-    formatVerifiedResultAnswer({ question, plan, result }),
-    plan,
-    result
+  const semanticAnswer = buildSemanticVerifiedAnswer({ question, plan, result });
+  return finalizeUserFacingGrammar(
+    decorateVerifiedAnswer(
+      semanticAnswer || formatVerifiedResultAnswer({ question, plan, result }),
+      plan,
+      result
+    )
+  );
+}
+
+
+function shouldPreserveDeterministicSemanticAnswer({
+  plan,
+  result,
+  semanticAnswer,
+} = {}) {
+  if (!semanticAnswer) return false;
+
+  const operation = String(
+    result?.operation ||
+    plan?.operation ||
+    ""
+  ).trim().toLowerCase();
+
+  if (!["lookup", "list", "value"].includes(operation)) {
+    return false;
+  }
+
+  const rows = Array.isArray(result?.results)
+    ? result.results
+    : [];
+
+  if (!rows.length) return false;
+
+  const labelColumn =
+    result?.labelColumn ||
+    plan?.labelColumn ||
+    null;
+
+  const valueColumn =
+    result?.column ||
+    plan?.column ||
+    null;
+
+  if (!labelColumn || !valueColumn) {
+    return false;
+  }
+
+  // Preserve the deterministic semantic formatter when the verified result is
+  // a paired/relationship lookup (label + requested value). The local
+  // formatter already groups multi-value cells and answers the requested field
+  // first. Allowing the LLM to rewrite this can re-expand the answer into
+  // repetitive "label - value" lines even though the verified local answer is
+  // already better.
+  return rows.some((row) =>
+    row &&
+    typeof row === "object" &&
+    Object.prototype.hasOwnProperty.call(row, labelColumn) &&
+    Object.prototype.hasOwnProperty.call(row, valueColumn)
   );
 }
 
@@ -168,7 +231,19 @@ function buildCompactVerifiedPayload({
       result?.winner,
 
     unit:
-      result?.unit || plan?.unit || undefined,
+      result?.displayUnit || plan?.displayUnit || result?.unit || plan?.unit || undefined,
+
+    metricMeaning:
+      result?.metricMeaning || plan?.metricMeaning || undefined,
+
+    metricSource:
+      plan?.metricSource || undefined,
+
+    coverage:
+      result?.coverage || undefined,
+
+    aggregationPolicy:
+      result?.aggregationPolicy || undefined,
 
     dataQuality:
       result?.dataQuality || undefined,
@@ -216,12 +291,36 @@ async function generateNaturalResponse({
   plan,
   result,
 }) {
-  const fallback =
-    buildLocalNaturalAnswer({
+  const semanticAnswer =
+    buildSemanticVerifiedAnswer({
       question,
       plan,
       result,
     });
+
+  const fallback =
+    finalizeUserFacingGrammar(
+      decorateVerifiedAnswer(
+        semanticAnswer ||
+          formatVerifiedResultAnswer({
+            question,
+            plan,
+            result,
+          }),
+        plan,
+        result
+      )
+    );
+
+  if (
+    shouldPreserveDeterministicSemanticAnswer({
+      plan,
+      result,
+      semanticAnswer,
+    })
+  ) {
+    return fallback;
+  }
 
   if (
     !shouldNaturalize(
@@ -321,7 +420,9 @@ The LOCAL ANSWER is already fact-safe. Prefer making only small stylistic improv
       return fallback;
     }
 
-    return naturalAnswer;
+    return finalizeUserFacingGrammar(
+      naturalAnswer
+    );
   } catch (error) {
     console.error(
       "Natural response generation failed:",
@@ -340,4 +441,5 @@ The LOCAL ANSWER is already fact-safe. Prefer making only small stylistic improv
 
 module.exports = {
   generateNaturalResponse,
+  shouldPreserveDeterministicSemanticAnswer,
 };

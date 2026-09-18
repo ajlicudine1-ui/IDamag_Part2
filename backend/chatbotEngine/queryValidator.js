@@ -145,6 +145,8 @@ function validateFilters(
       "less_or_equal",
       "in",
       "not_in",
+      "empty",
+      "not_empty",
     ]);
 
   const normalized = [];

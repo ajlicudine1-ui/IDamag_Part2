@@ -1,6 +1,9 @@
 const { normalizeText, parseNumber } = require('./utils');
 const { inferValueFilters } = require('./filterEngine');
 const { executePlan } = require('./calculationEngine');
+const { inferMetricMeaning } = require('./metricMeaningEngine');
+const { semanticPlanToExecutable } = require('./semanticPlan');
+const { buildSemanticVerifiedAnswer } = require('./responseNarrativeEngine');
 const {
   findExplicitSchemaColumns,
   detectQuestionAggregation,
@@ -114,7 +117,8 @@ function discoverPartitionColumn({ datasets, schema, question }) {
 function hasDistributedScopeCue(question, partitionColumn) {
   const q = normalizeText(question);
   if (/\b(?:each|every|all)\b/.test(q)) return true;
-  if (/\b(?:across|by)\b/.test(q) && questionMentionsColumnConcept(question, partitionColumn)) return true;
+  if (/\b(?:across|throughout|regionwide|systemwide|nationwide|overall)\b/.test(q)) return true;
+  if (/\b(?:by)\b/.test(q) && questionMentionsColumnConcept(question, partitionColumn)) return true;
 
   // Cross-partition superlatives are distributed by definition:
   // "which province has the highest ...", "which branch has the lowest ...".
@@ -357,38 +361,66 @@ function buildDistributedWorksheetResolution({ datasets, schema, question }) {
     : `${operationLabel} by ${partition.column}:\n` +
       rowsOut.map((item, index) => `${index + 1}. ${item.label}: ${formatNumber(item.value)}`).join('\n');
 
+  const distributedPlan = {
+    route: 'dataset',
+    dataset: null,
+    operation: rankingDirection ? 'rank_worksheets' : 'multi_worksheet',
+    column: metricColumn,
+    groupBy: partition.column,
+    aggregation: operation,
+    direction: rankingDirection || null,
+    limit: rankingDirection ? Math.max(1, rankingLimit || 1) : rowsOut.length,
+    filters: [],
+    selectColumns: [partition.column, metricColumn],
+    outputRequested: true,
+    distributedWorksheetQuery: true,
+    worksheets: datasetNames,
+    aggregationPolicy: {
+      mode: 'available_values',
+      requireCompleteCoverage: false,
+    },
+  };
+
+  const rawResult = {
+    success: true,
+    source: 'dataset',
+    dataset: null,
+    datasets: rowsOut.map((item) => item.dataset),
+    operation: rankingDirection ? 'rank_worksheets' : 'multi_worksheet',
+    column: metricColumn,
+    groupBy: partition.column,
+    aggregation: operation,
+    results: (rankingDirection ? ordered : rowsOut).map((item) => ({
+      dataset: item.dataset,
+      label: item.label,
+      value: item.value,
+      filters: item.filters,
+      recordsUsed: item.result?.recordsUsed ?? null,
+      dataQuality: item.result?.dataQuality || null,
+    })),
+    aggregationPolicy: {
+      mode: 'available_values',
+      description: 'Each worksheet is evaluated independently using available non-missing metric values.',
+      requireCompleteCoverage: false,
+      totalWorksheets: rowsOut.length,
+    },
+    crossWorksheetDataQuality: {
+      totalWorksheets: rowsOut.length,
+      worksheetsWithValue: rowsOut.filter((item) => item.value !== null && Number.isFinite(Number(item.value))).length,
+      worksheetsWithoutValue: rowsOut.filter((item) => item.value === null || !Number.isFinite(Number(item.value))).map((item) => item.label),
+    },
+    answer,
+  };
+
   return {
-    plan: {
-      route: 'dataset',
-      operation: rankingDirection ? 'rank_worksheets' : 'multi_worksheet',
-      column: metricColumn,
-      groupBy: partition.column,
-      aggregation: operation,
-      direction: rankingDirection || null,
-      limit: rankingDirection ? Math.max(1, rankingLimit || 1) : rowsOut.length,
-      filters: [],
-      selectColumns: [partition.column, metricColumn],
-      outputRequested: true,
-      distributedWorksheetQuery: true,
-      worksheets: datasetNames,
-    },
-    result: {
-      success: true,
-      source: 'dataset',
-      dataset: null,
-      datasets: rowsOut.map((item) => item.dataset),
-      operation: rankingDirection ? 'rank_worksheets' : 'multi_worksheet',
-      column: metricColumn,
-      groupBy: partition.column,
-      aggregation: operation,
-      results: (rankingDirection ? ordered : rowsOut).map((item) => ({
-        dataset: item.dataset,
-        label: item.label,
-        value: item.value,
-        filters: item.filters,
-      })),
-      answer,
-    },
+    plan: distributedPlan,
+    result: attachCrossWorksheetMetricMeaning({
+      result: rawResult,
+      plan: distributedPlan,
+      datasets,
+      schema,
+      question,
+    }),
   };
 }
 
@@ -457,6 +489,8 @@ function executeDistributedWorksheetPlan({ datasets, schema, plan, question = ''
       label: firstPartitionLabel(rows, partitionColumn, datasetName),
       value,
       filters,
+      dataQuality: result?.dataQuality || null,
+      recordsUsed: result?.recordsUsed ?? null,
     });
   }
 
@@ -477,32 +511,54 @@ function executeDistributedWorksheetPlan({ datasets, schema, plan, question = ''
     ? `${requestedAggregation} ${metricColumn}`
     : metricColumn;
 
-  const answer = operationName === 'rank_worksheets'
+  const fallbackAnswer = operationName === 'rank_worksheets'
     ? outputRows.length
       ? `${outputRows[0].label} has the ${direction === 'asc' ? 'lowest' : 'highest'} ${aggregationLabel}: ${formatNumber(outputRows[0].value)}.`
       : `I couldn't find enough matching values to compare the ${partitionColumn || 'worksheet'} groups.`
     : `${aggregationLabel} by ${partitionColumn || 'worksheet'}:\n` +
       outputRows.map((item, index) => `${index + 1}. ${item.label}: ${formatNumber(item.value)}`).join('\n');
 
-  return {
-    success: true,
-    source: 'dataset',
-    dataset: null,
-    datasets: rowsOut.map((item) => item.dataset),
-    operation: operationName,
-    column: metricColumn,
-    groupBy: partitionColumn,
-    aggregation: requestedAggregation || null,
-    direction: operationName === 'rank_worksheets' ? direction : null,
-    results: outputRows.map((item) => ({
-      dataset: item.dataset,
-      label: item.label,
-      value: item.value,
-      filters: item.filters,
-    })),
-    answer,
-    debugPlan: plan,
-  };
+  const enriched = attachCrossWorksheetMetricMeaning({
+    result: {
+      success: true,
+      source: 'dataset',
+      dataset: null,
+      datasets: rowsOut.map((item) => item.dataset),
+      operation: operationName,
+      column: metricColumn,
+      groupBy: partitionColumn,
+      aggregation: requestedAggregation || null,
+      direction: operationName === 'rank_worksheets' ? direction : null,
+      results: outputRows.map((item) => ({
+        dataset: item.dataset,
+        label: item.label,
+        value: item.value,
+        filters: item.filters,
+        recordsUsed: item.recordsUsed,
+        dataQuality: item.dataQuality,
+      })),
+      aggregationPolicy: {
+        mode: 'available_values',
+        description: 'Each worksheet is evaluated independently using non-missing metric values.',
+        requireCompleteCoverage: false,
+        totalWorksheets: rowsOut.length,
+      },
+      crossWorksheetDataQuality: {
+        totalWorksheets: rowsOut.length,
+        worksheetsWithValue: rowsOut.filter((item) => item.value !== null && Number.isFinite(Number(item.value))).length,
+        worksheetsWithoutValue: rowsOut.filter((item) => item.value === null || !Number.isFinite(Number(item.value))).map((item) => item.label),
+      },
+      answer: fallbackAnswer,
+      debugPlan: plan,
+    },
+    plan,
+    datasets,
+    schema,
+    question,
+  });
+
+  const naturalAnswer = buildSemanticVerifiedAnswer({ question, plan, result: enriched });
+  return { ...enriched, answer: naturalAnswer || fallbackAnswer };
 }
 
 
@@ -563,6 +619,95 @@ function chooseExplicitGroupingColumn({ datasets, schema, question, metricColumn
   return candidates.sort((a, b) => b.length - a.length)[0]?.name || null;
 }
 
+
+function rowMatchesFilter(row, filter) {
+  if (!filter?.column) return true;
+  const actual = normalizeText(row?.[filter.column]);
+  const op = normalizeText(filter.operator || 'equals');
+  const expected = filter.value;
+  if (op === 'equals') return actual === normalizeText(expected);
+  if (op === 'contains') return actual.includes(normalizeText(expected));
+  if (op === 'in') {
+    const list = Array.isArray(expected) ? expected : [expected];
+    return list.some((value) => actual === normalizeText(value));
+  }
+  return true;
+}
+
+function buildCrossWorksheetCoverage({ combinedRows, groupColumn, metricColumn, filters, datasetNames }) {
+  const map = new Map();
+  const normalizedFilters = Array.isArray(filters) ? filters : [];
+  for (const row of combinedRows || []) {
+    if (!normalizedFilters.every((filter) => rowMatchesFilter(row, filter))) continue;
+    const label = row?.[groupColumn];
+    if (label === null || label === undefined || String(label).trim() === '') continue;
+    const key = normalizeText(label);
+    if (!key) continue;
+    if (!map.has(key)) {
+      map.set(key, { label: String(label).trim(), worksheets: new Set(), usableValues: 0, missingValues: 0 });
+    }
+    const item = map.get(key);
+    const parsed = parseNumber(row?.[metricColumn]);
+    if (parsed === null) {
+      item.missingValues += 1;
+    } else {
+      item.usableValues += 1;
+      if (row?.__worksheet) item.worksheets.add(String(row.__worksheet));
+    }
+  }
+
+  const totalWorksheets = datasetNames.length;
+  return new Map([...map.entries()].map(([key, item]) => {
+    const used = [...item.worksheets];
+    const missingWorksheets = datasetNames.filter((name) => !item.worksheets.has(name));
+    return [key, {
+      totalWorksheets,
+      worksheetsUsed: used.length,
+      coverageRate: totalWorksheets ? used.length / totalWorksheets : 0,
+      usedWorksheets: used,
+      missingWorksheets,
+      usableValues: item.usableValues,
+      missingValues: item.missingValues,
+    }];
+  }));
+}
+
+function attachCrossWorksheetMetricMeaning({ result, plan, datasets, schema, question }) {
+  const firstDataset = Object.keys(datasets || {}).find((name) => Array.isArray(datasets[name]));
+  const meaning = inferMetricMeaning({
+    plan: { ...plan, dataset: firstDataset },
+    question,
+    datasets,
+    schema,
+  });
+
+  // Prefer semantic meaning already carried by the conversation plan. A short
+  // follow-up such as "What about January?" may not repeat words like "price",
+  // so re-inferring from that short utterance alone can lose the verified
+  // metric meaning/unit from the previous turn.
+  const metricMeaning =
+    plan?.metricMeaning ||
+    plan?.metricSemantics ||
+    result?.metricMeaning ||
+    result?.metricSemantics ||
+    meaning.type ||
+    null;
+
+  const displayUnit =
+    plan?.displayUnit ||
+    result?.displayUnit ||
+    meaning.displayUnit ||
+    null;
+
+  return {
+    ...result,
+    metricMeaning,
+    metricSemantics: metricMeaning,
+    displayUnit,
+    denominatorUnit: meaning.denominatorUnit || result?.denominatorUnit || null,
+  };
+}
+
 function executeCrossWorksheetGroupedPlan({ datasets, schema, plan, question = '' }) {
   if (normalizeText(plan?.operation) !== 'rank_across_worksheets') return null;
 
@@ -618,27 +763,73 @@ function executeCrossWorksheetGroupedPlan({ datasets, schema, plan, question = '
     return null;
   }
 
-  const results = Array.isArray(ranked?.results) ? ranked.results : [];
-  const answer = results.length
+  const rawResults = Array.isArray(ranked?.results) ? ranked.results : [];
+  const coverageByGroup = buildCrossWorksheetCoverage({
+    combinedRows,
+    groupColumn,
+    metricColumn,
+    filters: childPlan.filters,
+    datasetNames,
+  });
+
+  const results = rawResults.map((item) => ({
+    ...item,
+    coverage: coverageByGroup.get(normalizeText(item?.label)) || {
+      totalWorksheets: datasetNames.length,
+      worksheetsUsed: 0,
+      coverageRate: 0,
+      usedWorksheets: [],
+      missingWorksheets: [...datasetNames],
+    },
+  }));
+
+  const aggregationPolicy = {
+    mode: 'available_values',
+    description: 'Aggregate only non-missing values and report worksheet coverage.',
+    requireCompleteCoverage: false,
+    totalWorksheets: datasetNames.length,
+  };
+
+  const fallbackAnswer = results.length
     ? `${direction === 'asc' ? 'Lowest' : 'Highest'} ${groupColumn} by ${aggregation} ${metricColumn} across worksheets:\n` +
-      results.map((item, index) => `${index + 1}. ${item.label}: ${formatNumber(item.value)}`).join('\n')
+      results.map((item, index) => {
+        const coverage = item.coverage;
+        const note = coverage && coverage.worksheetsUsed < coverage.totalWorksheets
+          ? ` (based on ${coverage.worksheetsUsed}/${coverage.totalWorksheets} worksheets)`
+          : '';
+        return `${index + 1}. ${item.label}: ${formatNumber(item.value)}${note}`;
+      }).join('\n')
     : `I couldn't find enough matching values to rank ${groupColumn} across worksheets.`;
 
-  return {
-    success: true,
-    source: 'dataset',
-    dataset: null,
-    datasets: datasetNames,
-    operation: 'rank_across_worksheets',
-    column: metricColumn,
-    groupBy: groupColumn,
-    aggregation,
-    direction,
-    results,
-    filters: childPlan.filters,
-    answer,
-    debugPlan: plan,
-  };
+  const enriched = attachCrossWorksheetMetricMeaning({
+    result: {
+      success: true,
+      source: 'dataset',
+      dataset: null,
+      datasets: datasetNames,
+      operation: 'rank_across_worksheets',
+      column: metricColumn,
+      groupBy: groupColumn,
+      aggregation,
+      direction,
+      results,
+      filters: childPlan.filters,
+      aggregationPolicy,
+      crossWorksheetDataQuality: {
+        totalWorksheets: datasetNames.length,
+        groupsEvaluated: coverageByGroup.size,
+      },
+      answer: fallbackAnswer,
+      debugPlan: plan,
+    },
+    plan,
+    datasets,
+    schema,
+    question,
+  });
+
+  const naturalAnswer = buildSemanticVerifiedAnswer({ question, plan, result: enriched });
+  return { ...enriched, answer: naturalAnswer || fallbackAnswer };
 }
 
 function buildCrossWorksheetGroupedRankingResolution({ datasets, schema, question }) {
@@ -697,6 +888,10 @@ function buildCrossWorksheetGroupedRankingResolution({ datasets, schema, questio
     distributedWorksheetQuery: true,
     crossWorksheetGroupedRanking: true,
     worksheets: datasetNames,
+    aggregationPolicy: {
+      mode: 'available_values',
+      requireCompleteCoverage: false,
+    },
   };
 
   const result = executeCrossWorksheetGroupedPlan({ datasets, schema, plan, question });
@@ -708,7 +903,30 @@ function buildDistributedWorksheetFollowUpResolution({
   schema,
   question,
   previousPlan,
+  previousSemanticPlan = null,
 }) {
+  const semanticExecutable = semanticPlanToExecutable(previousSemanticPlan);
+
+  // Backfill semantic fields from the verified semantic conversation plan.
+  // The raw previous executable plan may not contain response-enrichment
+  // fields such as metricMeaning/displayUnit, especially after a distributed
+  // execution. Preserve the executable structure, but let semantic memory fill
+  // only missing fields. This keeps follow-ups generic across datasets.
+  previousPlan = previousPlan && typeof previousPlan === 'object'
+    ? {
+        ...(semanticExecutable || {}),
+        ...previousPlan,
+        metricMeaning: previousPlan.metricMeaning || semanticExecutable?.metricMeaning || null,
+        metricSemantics: previousPlan.metricSemantics || semanticExecutable?.metricMeaning || null,
+        displayUnit: previousPlan.displayUnit || semanticExecutable?.displayUnit || null,
+        metricSource: previousPlan.metricSource || semanticExecutable?.metricSource || null,
+        worksheets: Array.isArray(previousPlan.worksheets) && previousPlan.worksheets.length
+          ? [...previousPlan.worksheets]
+          : Array.isArray(semanticExecutable?.worksheets)
+            ? [...semanticExecutable.worksheets]
+            : [],
+      }
+    : semanticExecutable;
   if (!previousPlan || typeof previousPlan !== 'object') return null;
 
   const previousOperation = normalizeText(previousPlan.operation);
@@ -728,12 +946,56 @@ function buildDistributedWorksheetFollowUpResolution({
 
   if (!followUpCue) return null;
 
-  const direction = detectRankingDirection(question);
-  if (!direction) return null;
-
   const metricColumn = previousPlan.column || null;
   const partitionColumn = previousPlan.groupBy || null;
   if (!metricColumn) return null;
+
+  // A short distributed follow-up can change more than ranking direction.
+  // Example: "What about January?" after a February cross-worksheet ranking.
+  // Infer any values explicitly mentioned in the CURRENT question from the
+  // live shared rows, then replace only filters on the same columns. This is
+  // generic and works for Month, Year, Stage, Status, Category, etc.
+  const combinedRows = Object.keys(datasets || {})
+    .filter((name) => Array.isArray(datasets?.[name]))
+    .flatMap((name) => datasets[name]);
+
+  const currentInferredFilters = cleanInferredFilters(
+    inferValueFilters(
+      combinedRows,
+      question,
+      [metricColumn, partitionColumn, previousPlan.labelColumn].filter(Boolean)
+    ),
+    partitionColumn,
+    metricColumn
+  );
+
+  const explicitCurrentFilters = currentInferredFilters.filter((filter) => {
+    const column = normalizeText(filter?.column);
+    return column && column !== normalizeText(partitionColumn);
+  });
+
+  const direction = detectRankingDirection(question) || previousPlan.direction || null;
+  const hasDirectionOverride = Boolean(detectRankingDirection(question));
+  const hasFilterOverride = explicitCurrentFilters.length > 0;
+
+  // Do not reconstruct arbitrary "what about ..." turns unless the current
+  // question actually changes a supported analytical slot.
+  if (!hasDirectionOverride && !hasFilterOverride) return null;
+
+  const previousFilters = Array.isArray(previousPlan.filters)
+    ? previousPlan.filters.map(cloneFilter)
+    : [];
+
+  const overriddenColumns = new Set(
+    explicitCurrentFilters.map((filter) => normalizeText(filter?.column))
+  );
+
+  const mergedFilters = [
+    ...previousFilters.filter(
+      (filter) => !overriddenColumns.has(normalizeText(filter?.column))
+    ),
+    ...explicitCurrentFilters.map(cloneFilter),
+  ];
 
   const reconstructedPlan = {
     ...previousPlan,
@@ -744,10 +1006,8 @@ function buildDistributedWorksheetFollowUpResolution({
     groupBy: partitionColumn,
     aggregation: previousPlan.aggregation || 'lookup',
     direction,
-    limit: detectRankingLimit(question) || 1,
-    filters: Array.isArray(previousPlan.filters)
-      ? previousPlan.filters.map(cloneFilter)
-      : [],
+    limit: detectRankingLimit(question) || previousPlan.limit || 1,
+    filters: mergedFilters,
     selectColumns: Array.isArray(previousPlan.selectColumns)
       ? [...previousPlan.selectColumns]
       : [partitionColumn, metricColumn].filter(Boolean),

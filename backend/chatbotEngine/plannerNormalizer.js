@@ -721,13 +721,18 @@ function parseRankingTargets(
 
   match =
     text.match(
-      /\b(?:which|what)\s+(.+?)\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\s+(.+?)(?:\s+\b(?:in|within|among|for)\b\s+.+)?$/
+      /\b(?:which|what)\s+(.+?)\s+(has|have|had|is|are|was|were|[a-z][a-z-]*(?:ed|ing|s)?)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\s+(.+?)(?:\s+\b(?:in|within|among|for)\b\s+.+)?$/
     );
 
   if (
     match?.[1] &&
-    match?.[2]
+    match?.[3]
   ) {
+    const relationVerb =
+      normalizeText(
+        match[2]
+      );
+
     return {
       asksWho: false,
       labelTarget:
@@ -736,8 +741,23 @@ function parseRankingTargets(
         ),
       metricTarget:
         normalizeText(
-          match[2]
+          match[3]
         ),
+      relationVerb,
+      relationType:
+        [
+          "has",
+          "have",
+          "had",
+          "is",
+          "are",
+          "was",
+          "were",
+        ].includes(
+          relationVerb
+        )
+          ? "copular"
+          : "action",
     };
   }
 
@@ -1442,6 +1462,34 @@ function repairRankingIdentityPlan({
       rows,
     });
 
+  /**
+   * Action-ranking questions may imply grouping even when the planner omits
+   * aggregation:
+   *
+   *   "Which <group> received the largest quantity?"
+   *   "Which <group> handled the greatest amount?"
+   *
+   * In that grammar, the requested answer is the GROUP, while the numeric
+   * field is an additive measure. Rank groups by SUM instead of attempting
+   * to rank the categorical label itself or a single raw row.
+   *
+   * This is schema- and domain-agnostic: the group/metric still come from
+   * the live schema, and the rule is based only on grammatical structure +
+   * additive metric wording.
+   */
+  const additiveMetricCue =
+    /\b(?:quantity|qty|amount|total|count|number|volume)\b/.test(
+      normalizeText(
+        targets.metricTarget
+      )
+    );
+
+  const impliedActionGroupSum =
+    !normalizedAggregation &&
+    targets.relationType ===
+      "action" &&
+    additiveMetricCue;
+
   const groupedAggregation =
     [
       "sum",
@@ -1455,12 +1503,17 @@ function repairRankingIdentityPlan({
       normalizedAggregation ===
         "count" &&
       !countActuallyMeansNumericValue
-    );
+    ) ||
+    impliedActionGroupSum;
 
   const effectiveAggregation =
     countActuallyMeansNumericValue
       ? null
-      : normalizedAggregation;
+      : (
+          impliedActionGroupSum
+            ? "sum"
+            : normalizedAggregation
+        );
 
   const finalOperation =
     groupedAggregation
@@ -1714,6 +1767,111 @@ function currentQuestionOverridesAnalyticalGroup({
   previousGroupBy,
   preferredDataset = null,
 }) {
+  const previous =
+    normalizeText(previousGroupBy || "");
+
+  /*
+   * Fast exact field-name guard. findExplicitSchemaColumns() deliberately
+   * uses conservative alias matching, but a conversation-group override
+   * needs to recognize a literal live-schema field such as "Province"
+   * even when the prior result set was grouped by another field.
+   */
+  const normalizedQuestion =
+    ` ${normalizeText(question)} `;
+
+  for (const datasetSchema of schema || []) {
+    if (
+      preferredDataset &&
+      String(datasetSchema?.name || "") !==
+        String(preferredDataset)
+    ) {
+      continue;
+    }
+
+    const rows =
+      datasets?.[datasetSchema?.name];
+
+    if (!Array.isArray(rows)) {
+      continue;
+    }
+
+    for (const columnSchema of datasetSchema?.columns || []) {
+      const columnName =
+        normalizeText(columnSchema?.name || "");
+
+      if (
+        !columnName ||
+        !normalizedQuestion.includes(` ${columnName} `)
+      ) {
+        continue;
+      }
+
+      if (
+        !isNumericLikeColumn({
+          column: columnSchema,
+          rows,
+        }) &&
+        columnName !== previous
+      ) {
+        return true;
+      }
+    }
+  }
+
+  /*
+   * First inspect every schema column explicitly named in the CURRENT
+   * question. This is intentionally broader than ranking-column
+   * resolution because worksheet-partition fields (for example a field
+   * represented by one value per worksheet) may not win the ranking
+   * candidate score even though the user explicitly changed the group.
+   *
+   * Example:
+   *   previous result set grouped by Commodity
+   *   current question: "Which Province had the highest average price?"
+   *
+   * The current explicit Province request must invalidate reuse of the
+   * previous Commodity result set before conversation analytics runs.
+   */
+  const explicit =
+    findExplicitSchemaColumns({
+      schema,
+      question,
+      preferredDataset,
+    });
+
+  for (const item of explicit || []) {
+    const datasetSchema =
+      (schema || []).find(
+        (entry) =>
+          String(entry?.name || "") ===
+          String(item?.dataset || "")
+      );
+
+    const rows =
+      datasets?.[item?.dataset];
+
+    const columnSchema =
+      (datasetSchema?.columns || []).find(
+        (column) =>
+          String(column?.name || "") ===
+          String(item?.column || "")
+      );
+
+    if (!columnSchema || !Array.isArray(rows)) {
+      continue;
+    }
+
+    if (
+      !isNumericLikeColumn({
+        column: columnSchema,
+        rows,
+      }) &&
+      normalizeText(item.column) !== previous
+    ) {
+      return true;
+    }
+  }
+
   const resolved =
     resolveExplicitRankingColumns({
       datasets,
@@ -1728,7 +1886,7 @@ function currentQuestionOverridesAnalyticalGroup({
 
   return (
     normalizeText(resolved.groupColumn) !==
-    normalizeText(previousGroupBy || "")
+    previous
   );
 }
 
@@ -3060,6 +3218,77 @@ function normalizeSchemaPhraseMorphology(value) {
     .trim();
 }
 
+function findStrongMorphologicalQuestionColumn({
+  schema,
+  question,
+  preferredDataset = null,
+}) {
+  const morphologicalQuestion =
+    normalizeSchemaPhraseMorphology(question);
+
+  if (!morphologicalQuestion) {
+    return null;
+  }
+
+  const candidates = [];
+
+  for (const dataset of schema || []) {
+    if (
+      preferredDataset &&
+      String(dataset?.name || "") !== String(preferredDataset)
+    ) {
+      continue;
+    }
+
+    for (const column of dataset?.columns || []) {
+      const name = column?.name;
+      if (!name) continue;
+
+      const morphologicalColumn =
+        normalizeSchemaPhraseMorphology(name);
+
+      if (!morphologicalColumn) continue;
+
+      const escaped = morphologicalColumn.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&"
+      );
+
+      const regex = new RegExp(
+        `(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`,
+        "u"
+      );
+
+      if (!regex.test(morphologicalQuestion)) {
+        continue;
+      }
+
+      candidates.push({
+        dataset: dataset.name,
+        column: name,
+        score: 97 + morphologicalColumn.length / 10000,
+        length: morphologicalColumn.length,
+      });
+    }
+  }
+
+  if (!candidates.length && preferredDataset) {
+    return findStrongMorphologicalQuestionColumn({
+      schema,
+      question,
+      preferredDataset: null,
+    });
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score - a.score ||
+      b.length - a.length
+  );
+
+  return candidates[0] || null;
+}
+
 function findExplicitSchemaColumn({
   schema,
   question,
@@ -3907,6 +4136,7 @@ module.exports = {
   normalizePlannerPlan,
   singularizeSchemaToken,
   normalizeSchemaPhraseMorphology,
+  findStrongMorphologicalQuestionColumn,
   findExplicitSchemaColumn,
   operationUsesMetricColumn,
   enforceExplicitQuestionColumn,

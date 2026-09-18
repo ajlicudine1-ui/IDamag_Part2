@@ -18,6 +18,7 @@ const {
 const {
   answerGeneralQuestion,
   createSchemaAwarePlan,
+  classifyGroqError,
 } = require("./groqService");
 
 const {
@@ -95,6 +96,30 @@ const {
 } = require("./multiWorksheetEngine");
 
 const {
+  refineStoredMetricOperation,
+  enrichPlanMetricMeaning,
+} = require("./metricMeaningEngine");
+
+const {
+  attachLocalConfidence,
+  evaluateLocalPlanConfidence,
+} = require("./planConfidenceEngine");
+
+const {
+  buildSemanticVerifiedAnswer,
+} = require("./responseNarrativeEngine");
+
+const {
+  finalizeUserFacingGrammar,
+} = require("./responseGrammarEngine");
+
+const {
+  chooseContinuitySubjectColumn,
+  rewriteContinuityQuestionWithFilters,
+  shouldPreferExplicitValueFilter,
+} = require("./followUpContinuityEngine");
+
+const {
   normalizeExplicitColumnText,
   compactExplicitColumnText,
   expandExplicitColumnWords,
@@ -120,6 +145,7 @@ const {
   normalizePlannerPlan,
   singularizeSchemaToken,
   normalizeSchemaPhraseMorphology,
+  findStrongMorphologicalQuestionColumn,
   findExplicitSchemaColumn,
   operationUsesMetricColumn,
   enforceExplicitQuestionColumn,
@@ -176,1081 +202,32 @@ const {
   buildMultiCategoryCountResolution,
 } = require("./analyticalConversationEngine");
 
+const {
+  resolveDirectFilteredAggregatePlan,
+  resolveDirectFilteredFieldPlan,
+  normalizedEditSimilarity,
+} = require("./directQueryResolver");
+
+const {
+  currentQuestionRequiresReplan,
+} = require("./currentQuestionOverrideEngine");
+
+const {
+  resolveStrongLocalSemanticPlan,
+} = require("./localSemanticResolver");
+
+const {
+  ensureLocalPlannerParity,
+} = require("./localPlannerParityEngine");
+
+const {
+  resolveComplexFilterPlan,
+} = require("./complexFilterParityEngine");
+
+const {
+  enforceUniversalGrounding,
+} = require("./universalGroundingEngine");
 
-
-function tokenizeSchemaPhrase(
-  value
-) {
-  return normalizeText(
-    value
-  )
-    .replace(
-      /&/g,
-      " and "
-    )
-    .replace(
-      /[^\p{L}\p{N}\s]/gu,
-      " "
-    )
-    .split(
-      /\s+/
-    )
-    .map(
-      (token) =>
-        token.trim()
-    )
-    .filter(Boolean)
-    .map(
-      (token) => {
-        if (
-          token.endsWith(
-            "ies"
-          ) &&
-          token.length > 3
-        ) {
-          return (
-            token.slice(
-              0,
-              -3
-            ) +
-            "y"
-          );
-        }
-
-        if (
-          token.endsWith(
-            "s"
-          ) &&
-          !token.endsWith(
-            "ss"
-          ) &&
-          token.length > 3
-        ) {
-          return token.slice(
-            0,
-            -1
-          );
-        }
-
-        return token;
-      }
-    );
-}
-
-
-function scoreNaturalFieldPhrase(
-  requestedPhrase,
-  columnName
-) {
-  const requestedTokens =
-    tokenizeSchemaPhrase(
-      requestedPhrase
-    );
-
-  const columnTokens =
-    tokenizeSchemaPhrase(
-      columnName
-    );
-
-  if (
-    !requestedTokens.length ||
-    !columnTokens.length
-  ) {
-    return 0;
-  }
-
-  const requestedSet =
-    new Set(
-      requestedTokens
-    );
-
-  const columnSet =
-    new Set(
-      columnTokens
-    );
-
-  const overlap =
-    requestedTokens.filter(
-      (token) =>
-        columnSet.has(
-          token
-        )
-    ).length;
-
-  const coverage =
-    overlap /
-    requestedTokens.length;
-
-  const reverseCoverage =
-    overlap /
-    columnTokens.length;
-
-  const compactRequested =
-    requestedTokens.join(
-      " "
-    );
-
-  const compactColumn =
-    columnTokens.join(
-      " "
-    );
-
-  let score =
-    coverage *
-      1.5 +
-    reverseCoverage *
-      0.5;
-
-  if (
-    compactRequested ===
-      compactColumn
-  ) {
-    score += 1.5;
-  } else if (
-    compactColumn.includes(
-      compactRequested
-    ) ||
-    compactRequested.includes(
-      compactColumn
-    )
-  ) {
-    score += 0.75;
-  }
-
-  return score;
-}
-
-
-function inferApproximateEntityFilterFromText({
-  rows,
-  identifierText,
-}) {
-  if (
-    !Array.isArray(rows) ||
-    !rows.length
-  ) {
-    return [];
-  }
-
-  const target =
-    normalizeText(
-      identifierText
-    );
-
-  if (!target) {
-    return [];
-  }
-
-  const candidates = [];
-
-  const columns =
-    Object.keys(
-      rows[0] || {}
-    );
-
-  for (const column of columns) {
-    const seen =
-      new Set();
-
-    for (const row of rows) {
-      const raw =
-        row?.[column];
-
-      if (
-        raw === null ||
-        raw === undefined
-      ) {
-        continue;
-      }
-
-      const value =
-        String(raw).trim();
-
-      if (
-        !value ||
-        value.length > 120 ||
-        /^[-+]?\d[\d,]*(?:\.\d+)?$/.test(
-          value
-        )
-      ) {
-        continue;
-      }
-
-      const normalizedValue =
-        normalizeText(value);
-
-      if (
-        !normalizedValue ||
-        seen.has(normalizedValue)
-      ) {
-        continue;
-      }
-
-      seen.add(
-        normalizedValue
-      );
-
-      let score =
-        Math.max(
-          similarity(
-            target,
-            normalizedValue
-          ),
-
-          normalizedEditSimilarity(
-            target,
-            normalizedValue
-          )
-        );
-
-      if (
-        target ===
-          normalizedValue
-      ) {
-        score = 1;
-      } else if (
-        target.includes(
-          normalizedValue
-        ) ||
-        normalizedValue.includes(
-          target
-        )
-      ) {
-        score =
-          Math.max(
-            score,
-            0.94
-          );
-      }
-
-      /**
-       * Conservative but typo-tolerant entity matching.
-       *
-       * The follow-up resolver already uses edit similarity because real
-       * report values and user spelling can differ slightly. Standalone
-       * direct questions should use the same evidence.
-       */
-      if (score >= 0.72) {
-        candidates.push({
-          column,
-          value,
-          score,
-        });
-      }
-    }
-  }
-
-  candidates.sort(
-    (a, b) =>
-      b.score - a.score
-  );
-
-  if (!candidates.length) {
-    return [];
-  }
-
-  if (
-    candidates.length > 1 &&
-    candidates[0].column !==
-      candidates[1].column &&
-    Math.abs(
-      candidates[0].score -
-      candidates[1].score
-    ) < 0.025
-  ) {
-    return [];
-  }
-
-  return [
-    {
-      column:
-        candidates[0].column,
-
-      operator:
-        "equals",
-
-      value:
-        candidates[0].value,
-    },
-  ];
-}
-
-
-/**
- * Resolve standalone filtered numeric aggregate questions before Groq.
- *
- * Examples of the shape handled:
- *   "what is the total <metric> in <entity>"
- *   "what is the average <metric> for <entity>"
- *
- * Both the metric column and entity filter are discovered dynamically
- * from the live schema/data. Minor wording typos are tolerated through
- * existing schema similarity plus a conservative entity-value fallback.
- */
-function resolveDirectFilteredAggregatePlan({
-  question,
-  schema,
-  datasets,
-}) {
-  const text =
-    normalizeText(
-      question
-    );
-
-  if (!text) {
-    return null;
-  }
-
-  const aggregation =
-    detectQuestionAggregation(
-      question
-    );
-
-  /**
-   * Do NOT collapse ranking/trend questions into a simple filtered
-   * aggregate merely because they contain words such as "average".
-   *
-   * Examples of structures that must continue to the analytical
-   * planner instead:
-   *   - "which X had the largest increase in average Y?"
-   *   - "which X decreased the most?"
-   *   - "highest growth in Z"
-   *
-   * This is generic and does not depend on any worksheet/field name.
-   */
-  const hasTrendOrRankingIntent =
-    /\b(?:increase|increased|increasing|decrease|decreased|decreasing|change|changed|growth|grew|rise|rose|drop|fell|decline|difference|largest|smallest|highest|lowest|most|least|top|bottom)\b/.test(
-      text
-    );
-
-  if (
-    hasTrendOrRankingIntent
-  ) {
-    return null;
-  }
-
-  if (
-    !aggregation ||
-    ![
-      "sum",
-      "average",
-      "count",
-    ].includes(
-      aggregation
-    )
-  ) {
-    return null;
-  }
-
-  const match =
-    text.match(
-      /^(?:what|which|show|give|tell me|get|find|calculate|compute)\s+(?:(?:is|are|was|were)\s+)?(?:the\s+)?(.+?)\s+(?:in|at|within|inside|under|for|from)\s+(.+?)\??$/
-    );
-
-  if (
-    !match?.[1] ||
-    !match?.[2]
-  ) {
-    return null;
-  }
-
-  const requestedPhrase =
-    match[1]
-      .replace(
-        /\b(?:total|sum|combined|overall|altogether|average|avg|mean|count|number of|how many)\b/g,
-        " "
-      )
-      .replace(
-        /\s+/g,
-        " "
-      )
-      .trim();
-
-  const identifierText =
-    match[2]
-      .replace(
-        /[?.!]+$/g,
-        ""
-      )
-      .trim();
-
-  if (
-    !requestedPhrase ||
-    !identifierText
-  ) {
-    return null;
-  }
-
-  const candidates = [];
-
-  for (
-    const datasetSchema
-    of schema || []
-  ) {
-    const datasetName =
-      datasetSchema?.name;
-
-    const rows =
-      datasets?.[
-        datasetName
-      ];
-
-    if (
-      !datasetName ||
-      !Array.isArray(rows) ||
-      !rows.length
-    ) {
-      continue;
-    }
-
-    let filters =
-      inferCoherentFilters(
-        rows,
-        identifierText
-      );
-
-    if (
-      !Array.isArray(filters) ||
-      !filters.length
-    ) {
-      filters =
-        inferApproximateEntityFilterFromText({
-          rows,
-          identifierText,
-        });
-    }
-
-    if (
-      !Array.isArray(filters) ||
-      !filters.length
-    ) {
-      continue;
-    }
-
-    const excludedColumns =
-      new Set(
-        filters
-          .map(
-            (filter) =>
-              normalizeText(
-                filter?.column
-              )
-          )
-          .filter(Boolean)
-      );
-
-    const metricCandidates =
-      (datasetSchema.columns || [])
-        .filter(
-          (column) =>
-            column?.name &&
-            !excludedColumns.has(
-              normalizeText(
-                column.name
-              )
-            )
-        )
-        .filter(
-          (column) =>
-            aggregation ===
-              "count" ||
-            isNumericLikeColumn({
-              column,
-              rows,
-            })
-        )
-        .map(
-          (column) => {
-            const naturalScore =
-              scoreNaturalFieldPhrase(
-                requestedPhrase,
-                column.name
-              );
-
-            const fuzzyScore =
-              similarity(
-                normalizeText(
-                  requestedPhrase
-                ),
-                normalizeText(
-                  column.name
-                )
-              );
-
-            /**
-             * scoreNaturalFieldPhrase rewards shared schema words while
-             * similarity tolerates small typing errors such as
-             * "land are" -> "land area".
-             */
-            const score =
-              Math.max(
-                naturalScore,
-                fuzzyScore * 2.5
-              );
-
-            return {
-              column,
-              score,
-            };
-          }
-        )
-        .sort(
-          (a, b) =>
-            b.score -
-            a.score
-        );
-
-    const metric =
-      metricCandidates[0] ||
-      null;
-
-    if (
-      !metric ||
-      metric.score < 1.15
-    ) {
-      continue;
-    }
-
-    /**
-     * If two different metrics are effectively tied, do not guess.
-     */
-    if (
-      metricCandidates.length >
-        1 &&
-      Math.abs(
-        metricCandidates[0]
-          .score -
-        metricCandidates[1]
-          .score
-      ) < 0.08
-    ) {
-      continue;
-    }
-
-    candidates.push({
-      dataset:
-        datasetName,
-
-      column:
-        metric.column.name,
-
-      score:
-        metric.score,
-
-      filters,
-    });
-  }
-
-  if (!candidates.length) {
-    /**
-     * Final generic fallback:
-     * resolve the requested output column across the live schema first,
-     * then independently recover the entity filter from that dataset.
-     *
-     * This prevents a strong field phrase such as
-     * "climate related risks" from being lost merely because the first
-     * combined pass was too conservative.
-     */
-    const explicitField =
-      inferRequestedColumnFromQuestion({
-        schema,
-        question:
-          requestedPhrase,
-      });
-
-    if (explicitField) {
-      const rows =
-        datasets?.[
-          explicitField.dataset
-        ];
-
-      const explicitDatasetSchema =
-        (schema || []).find(
-          (item) =>
-            String(
-              item?.name || ""
-            ) ===
-            String(
-              explicitField.dataset || ""
-            )
-        );
-
-      const explicitColumnSchema =
-        explicitDatasetSchema
-          ?.columns
-          ?.find(
-            (column) =>
-              String(
-                column?.name || ""
-              ) ===
-              String(
-                explicitField.column || ""
-              )
-          ) ||
-        null;
-
-      /**
-       * SUM/AVERAGE must never target a non-numeric field just because
-       * the field name was the strongest fuzzy text match.
-       */
-      const metricTypeIsValid =
-        aggregation === "count" ||
-        isNumericLikeColumn({
-          column:
-            explicitColumnSchema,
-          rows:
-            Array.isArray(rows)
-              ? rows
-              : [],
-        });
-
-      if (
-        Array.isArray(rows) &&
-        rows.length &&
-        metricTypeIsValid
-      ) {
-        let filters =
-          inferCoherentFilters(
-            rows,
-            identifierText
-          );
-
-        if (
-          !Array.isArray(filters) ||
-          !filters.length
-        ) {
-          filters =
-            inferApproximateEntityFilterFromText({
-              rows,
-              identifierText,
-            });
-        }
-
-        if (
-          Array.isArray(filters) &&
-          filters.length
-        ) {
-          candidates.push({
-            dataset:
-              explicitField.dataset,
-
-            column:
-              explicitField.column,
-
-            fieldScore:
-              explicitField.score ||
-              0.95,
-
-            filters,
-          });
-        }
-      }
-    }
-  }
-
-  if (!candidates.length) {
-    return null;
-  }
-
-  candidates.sort(
-    (a, b) =>
-      b.score - a.score
-  );
-
-  if (
-    candidates.length > 1 &&
-    candidates[0].dataset !==
-      candidates[1].dataset &&
-    Math.abs(
-      candidates[0].score -
-      candidates[1].score
-    ) < 0.03
-  ) {
-    return null;
-  }
-
-  const best =
-    candidates[0];
-
-  const operation =
-    aggregation === "count"
-      ? "non_empty_count"
-      : aggregation;
-
-  return {
-    route:
-      "dataset",
-
-    dataset:
-      best.dataset,
-
-    operation,
-
-    column:
-      best.column,
-
-    labelColumn:
-      null,
-
-    groupBy:
-      null,
-
-    aggregation:
-      aggregation === "count"
-        ? "count"
-        : aggregation,
-
-    direction:
-      null,
-
-    filters:
-      best.filters.map(
-        (filter) => ({
-          ...filter,
-
-          value:
-            Array.isArray(
-              filter?.value
-            )
-              ? [...filter.value]
-              : filter?.value,
-        })
-      ),
-
-    selectColumns: [
-      best.column,
-    ],
-
-    outputRequested:
-      true,
-
-    transform:
-      null,
-
-    limit:
-      10,
-
-    showAll:
-      false,
-
-    directFilteredAggregate:
-      true,
-  };
-}
-
-
-function resolveDirectFilteredFieldPlan({
-  question,
-  schema,
-  datasets,
-}) {
-  const text =
-    normalizeText(
-      question
-    );
-
-  if (!text) {
-    return null;
-  }
-
-  /**
-   * IMPORTANT: this shortcut is only for plain field lookups/lists.
-   * Analytical questions (ranking, totals, averages, counts, etc.) must
-   * continue through the normal planner/repair pipeline so the requested
-   * metric is not discarded.
-   *
-   * Example that MUST NOT be intercepted here:
-   *   "Which association in Pangasinan has the largest total land area?"
-   *
-   * Without this guard the direct lookup parser can incorrectly reduce the
-   * request to: Name of Association + Province=Pangasinan, losing the
-   * "largest Total Land Area (ha)" ranking instruction.
-   */
-  if (
-    detectRankingDirection(text) ||
-    detectQuestionAggregation(text) ||
-    /\b(?:median|minimum|maximum|min|max|difference|ratio|percentage|percent)\b/.test(text)
-  ) {
-    return null;
-  }
-
-  /**
-   * Direct field + entity/location/value questions.
-   *
-   * Examples:
-   *   "What are the climate related risks in Solsona?"
-   *   "What are the commodities in Dingras?"
-   *   "Which projects are in San Fernando?"
-   *   "What is the enterprise in Barangay X?"
-   *
-   * The field and filter value are both resolved from live schema/data.
-   */
-  const match =
-    text.match(
-      /^(?:what|which|who|show|give|list|display|tell me|get|find)\s+(?:(?:is|are|was|were)\s+)?(?:the\s+)?(.+?)\s+(?:in|at|within|inside|under|for|from|of)\s+(.+?)\??$/
-    );
-
-  if (
-    !match?.[1] ||
-    !match?.[2]
-  ) {
-    return null;
-  }
-
-  const requestedPhrase =
-    match[1]
-      .trim();
-
-  const identifierText =
-    match[2]
-      .replace(
-        /[?.!]+$/g,
-        ""
-      )
-      .trim();
-
-  if (
-    !requestedPhrase ||
-    !identifierText
-  ) {
-    return null;
-  }
-
-  const candidates = [];
-
-  for (
-    const datasetSchema
-    of schema || []
-  ) {
-    const rows =
-      datasets?.[
-        datasetSchema?.name
-      ];
-
-    if (
-      !Array.isArray(
-        rows
-      ) ||
-      !rows.length
-    ) {
-      continue;
-    }
-
-    let filters =
-      inferCoherentFilters(
-        rows,
-        identifierText
-      );
-
-    /**
-     * The typed entity can differ slightly from the stored value
-     * (for example a small spelling typo). Use the same conservative,
-     * data-driven fuzzy entity recovery used by numeric aggregates.
-     */
-    if (
-      !Array.isArray(
-        filters
-      ) ||
-      !filters.length
-    ) {
-      filters =
-        inferApproximateEntityFilterFromText({
-          rows,
-          identifierText,
-        });
-    }
-
-    if (
-      !Array.isArray(
-        filters
-      ) ||
-      !filters.length
-    ) {
-      continue;
-    }
-
-    const columns =
-      Array.isArray(
-        datasetSchema.columns
-      )
-        ? datasetSchema.columns
-        : [];
-
-    const bestColumn =
-      columns
-        .map(
-          (column) => {
-            const naturalScore =
-              scoreNaturalFieldPhrase(
-                requestedPhrase,
-                column?.name
-              );
-
-            const fuzzyScore =
-              Math.max(
-                similarity(
-                  normalizeText(
-                    requestedPhrase
-                  ),
-                  normalizeText(
-                    column?.name
-                  )
-                ),
-
-                normalizedEditSimilarity(
-                  normalizeText(
-                    requestedPhrase
-                  ),
-                  normalizeText(
-                    column?.name
-                  )
-                )
-              );
-
-            return {
-              column,
-
-              score:
-                Math.max(
-                  naturalScore,
-                  fuzzyScore * 2
-                ),
-            };
-          }
-        )
-        .sort(
-          (a, b) =>
-            b.score -
-            a.score
-        )[0] ||
-      null;
-
-    if (
-      !bestColumn ||
-      bestColumn.score <
-        0.95
-    ) {
-      continue;
-    }
-
-    candidates.push({
-      dataset:
-        datasetSchema.name,
-
-      column:
-        bestColumn.column.name,
-
-      fieldScore:
-        bestColumn.score,
-
-      filters,
-    });
-  }
-
-  if (!candidates.length) {
-    return null;
-  }
-
-  candidates.sort(
-    (a, b) =>
-      b.fieldScore -
-      a.fieldScore
-  );
-
-  const best =
-    candidates[0];
-
-  /**
-   * Avoid auto-picking when two worksheets are genuinely tied.
-   */
-  if (
-    candidates.length > 1 &&
-    Math.abs(
-      candidates[0].fieldScore -
-      candidates[1].fieldScore
-    ) <
-      0.05 &&
-    candidates[0].column !==
-      candidates[1].column
-  ) {
-    return null;
-  }
-
-  const asksForList =
-    /^(?:what|which)\s+are\b/.test(
-      text
-    ) ||
-    /^(?:show|give|list|display)\b/.test(
-      text
-    );
-
-  return {
-    route:
-      "dataset",
-
-    dataset:
-      best.dataset,
-
-    operation:
-      asksForList
-        ? "list"
-        : "lookup",
-
-    column:
-      best.column,
-
-    labelColumn:
-      asksForList
-        ? best.column
-        : null,
-
-    groupBy:
-      null,
-
-    aggregation:
-      null,
-
-    direction:
-      null,
-
-    filters:
-      best.filters.map(
-        (filter) => ({
-          ...filter,
-
-          value:
-            Array.isArray(
-              filter?.value
-            )
-              ? [
-                  ...filter.value,
-                ]
-              : filter?.value,
-        })
-      ),
-
-    selectColumns: [
-      best.column,
-    ],
-
-    outputRequested:
-      true,
-
-    transform:
-      null,
-
-    showAll:
-      asksForList,
-
-    limit:
-      asksForList
-        ? 100
-        : 10,
-
-    directFilteredField:
-      true,
-  };
-}
 
 
 
@@ -1293,102 +270,6 @@ function extractFollowUpTargetPhrase(
   );
 }
 
-
-
-function normalizedEditSimilarity(
-  left,
-  right
-) {
-  const a =
-    normalizeText(
-      left
-    );
-
-  const b =
-    normalizeText(
-      right
-    );
-
-  if (!a || !b) {
-    return 0;
-  }
-
-  if (a === b) {
-    return 1;
-  }
-
-  const previous =
-    Array.from(
-      {
-        length:
-          b.length + 1,
-      },
-      (_, index) =>
-        index
-    );
-
-  for (
-    let i = 1;
-    i <= a.length;
-    i += 1
-  ) {
-    const current = [
-      i,
-    ];
-
-    for (
-      let j = 1;
-      j <= b.length;
-      j += 1
-    ) {
-      const substitutionCost =
-        a[
-          i - 1
-        ] ===
-        b[
-          j - 1
-        ]
-          ? 0
-          : 1;
-
-      current[j] =
-        Math.min(
-          current[
-            j - 1
-          ] + 1,
-          previous[j] + 1,
-          previous[
-            j - 1
-          ] +
-            substitutionCost
-        );
-    }
-
-    for (
-      let j = 0;
-      j < current.length;
-      j += 1
-    ) {
-      previous[j] =
-        current[j];
-    }
-  }
-
-  const distance =
-    previous[
-      b.length
-    ];
-
-  return Math.max(
-    0,
-    1 -
-      distance /
-        Math.max(
-          a.length,
-          b.length
-        )
-  );
-}
 
 
 function filterRowsBySimpleFilters(
@@ -2406,7 +1287,26 @@ function buildVerifiedListAnswer({
     );
   }
 
-  return items
+  /**
+   * A list answer represents distinct values unless the user explicitly asks
+   * for row-by-row records. Preserve first-seen display casing while removing
+   * duplicate values case-insensitively.
+   */
+  const distinctItems =
+    [
+      ...new Map(
+        items.map(
+          (value) => [
+            normalizeText(
+              value
+            ),
+            value,
+          ]
+        )
+      ).values(),
+    ];
+
+  return distinctItems
     .map(
       (value, index) =>
         `${index + 1}. ${value}`
@@ -2414,6 +1314,742 @@ function buildVerifiedListAnswer({
     .join(
       "\n"
     );
+}
+
+
+function splitDistinctCellValues(
+  value
+) {
+  const raw =
+    String(
+      value ?? ""
+    ).trim();
+
+  if (!raw) {
+    return [];
+  }
+
+  if (/[;|\r\n]/.test(raw)) {
+    return raw
+      .split(
+        /\s*(?:;|\||\r?\n)\s*/
+      )
+      .map(
+        (part) =>
+          part.trim()
+      )
+      .filter(Boolean);
+  }
+
+  if (
+    raw.includes(",")
+  ) {
+    const parts =
+      raw
+        .split(",")
+        .map(
+          (part) =>
+            part.trim()
+        )
+        .filter(Boolean);
+
+    const compactCategoryList =
+      parts.length >= 2 &&
+      parts.length <= 20 &&
+      parts.every(
+        (part) =>
+          part
+            .split(/\s+/)
+            .filter(Boolean)
+            .length <= 6
+      );
+
+    if (
+      compactCategoryList
+    ) {
+      return parts;
+    }
+  }
+
+  return [
+    raw,
+  ];
+}
+
+
+function normalizeLooseMetricPhrase(
+  value
+) {
+  return normalizeText(
+    value || ""
+  )
+    .replace(
+      /^(?:the\s+)?(?:total\s+)?(?:no|num|number|count)\s*(?:of\s+)?/,
+      ""
+    )
+    .replace(
+      /^(?:total|overall|combined)\s+/,
+      ""
+    )
+    .replace(
+      /\b(?:the|all)\b/g,
+      " "
+    )
+    .replace(
+      /\s+/g,
+      " "
+    )
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(
+      (token) => {
+        if (
+          token.endsWith("ies") &&
+          token.length > 3
+        ) {
+          return (
+            token.slice(
+              0,
+              -3
+            ) + "y"
+          );
+        }
+
+        if (
+          token.endsWith("s") &&
+          !token.endsWith("ss") &&
+          token.length > 3
+        ) {
+          return token.slice(
+            0,
+            -1
+          );
+        }
+
+        return token;
+      }
+    )
+    .join(" ");
+}
+
+
+function resolveExplicitNumericMetricPlan({
+  plan,
+  question,
+  schema,
+  datasets,
+  context = null,
+}) {
+  const text =
+    normalizeText(
+      question || ""
+    );
+
+  if (!text) {
+    return {
+      plan,
+      repaired: false,
+      reasons: [],
+    };
+  }
+
+  let operation =
+    null;
+
+  if (
+    /\b(?:sum|total|overall|combined|altogether)\b/.test(
+      text
+    )
+  ) {
+    operation =
+      "sum";
+  } else if (
+    /\b(?:average|avg|mean)\b/.test(
+      text
+    )
+  ) {
+    operation =
+      "average";
+  } else if (
+    /\bmedian\b/.test(
+      text
+    )
+  ) {
+    operation =
+      "median";
+  } else if (
+    /\b(?:minimum|min|lowest|smallest)\b/.test(
+      text
+    )
+  ) {
+    operation =
+      "minimum";
+  } else if (
+    /\b(?:maximum|max|highest|largest)\b/.test(
+      text
+    )
+  ) {
+    operation =
+      "maximum";
+  }
+
+  if (!operation) {
+    return {
+      plan,
+      repaired: false,
+      reasons: [],
+    };
+  }
+
+  const numberOfMatch =
+    text.match(
+      /\bnumber\s+of\s+(.+?)(?=\s+(?:in|from|within|at|under)\b|[?.!]|$)/
+    );
+
+  if (!numberOfMatch?.[1]) {
+    return {
+      plan,
+      repaired: false,
+      reasons: [],
+    };
+  }
+
+  const targetPhrase =
+    normalizeLooseMetricPhrase(
+      numberOfMatch[1]
+    );
+
+  if (!targetPhrase) {
+    return {
+      plan,
+      repaired: false,
+      reasons: [],
+    };
+  }
+
+  const preferredDatasets =
+    new Set(
+      [
+        plan?.dataset,
+        context?.lastDataset,
+      ]
+        .filter(Boolean)
+        .map(
+          (value) =>
+            normalizeText(
+              value
+            )
+        )
+    );
+
+  const candidates = [];
+
+  for (
+    const datasetSchema
+    of schema || []
+  ) {
+    const datasetName =
+      datasetSchema?.name;
+
+    const rows =
+      datasets?.[
+        datasetName
+      ];
+
+    if (
+      !datasetName ||
+      !Array.isArray(rows) ||
+      !rows.length
+    ) {
+      continue;
+    }
+
+    for (
+      const column
+      of datasetSchema?.columns || []
+    ) {
+      const columnName =
+        typeof column ===
+          "string"
+          ? column
+          : column?.name;
+
+      if (!columnName) {
+        continue;
+      }
+
+      const columnSchema =
+        typeof column ===
+          "string"
+          ? {
+              name:
+                columnName,
+            }
+          : column;
+
+      if (
+        !isNumericLikeColumn({
+          column:
+            columnSchema,
+          rows,
+        })
+      ) {
+        continue;
+      }
+
+      const fieldPhrase =
+        normalizeLooseMetricPhrase(
+          columnName
+        );
+
+      if (!fieldPhrase) {
+        continue;
+      }
+
+      const targetTokens =
+        new Set(
+          targetPhrase
+            .split(/\s+/)
+            .filter(Boolean)
+        );
+
+      const fieldTokens =
+        new Set(
+          fieldPhrase
+            .split(/\s+/)
+            .filter(Boolean)
+        );
+
+      const shared =
+        [
+          ...targetTokens,
+        ].filter(
+          (token) =>
+            fieldTokens.has(
+              token
+            )
+        ).length;
+
+      const coverage =
+        targetTokens.size
+          ? shared /
+            targetTokens.size
+          : 0;
+
+      const reverseCoverage =
+        fieldTokens.size
+          ? shared /
+            fieldTokens.size
+          : 0;
+
+      let score =
+        0;
+
+      if (
+        fieldPhrase ===
+        targetPhrase
+      ) {
+        score = 1;
+      } else if (
+        coverage === 1 &&
+        reverseCoverage >= 0.75
+      ) {
+        score = 0.96;
+      } else {
+        score =
+          Math.max(
+            similarity(
+              targetPhrase,
+              fieldPhrase
+            ),
+            (
+              coverage *
+              0.65
+            ) +
+            (
+              reverseCoverage *
+              0.35
+            )
+          );
+      }
+
+      if (
+        preferredDatasets.has(
+          normalizeText(
+            datasetName
+          )
+        )
+      ) {
+        score += 0.025;
+      }
+
+      candidates.push({
+        dataset:
+          datasetName,
+        column:
+          columnName,
+        score:
+          Math.min(
+            1,
+            score
+          ),
+      });
+    }
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score -
+      a.score
+  );
+
+  const best =
+    candidates[0] ||
+    null;
+
+  const second =
+    candidates[1] ||
+    null;
+
+  if (
+    !best ||
+    best.score < 0.82 ||
+    (
+      second &&
+      second.dataset !==
+        best.dataset &&
+      Math.abs(
+        best.score -
+        second.score
+      ) < 0.03
+    )
+  ) {
+    return {
+      plan,
+      repaired: false,
+      reasons: [],
+    };
+  }
+
+  const rows =
+    datasets?.[
+      best.dataset
+    ] || [];
+
+  /**
+   * Infer filters only from an explicit trailing scope phrase.
+   * This prevents "number" in "number of X" from being interpreted
+   * as a categorical filter value such as Unit = "number".
+   */
+  const scopeMatch =
+    text.match(
+      /\b(?:in|from|within|at|under)\s+(.+?)(?:[?.!]|$)/
+    );
+
+  const scopeText =
+    scopeMatch?.[1]
+      ? String(
+          scopeMatch[1]
+        ).trim()
+      : "";
+
+  const filters =
+    scopeText
+      ? inferCoherentFilters(
+          rows,
+          scopeText
+        )
+      : [];
+
+  const repairedPlan = {
+    ...(plan &&
+    typeof plan ===
+      "object"
+      ? plan
+      : {}),
+
+    route:
+      "dataset",
+
+    dataset:
+      best.dataset,
+
+    operation,
+
+    column:
+      best.column,
+
+    labelColumn:
+      null,
+
+    groupBy:
+      null,
+
+    aggregation:
+      null,
+
+    direction:
+      null,
+
+    filters:
+      Array.isArray(filters)
+        ? filters
+        : [],
+
+    filterGroups:
+      [],
+
+    filterGroupLogic:
+      null,
+
+    selectColumns: [
+      best.column,
+    ],
+
+    outputRequested:
+      true,
+
+    transform:
+      null,
+
+    showAll:
+      false,
+
+    limit:
+      10,
+
+    explicitNumericMetricResolved:
+      true,
+
+    explicitNumericMetricTarget:
+      targetPhrase,
+
+    explicitNumericMetricConfidence:
+      Number(
+        best.score.toFixed(
+          4
+        )
+      ),
+  };
+
+  const changed =
+    normalizeText(
+      plan?.route
+    ) !==
+      "dataset" ||
+    normalizeText(
+      plan?.dataset
+    ) !==
+      normalizeText(
+        repairedPlan.dataset
+      ) ||
+    normalizeText(
+      plan?.column
+    ) !==
+      normalizeText(
+        repairedPlan.column
+      ) ||
+    normalizeText(
+      plan?.operation
+    ) !==
+      normalizeText(
+        repairedPlan.operation
+      ) ||
+    JSON.stringify(
+      plan?.filters ||
+      []
+    ) !==
+      JSON.stringify(
+        repairedPlan.filters
+      );
+
+  return {
+    plan:
+      repairedPlan,
+
+    repaired:
+      changed,
+
+    reasons:
+      changed
+        ? [
+            "explicit-live-numeric-metric-restored",
+          ]
+        : [],
+  };
+}
+
+
+
+function normalizeDirectSingleFieldResult({
+  plan,
+  result,
+  question = "",
+}) {
+  if (
+    !plan ||
+    !result ||
+    !plan.column ||
+    !Array.isArray(
+      result.results
+    )
+  ) {
+    return result;
+  }
+
+  const selectedColumns =
+    Array.isArray(
+      plan.selectColumns
+    )
+      ? plan.selectColumns
+          .filter(Boolean)
+      : [];
+
+  const isSingleField =
+    selectedColumns.length <=
+      1 &&
+    (
+      !selectedColumns.length ||
+      normalizeText(
+        selectedColumns[0]
+      ) ===
+        normalizeText(
+          plan.column
+        )
+    );
+
+  if (
+    !isSingleField
+  ) {
+    return result;
+  }
+
+  const distinctMap =
+    new Map();
+
+  const wantsDistinctValues =
+    /\b(?:distinct|unique|different)\b/i.test(
+      String(
+        question || ""
+      )
+    );
+
+  let multiValueNormalized =
+    false;
+
+  for (
+    const item of
+    result.results
+  ) {
+    const value =
+      typeof item ===
+        "object" &&
+      item !== null
+        ? item[
+            plan.column
+          ]
+        : item;
+
+    if (
+      value === null ||
+      value === undefined ||
+      String(
+        value
+      ).trim() ===
+        ""
+    ) {
+      continue;
+    }
+
+    const displayValues =
+      wantsDistinctValues
+        ? splitDistinctCellValues(
+            value
+          )
+        : [
+            String(
+              value
+            ).trim(),
+          ];
+
+    if (
+      displayValues.length >
+      1
+    ) {
+      multiValueNormalized =
+        true;
+    }
+
+    for (
+      const displayValueRaw of
+      displayValues
+    ) {
+      const displayValue =
+        String(
+          displayValueRaw
+        ).trim();
+
+      const key =
+        normalizeText(
+          displayValue
+        );
+
+      if (
+        !key ||
+        distinctMap.has(
+          key
+        )
+      ) {
+        continue;
+      }
+
+      distinctMap.set(
+        key,
+        typeof item ===
+          "object" &&
+        item !== null
+          ? {
+              ...item,
+              [
+                plan.column
+              ]:
+                displayValue,
+            }
+          : displayValue
+      );
+    }
+  }
+
+  const distinctResults =
+    [
+      ...distinctMap.values(),
+    ];
+
+  if (
+    !multiValueNormalized &&
+    distinctResults.length ===
+      result.results.length
+  ) {
+    return result;
+  }
+
+  return {
+    ...result,
+    results:
+      distinctResults,
+    count:
+      distinctResults.length,
+    distinctResultCount:
+      distinctResults.length,
+    duplicateRowsRemoved:
+      Math.max(
+        0,
+        result.results.length -
+          distinctResults.length
+      ),
+    multiValueNormalized,
+  };
 }
 
 
@@ -3419,7 +3055,476 @@ function formatUserFacingAnswer(answer) {
   // Avoid raw Markdown markers in the chatbot bubble.
   output = output.replace(/\*\*/g, "");
 
-  return output;
+  return finalizeUserFacingGrammar(
+    output
+  );
+}
+
+
+function normalizeSemanticReferentialQuestion(question) {
+  const original =
+    String(
+      question || ""
+    )
+      .replace(/\s+/g, " ")
+      .trim();
+
+  if (!original) {
+    return null;
+  }
+
+  const text =
+    normalizeText(
+      original
+    );
+
+  /**
+   * Copular/prepositional relationships should keep their original wording.
+   *
+   * Examples:
+   *   "What AMIA villages are they from?"
+   *   "Which office are they under?"
+   *   "What category are they in?"
+   *
+   * responseNarrativeEngine understands these relationships directly and can
+   * safely produce human-like paired answers such as:
+   *   "They are from Sison, Binalonan, Anda, and Mabini..."
+   *
+   * Returning the original question here enables the semantic narrative while
+   * preserving the exact verified dataset plan/result.
+   */
+  if (
+    /\b(?:are|were|is|was)\s+(?:they|these|those|them|it|he|she)\s+(?:from|in|at|under|within|inside|on|of|for|with|without|near|around|through|across|over|below|above|between|among|into|onto|to)\b/i.test(
+      original
+    )
+  ) {
+    return original;
+  }
+
+  /**
+   * 1. Standard auxiliary action.
+   *
+   * Covers:
+   *   "What products do they sell?"
+   *   "Which services do those groups provide?"
+   *   "What projects did these teams manage?"
+   *
+   * The subject phrase may vary. We canonicalize only the grammatical shell;
+   * the actual requested field, label field, filters, and result values still
+   * come from the live verified plan/result.
+   */
+  let match =
+    original.match(
+      /\b(?:do|does|did)\s+(.+?)\s+([a-z][a-z-]*)\s*[?.!]*$/i
+    );
+
+  if (
+    match?.[2]
+  ) {
+    const verb =
+      normalizeText(
+        match[2]
+      );
+
+    if (
+      verb &&
+      !/^(?:be|am|is|are|was|were|been|being|do|does|did)$/.test(
+        verb
+      )
+    ) {
+      return `What values do they ${verb}?`;
+    }
+  }
+
+  /**
+   * 2. Direct/pronoun action without "do".
+   *
+   * Covers paraphrases such as:
+   *   "Tell me what they produce."
+   *   "What are the products they sell?"
+   *   "Show the activities they conduct."
+   */
+  match =
+    original.match(
+      /\b(?:they|these|those)\s+([a-z][a-z-]*)\b/i
+    );
+
+  if (
+    match?.[1]
+  ) {
+    const verb =
+      normalizeText(
+        match[1]
+      );
+
+    const auxiliaries =
+      /^(?:am|is|are|was|were|be|been|being|do|does|did|have|has|had|can|could|may|might|must|shall|should|will|would)$/;
+
+    if (
+      verb &&
+      !auxiliaries.test(
+        verb
+      )
+    ) {
+      return `What values do they ${verb}?`;
+    }
+  }
+
+  /**
+   * 3. Progressive action.
+   *
+   * Keep the user's wording because responseNarrativeEngine already handles
+   * action-progressive questions. This expands routing to paraphrases such as:
+   *   "What products are they selling?"
+   *   "Which systems are they using?"
+   */
+  if (
+    /\b(?:am|is|are|was|were)\s+(?:they|these|those|them|it|he|she)\s+[a-z][a-z-]*ing\b/i.test(
+      original
+    )
+  ) {
+    return original;
+  }
+
+  /**
+   * 4. Possessive field paraphrase.
+   *
+   * Examples:
+   *   "Tell me their commodities."
+   *   "Show me their activities."
+   *   "What are their services?"
+   *
+   * At this stage the explicit referential-field resolver has already
+   * identified the real live-schema field. We only normalize the grammatical
+   * relation so the deterministic narrative can render a compact natural
+   * answer instead of raw "<label> - <value>" pairs.
+   */
+  if (
+    /\btheir\b/i.test(
+      original
+    )
+  ) {
+    return "What values do they have?";
+  }
+
+  /**
+   * 4. Passive paraphrase.
+   *
+   * Examples:
+   *   "What products are produced by them?"
+   *   "Which services were provided by those groups?"
+   *
+   * The deterministic formatter may not safely recover every English base
+   * verb from an arbitrary past participle. Instead of inventing a malformed
+   * verb, route the verified relation through the neutral "have" wording.
+   * This preserves correct data and natural grammar without domain hardcoding.
+   */
+  if (
+    /\b(?:is|are|was|were|be|been|being)\s+[a-z][a-z-]*(?:ed|en)\s+by\s+(?:them|these|those)\b/i.test(
+      original
+    )
+  ) {
+    return "What values do they have?";
+  }
+
+  return null;
+}
+
+function shouldUseSemanticReferentialNarrative(question) {
+  return Boolean(
+    normalizeSemanticReferentialQuestion(
+      question
+    )
+  );
+}
+
+
+function recoverLocalReferentialPlanFromConversation({
+  plan,
+  question,
+  context,
+  schema,
+}) {
+  if (
+    !plan ||
+    typeof plan !== "object" ||
+    context?.isFollowUp !== true ||
+    !normalizeSemanticReferentialQuestion(
+      question
+    )
+  ) {
+    return plan;
+  }
+
+  /**
+   * A valid local dataset plan may still be incomplete for a referential
+   * relationship question. Do not return early just because dataset+column
+   * exist; enrich the CURRENT field with the PREVIOUS verified pair column.
+   */
+  const datasetName =
+    plan.dataset ||
+    context.lastDataset ||
+    context.semanticPlan?.dataset ||
+    null;
+
+  if (!datasetName) {
+    return plan;
+  }
+
+  const datasetSchema =
+    Array.isArray(schema)
+      ? schema.find(
+          (item) =>
+            normalizeText(
+              item?.name
+            ) ===
+            normalizeText(
+              datasetName
+            )
+        )
+      : null;
+
+  const liveColumns =
+    Array.isArray(
+      datasetSchema?.columns
+    )
+      ? datasetSchema.columns
+          .map(
+            (item) =>
+              typeof item === "string"
+                ? item
+                : item?.name
+          )
+          .filter(Boolean)
+      : [];
+
+  const findLiveColumn =
+    (candidate) => {
+      const normalized =
+        normalizeText(
+          candidate
+        );
+
+      if (!normalized) {
+        return null;
+      }
+
+      return liveColumns.find(
+        (column) =>
+          normalizeText(
+            column
+          ) ===
+          normalized
+      ) || null;
+    };
+
+  /**
+   * The current question's locally resolved live field wins.
+   * Previous conversation fields are only fallbacks.
+   */
+  const valueColumn =
+    findLiveColumn(
+      plan.column
+    ) ||
+    findLiveColumn(
+      context.lastMetric
+    ) ||
+    findLiveColumn(
+      context.lastSubjectColumn
+    ) ||
+    findLiveColumn(
+      context.lastPlan?.column
+    ) ||
+    findLiveColumn(
+      context.semanticPlan?.metricColumn
+    ) ||
+    findLiveColumn(
+      context.semanticPlan?.column
+    ) ||
+    null;
+
+  if (!valueColumn) {
+    return plan;
+  }
+
+  const pairColumnCandidates = [
+    context.lastPlan?.conversationalPairColumn,
+    context.lastPlan?.labelColumn,
+    context.semanticPlan?.labelColumn,
+    context.semanticPlan?.groupBy,
+  ];
+
+  let pairColumn = null;
+
+  for (
+    const candidate
+    of pairColumnCandidates
+  ) {
+    const live =
+      findLiveColumn(
+        candidate
+      );
+
+    if (
+      live &&
+      normalizeText(
+        live
+      ) !==
+      normalizeText(
+        valueColumn
+      )
+    ) {
+      pairColumn =
+        live;
+      break;
+    }
+  }
+
+  /**
+   * Prefer the current local plan's grounded filters. If it has no scope,
+   * inherit the previous VERIFIED conversation filters.
+   */
+  const sourceFilters =
+    Array.isArray(
+      plan.filters
+    ) &&
+    plan.filters.length
+      ? plan.filters
+      : (
+          Array.isArray(
+            context.lastFilters
+          )
+            ? context.lastFilters
+            : []
+        );
+
+  const filters =
+    sourceFilters.map(
+      (filter) => ({
+        ...filter,
+        value:
+          Array.isArray(
+            filter?.value
+          )
+            ? [
+                ...filter.value,
+              ]
+            : filter?.value,
+      })
+    );
+
+  const selectColumns =
+    [
+      pairColumn,
+      valueColumn,
+    ]
+      .filter(Boolean)
+      .filter(
+        (column, index, all) =>
+          all.findIndex(
+            (item) =>
+              normalizeText(
+                item
+              ) ===
+              normalizeText(
+                column
+              )
+          ) === index
+      );
+
+  /**
+   * Upgrade to a relationship lookup only when a distinct verified pair
+   * column exists. Otherwise keep the original local plan unchanged.
+   */
+  if (
+    !pairColumn ||
+    normalizeText(
+      pairColumn
+    ) ===
+    normalizeText(
+      valueColumn
+    )
+  ) {
+    return plan;
+  }
+
+  return {
+    ...plan,
+    route:
+      "dataset",
+    dataset:
+      datasetName,
+    operation:
+      "lookup",
+    column:
+      valueColumn,
+    labelColumn:
+      pairColumn,
+    groupBy:
+      null,
+    aggregation:
+      null,
+    direction:
+      null,
+    filters,
+    selectColumns,
+    outputRequested:
+      true,
+    transform:
+      null,
+    showAll:
+      true,
+    limit:
+      Math.max(
+        Number(
+          plan.limit
+        ) || 10,
+        100
+      ),
+    conversationalPairColumn:
+      pairColumn ||
+      null,
+    localReferentialRecovery:
+      true,
+  };
+}
+
+function isExternalLanguageServiceError(error) {
+  const message =
+    String(
+      error?.message ||
+      error ||
+      ""
+    )
+      .toLowerCase();
+
+  if (!message) {
+    return false;
+  }
+
+  return (
+    message.includes(
+      "rate limit"
+    ) ||
+    message.includes(
+      "tokens per day"
+    ) ||
+    message.includes(
+      "too many requests"
+    ) ||
+    message.includes(
+      "quota"
+    ) ||
+    message.includes(
+      "service unavailable"
+    ) ||
+    message.includes(
+      "temporarily unavailable"
+    ) ||
+    /\b429\b/.test(
+      message
+    )
+  );
 }
 
 function improveCompoundAnswerWording(subResults) {
@@ -4208,15 +4313,38 @@ function buildExplicitReferentialFieldPlan({
   }
 
   // Require an actual conversational reference to the prior verified scope.
-  if (
-    !/\b(?:they|them|their|theirs|those|these|there|therein|same|ones?|it|its|that|this)\b/.test(
+  //
+  // "that/which/who" can be relative-clause grammar in a fresh request:
+  //   "what are the associations that are in phase 2?"
+  //
+  // Do not route that grammar as a reference to previous conversation state.
+  const hasStrongPriorReference =
+    /\b(?:they|them|their|theirs|those|these|there|therein|same|ones?|it|its)\b/.test(
       text
-    )
+    );
+
+  const hasStandaloneDemonstrativeReference =
+    /^(?:that|this)\b/.test(
+      text
+    ) ||
+    /\b(?:that|this)\s+(?:one|ones|same)\b/.test(
+      text
+    );
+
+  if (
+    !hasStrongPriorReference &&
+    !hasStandaloneDemonstrativeReference
   ) {
     return null;
   }
 
   const requested =
+    findStrongMorphologicalQuestionColumn({
+      schema,
+      question,
+      preferredDataset:
+        context.lastDataset,
+    }) ||
     findExplicitSchemaColumn({
       schema,
       question,
@@ -4252,11 +4380,43 @@ function buildExplicitReferentialFieldPlan({
         )
       : [];
 
+  /**
+   * Preserve the most recent VERIFIED relationship label when the user repeats
+   * the same referential field question.
+   *
+   * Example conversation shape:
+   *   previous plan: labelColumn = <location>, column = <multi-value field>
+   *   repeated question asks for the same <multi-value field>
+   *
+   * conversationManager may now expose lastSubjectColumn as the requested
+   * field itself. Without this recovery the plan degrades from:
+   *
+   *   lookup(label + value)
+   *
+   * to:
+   *
+   *   list(value only)
+   *
+   * and the response loses the row relationship. Prefer the immediately
+   * previous verified pair/label column when it is different from the current
+   * requested field. No dataset or field name is hardcoded.
+   */
+  const previousPairCandidates = [
+    context.lastSubjectColumn,
+    context.lastPlan?.conversationalPairColumn,
+    context.lastPlan?.labelColumn,
+    context.semanticPlan?.labelColumn,
+    context.semanticPlan?.groupBy,
+  ];
+
   const previousSubjectColumn =
-    context.lastSubjectColumn &&
-    normalizeText(context.lastSubjectColumn) !== normalizeText(requested.column)
-      ? context.lastSubjectColumn
-      : null;
+    previousPairCandidates.find(
+      (candidate) =>
+        candidate &&
+        normalizeText(candidate) !==
+          normalizeText(requested.column)
+    ) ||
+    null;
 
   const selectColumns = [];
   if (previousSubjectColumn) selectColumns.push(previousSubjectColumn);
@@ -5116,6 +5276,98 @@ async function answerQuestion(
         );
       }
 
+      /**
+       * ==================================================
+       * V7.36 COMMON PARITY GUARDS
+       * ==================================================
+       *
+       * These run for Groq, local fallback, conversation,
+       * conversation-local, and deterministic/general plans.
+       *
+       * 1) Reconstruct grounded AND/OR boolean filter logic.
+       * 2) Enforce universal live-data grounding.
+       */
+      if (
+        plan.route ===
+          "dataset" &&
+        plan.dataset &&
+        Array.isArray(
+          datasets?.[
+            plan.dataset
+          ]
+        )
+      ) {
+        const parityRows =
+          datasets[
+            plan.dataset
+          ];
+
+        plan =
+          resolveComplexFilterPlan({
+            plan,
+            question:
+              cleanQuestion,
+            rows:
+              parityRows,
+          });
+
+        if (
+          plan?.complexFilterGroundingFailed ===
+            true
+        ) {
+          plan = {
+            route:
+              "clarify",
+            question:
+              `I could not safely ground every condition in this AND/OR request: ${plan.complexFilterUngroundedClauses.join(", ")}. Please use values that exist in the current report.`,
+            universalGroundingFailed:
+              true,
+            complexFilterGroundingFailed:
+              true,
+          };
+        } else {
+          const datasetSchema =
+            schema.find(
+              (item) =>
+                String(
+                  item?.name ||
+                  ""
+                ) ===
+                String(
+                  plan.dataset ||
+                  ""
+                )
+            );
+
+          const columns =
+            (
+              datasetSchema?.columns ||
+              []
+            )
+              .map(
+                (column) =>
+                  typeof column ===
+                    "string"
+                    ? column
+                    : column?.name
+              )
+              .filter(Boolean);
+
+          const grounding =
+            enforceUniversalGrounding({
+              plan,
+              question:
+                cleanQuestion,
+              rows:
+                parityRows,
+              columns,
+            });
+
+          plan =
+            grounding.plan;
+        }
+      }
+
       if (
         plan.route ===
           "dataset" &&
@@ -5171,6 +5423,27 @@ async function answerQuestion(
       // ====================================================
       // SEMANTIC PLAN GUARDS
       // ====================================================
+
+      /**
+       * V7.36.5g — planner-source parity for explicit numeric metrics.
+       * Strong live numeric fields outrank generic "number" unit/value
+       * interpretations for Groq, local, conversation, and deterministic
+       * plans alike.
+       */
+      const explicitNumericMetricRepair =
+        resolveExplicitNumericMetricPlan({
+          plan,
+          question:
+            cleanQuestion,
+          schema,
+          datasets,
+          context:
+            conversationContext,
+        });
+
+      plan =
+        explicitNumericMetricRepair.plan;
+
       // 1) Align explicit aggregate wording with a verified numeric field.
       // 2) Suppress weak/report-context substring filters.
       // These run for Groq, local fallback, and conversational plans.
@@ -5181,6 +5454,15 @@ async function answerQuestion(
           plan,
           question: cleanQuestion,
         });
+
+      // Protect real stored fields whose names also look like operations
+      // (Average, Total, Count, Minimum, Maximum, etc.). Exact live-schema
+      // field meaning outranks a keyword-only aggregation guess.
+      plan = refineStoredMetricOperation({
+        plan,
+        question: cleanQuestion,
+        schema,
+      });
 
       plan =
         sanitizeSemanticPlanFilters({
@@ -5211,6 +5493,17 @@ async function answerQuestion(
           metricSemantics: semantic.type,
           unit: semantic.unit || inferUnitFromColumn(plan.column),
         };
+
+        plan = enrichPlanMetricMeaning({
+          plan,
+          question: cleanQuestion,
+          datasets,
+          schema,
+          reportContext:
+            internalOptions?.report ||
+            internalOptions?.reportTitle ||
+            null,
+        });
       }
 
       // ====================================================
@@ -5395,12 +5688,42 @@ async function answerQuestion(
       result =
         resultValidation.result;
 
+      /**
+       * V7.36.5g — DISTINCT MULTI-VALUE PARITY
+       *
+       * Apply the same distinct/unique/different multi-value cell
+       * normalization after execution for every planner source.
+       */
+      if (
+        plan?.route ===
+          "dataset" &&
+        String(
+          plan?.operation ||
+          ""
+        )
+          .trim()
+          .toLowerCase() ===
+          "list"
+      ) {
+        result =
+          normalizeDirectSingleFieldResult({
+            plan,
+            result,
+            question:
+              cleanQuestion,
+          });
+      }
+
       if (plan?.route === "dataset") {
         const dataQuality = buildDataQualitySummary({ datasets, plan });
         result = {
           ...result,
           unit: result?.unit || plan?.unit || null,
+          displayUnit: result?.displayUnit || plan?.displayUnit || null,
+          denominatorUnit: result?.denominatorUnit || plan?.denominatorUnit || null,
+          metricMeaning: result?.metricMeaning || plan?.metricMeaning || null,
           metricSemantics: result?.metricSemantics || plan?.metricSemantics || null,
+          metricSource: result?.metricSource || plan?.metricSource || null,
           dataQuality: result?.dataQuality || dataQuality || null,
         };
       }
@@ -5658,6 +5981,1099 @@ async function answerQuestion(
 
 
 
+
+  // ========================================================
+  // V7.36.5 — GROQ-FIRST PRIMARY PLANNER
+  // ========================================================
+  //
+  // New planning policy:
+  //   1. Groq gets the first semantic planning attempt.
+  //   2. Its plan is checked against the live schema/data and conversation.
+  //   3. Only a high-confidence Groq plan is executed.
+  //   4. A weak/invalid Groq plan is handed to deterministic/local logic.
+  //
+  // Pure calculations over already verified prior results may still be
+  // resolved earlier because they do not require a new dataset plan.
+  //
+  let groqPlan = null;
+  let groqPlanningError = null;
+  let groqReferentialRecovery = false;
+  let groqPrimaryAttempted = false;
+  let groqPrimaryConfidence = null;
+  let groqPrimaryIssues = [];
+  let groqPlanRepaired = false;
+  let groqRepairReasons = [];
+  let groqDiagnostic = {
+    status: "not_attempted",
+    httpStatus: null,
+    code: null,
+    message: null,
+    jsonRetryUsed: false,
+    jsonRetryRecovered: false,
+  };
+
+  const sameSimpleFilters = (
+    left = [],
+    right = []
+  ) => {
+    const normalizeFilters =
+      (filters) =>
+        (Array.isArray(filters)
+          ? filters
+          : []
+        )
+          .map(
+            (filter) => ({
+              column:
+                normalizeText(
+                  filter?.column
+                ),
+              operator:
+                normalizeText(
+                  filter?.operator ||
+                  "equals"
+                ),
+              value:
+                Array.isArray(
+                  filter?.value
+                )
+                  ? filter.value
+                      .map(
+                        (value) =>
+                          normalizeText(
+                            value
+                          )
+                      )
+                      .sort()
+                      .join("|")
+                  : normalizeText(
+                      filter?.value
+                    ),
+            })
+          )
+          .sort(
+            (a, b) =>
+              JSON.stringify(a)
+                .localeCompare(
+                  JSON.stringify(b)
+                )
+          );
+
+    return (
+      JSON.stringify(
+        normalizeFilters(left)
+      ) ===
+      JSON.stringify(
+        normalizeFilters(right)
+      )
+    );
+  };
+
+
+  /**
+   * V7.36.5f — repair correct-but-incomplete Groq referential plans.
+   *
+   * If Groq correctly identifies the CURRENT target field and scope but
+   * omits a previously VERIFIED relationship label, restore only that
+   * missing relationship context before confidence evaluation.
+   *
+   * Wrong field, wrong dataset, or changed scope are NOT repaired here.
+   * Those still fall through to local validation/fallback.
+   */
+  const repairIncompleteGroqReferentialPlan =
+    (plan) => {
+      if (
+        !plan ||
+        conversationContext?.isFollowUp !==
+          true ||
+        !looksLikeContinuousFollowUp(
+          cleanQuestion
+        ) ||
+        !plan?.dataset ||
+        !plan?.column
+      ) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      const operation =
+        normalizeText(
+          plan?.operation
+        );
+
+      if (
+        operation &&
+        ![
+          "list",
+          "lookup",
+        ].includes(
+          operation
+        )
+      ) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      const datasetSchema =
+        (schema || []).find(
+          (item) =>
+            normalizeText(
+              item?.name
+            ) ===
+            normalizeText(
+              plan.dataset
+            )
+        );
+
+      const liveColumns =
+        (datasetSchema?.columns || [])
+          .map(
+            (item) =>
+              typeof item === "string"
+                ? item
+                : item?.name
+          )
+          .filter(Boolean);
+
+      const findLiveColumn =
+        (candidate) => {
+          const normalized =
+            normalizeText(
+              candidate
+            );
+
+          if (!normalized) {
+            return null;
+          }
+
+          return (
+            liveColumns.find(
+              (column) =>
+                normalizeText(
+                  column
+                ) ===
+                normalized
+            ) ||
+            null
+          );
+        };
+
+      const liveValueColumn =
+        findLiveColumn(
+          plan.column
+        );
+
+      if (!liveValueColumn) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      const previousFilters =
+        Array.isArray(
+          conversationContext
+            ?.lastFilters
+        )
+          ? conversationContext
+              .lastFilters
+          : [];
+
+      /**
+       * Current explicit scope must win. Never graft stale verified
+       * relationship context across a changed scope.
+       */
+      if (
+        previousFilters.length &&
+        Array.isArray(
+          plan?.filters
+        ) &&
+        plan.filters.length &&
+        !sameSimpleFilters(
+          plan.filters,
+          previousFilters
+        )
+      ) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      const explicitCandidate =
+        buildExplicitReferentialFieldPlan({
+          schema,
+          context:
+            conversationContext,
+          question:
+            cleanQuestion,
+        });
+
+      let pairColumn =
+        null;
+
+      if (
+        explicitCandidate &&
+        normalizeText(
+          explicitCandidate
+            ?.dataset
+        ) ===
+        normalizeText(
+          plan.dataset
+        ) &&
+        normalizeText(
+          explicitCandidate
+            ?.column
+        ) ===
+        normalizeText(
+          liveValueColumn
+        ) &&
+        (
+          !Array.isArray(
+            explicitCandidate
+              ?.filters
+          ) ||
+          !explicitCandidate
+            .filters.length ||
+          !Array.isArray(
+            plan?.filters
+          ) ||
+          !plan.filters.length ||
+          sameSimpleFilters(
+            plan.filters,
+            explicitCandidate
+              .filters
+          )
+        )
+      ) {
+        pairColumn =
+          findLiveColumn(
+            explicitCandidate
+              ?.labelColumn
+          );
+      }
+
+      if (!pairColumn) {
+        const priorPairCandidates = [
+          conversationContext
+            ?.lastPlan
+            ?.conversationalPairColumn,
+          conversationContext
+            ?.lastPlan
+            ?.labelColumn,
+          conversationContext
+            ?.semanticPlan
+            ?.labelColumn,
+          conversationContext
+            ?.semanticPlan
+            ?.groupBy,
+        ];
+
+        for (
+          const candidate
+          of priorPairCandidates
+        ) {
+          const live =
+            findLiveColumn(
+              candidate
+            );
+
+          if (
+            live &&
+            normalizeText(
+              live
+            ) !==
+            normalizeText(
+              liveValueColumn
+            )
+          ) {
+            pairColumn =
+              live;
+            break;
+          }
+        }
+      }
+
+      if (
+        !pairColumn ||
+        normalizeText(
+          pairColumn
+        ) ===
+        normalizeText(
+          liveValueColumn
+        )
+      ) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      if (
+        normalizeText(
+          plan?.labelColumn
+        ) ===
+        normalizeText(
+          pairColumn
+        ) &&
+        normalizeText(
+          plan?.operation
+        ) ===
+        "lookup"
+      ) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      const repairedFilters =
+        (
+          Array.isArray(
+            plan?.filters
+          ) &&
+          plan.filters.length
+            ? plan.filters
+            : previousFilters
+        )
+          .map(
+            (filter) => ({
+              ...filter,
+              value:
+                Array.isArray(
+                  filter?.value
+                )
+                  ? [
+                      ...filter.value,
+                    ]
+                  : filter?.value,
+            })
+          );
+
+      const selectColumns =
+        [
+          pairColumn,
+          liveValueColumn,
+        ]
+          .filter(Boolean)
+          .filter(
+            (column, index, all) =>
+              all.findIndex(
+                (item) =>
+                  normalizeText(
+                    item
+                  ) ===
+                  normalizeText(
+                    column
+                  )
+              ) === index
+          );
+
+      return {
+        plan: {
+          ...plan,
+          route:
+            "dataset",
+          dataset:
+            plan.dataset,
+          operation:
+            "lookup",
+          column:
+            liveValueColumn,
+          labelColumn:
+            pairColumn,
+          groupBy:
+            null,
+          aggregation:
+            null,
+          direction:
+            null,
+          filters:
+            repairedFilters,
+          selectColumns,
+          outputRequested:
+            true,
+          transform:
+            null,
+          showAll:
+            true,
+          limit:
+            Math.max(
+              Number(
+                plan?.limit
+              ) || 10,
+              100
+            ),
+          conversationalPairColumn:
+            pairColumn,
+          groqContextRepaired:
+            true,
+        },
+        repaired: true,
+        reasons: [
+          "verified-referential-label-restored",
+        ],
+      };
+    };
+
+
+  const evaluateGroqPrimaryConfidence =
+    (plan) => {
+      const base =
+        evaluateLocalPlanConfidence({
+          plan,
+          datasets,
+          schema,
+        });
+
+      let score =
+        Number(
+          base.score || 0
+        );
+
+      const issues = [
+        ...(base.issues || []),
+      ];
+
+      if (
+        base.critical
+      ) {
+        return {
+          score,
+          issues,
+          critical: true,
+        };
+      }
+
+      /**
+       * Current explicit field/value questions are used only as a
+       * deterministic cross-check. They do not answer before Groq anymore.
+       */
+      const directFieldCandidate =
+        resolveDirectFilteredFieldPlan({
+          question:
+            cleanQuestion,
+          schema,
+          datasets,
+        });
+
+      if (
+        directFieldCandidate
+      ) {
+        if (
+          normalizeText(
+            plan?.column
+          ) !==
+          normalizeText(
+            directFieldCandidate
+              ?.column
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.45
+            );
+          issues.push(
+            "explicit-field-mismatch"
+          );
+        }
+
+        if (
+          directFieldCandidate
+            ?.dataset &&
+          plan?.dataset &&
+          normalizeText(
+            plan.dataset
+          ) !==
+          normalizeText(
+            directFieldCandidate
+              .dataset
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.5
+            );
+          issues.push(
+            "dataset-mismatch"
+          );
+        }
+
+        if (
+          Array.isArray(
+            directFieldCandidate
+              ?.filters
+          ) &&
+          directFieldCandidate
+            .filters.length &&
+          !sameSimpleFilters(
+            plan?.filters,
+            directFieldCandidate
+              .filters
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.65
+            );
+          issues.push(
+            "scope-filter-mismatch"
+          );
+        }
+      }
+
+      const directAggregateCandidate =
+        resolveDirectFilteredAggregatePlan({
+          question:
+            cleanQuestion,
+          schema,
+          datasets,
+        });
+
+      if (
+        directAggregateCandidate
+      ) {
+        if (
+          normalizeText(
+            plan?.operation
+          ) !==
+          normalizeText(
+            directAggregateCandidate
+              ?.operation
+          ) ||
+          (
+            directAggregateCandidate
+              ?.column &&
+            normalizeText(
+              plan?.column
+            ) !==
+            normalizeText(
+              directAggregateCandidate
+                ?.column
+            )
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.5
+            );
+          issues.push(
+            "aggregate-intent-mismatch"
+          );
+        }
+      }
+
+      /**
+       * Referential questions are also cross-checked against verified
+       * conversation scope. If Groq drops the identity/label relationship,
+       * do not execute it merely because its column exists.
+       */
+      const referentialCandidate =
+        buildExplicitReferentialFieldPlan({
+          schema,
+          context:
+            conversationContext,
+          question:
+            cleanQuestion,
+        });
+
+      if (
+        referentialCandidate
+      ) {
+        if (
+          normalizeText(
+            plan?.column
+          ) !==
+          normalizeText(
+            referentialCandidate
+              ?.column
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.4
+            );
+          issues.push(
+            "referential-field-mismatch"
+          );
+        }
+
+        if (
+          referentialCandidate
+            ?.labelColumn &&
+          normalizeText(
+            plan?.labelColumn
+          ) !==
+          normalizeText(
+            referentialCandidate
+              .labelColumn
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.55
+            );
+          issues.push(
+            "referential-label-missing-or-mismatched"
+          );
+        }
+
+        if (
+          Array.isArray(
+            referentialCandidate
+              ?.filters
+          ) &&
+          referentialCandidate
+            .filters.length &&
+          !sameSimpleFilters(
+            plan?.filters,
+            referentialCandidate
+              .filters
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.65
+            );
+          issues.push(
+            "referential-scope-mismatch"
+          );
+        }
+      }
+
+      /**
+       * Safety net after repair: if a referential follow-up still drops a
+       * previously verified live pair column, lower confidence and let the
+       * local path verify/repair it.
+       */
+      if (
+        conversationContext?.isFollowUp ===
+          true &&
+        looksLikeContinuousFollowUp(
+          cleanQuestion
+        ) &&
+        plan?.dataset &&
+        plan?.column
+      ) {
+        const liveDatasetSchema =
+          (schema || []).find(
+            (datasetSchema) =>
+              normalizeText(
+                datasetSchema?.name
+              ) ===
+              normalizeText(
+                plan.dataset
+              )
+          );
+
+        const liveColumns =
+          new Set(
+            (
+              liveDatasetSchema
+                ?.columns ||
+              []
+            ).map(
+              (column) =>
+                normalizeText(
+                  typeof column ===
+                    "string"
+                    ? column
+                    : column?.name
+                )
+            )
+          );
+
+        const priorPairCandidates = [
+          conversationContext
+            ?.lastPlan
+            ?.conversationalPairColumn,
+          conversationContext
+            ?.lastPlan
+            ?.labelColumn,
+          conversationContext
+            ?.semanticPlan
+            ?.labelColumn,
+          conversationContext
+            ?.semanticPlan
+            ?.groupBy,
+        ];
+
+        const verifiedPriorPair =
+          priorPairCandidates.find(
+            (candidate) => {
+              const normalized =
+                normalizeText(
+                  candidate
+                );
+
+              return (
+                normalized &&
+                normalized !==
+                  normalizeText(
+                    plan.column
+                  ) &&
+                liveColumns.has(
+                  normalized
+                )
+              );
+            }
+          ) ||
+          null;
+
+        if (
+          verifiedPriorPair &&
+          normalizeText(
+            plan?.labelColumn
+          ) !==
+          normalizeText(
+            verifiedPriorPair
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.55
+            );
+
+          issues.push(
+            "referential-label-dropped-from-verified-context"
+          );
+        }
+      }
+
+      return {
+        score:
+          Number(
+            score.toFixed(4)
+          ),
+        issues:
+          [...new Set(issues)],
+        critical: false,
+      };
+    };
+
+  const GROQ_PRIMARY_THRESHOLD =
+    0.85;
+
+  try {
+    groqPrimaryAttempted =
+      true;
+
+    groqPlan =
+      await createSchemaAwarePlan({
+        question:
+          cleanQuestion,
+        schema,
+        context:
+          conversationContext,
+        retrievalContext,
+      });
+
+    const groqPlanDiagnostics =
+      groqPlan?.__groqDiagnostics ||
+      null;
+
+    groqDiagnostic = {
+      status:
+        groqPlanDiagnostics
+          ?.jsonRetryRecovered
+          ? "ok_after_json_retry"
+          : "ok",
+      httpStatus: 200,
+      code: null,
+      message: null,
+      jsonRetryUsed:
+        Boolean(
+          groqPlanDiagnostics
+            ?.jsonRetryUsed
+        ),
+      jsonRetryRecovered:
+        Boolean(
+          groqPlanDiagnostics
+            ?.jsonRetryRecovered
+        ),
+    };
+
+    groqPlan =
+      normalizePlannerPlan({
+        datasets,
+        schema,
+        plan:
+          groqPlan,
+        question:
+          cleanQuestion,
+      });
+
+    groqPlan =
+      reconcileExplicitDatasetMention({
+        plan:
+          groqPlan,
+        question:
+          cleanQuestion,
+        datasets,
+        schema,
+      });
+
+    groqPlan =
+      repairMultiEntityFilters({
+        datasets,
+        plan:
+          groqPlan,
+        question:
+          cleanQuestion,
+      });
+
+    groqPlan =
+      enforceExplicitQuestionColumn({
+        plan:
+          groqPlan,
+        schema,
+        question:
+          cleanQuestion,
+      });
+
+    const numericMetricRepair =
+      resolveExplicitNumericMetricPlan({
+        plan:
+          groqPlan,
+        question:
+          cleanQuestion,
+        schema,
+        datasets,
+        context:
+          conversationContext,
+      });
+
+    groqPlan =
+      numericMetricRepair.plan;
+
+    if (
+      numericMetricRepair.repaired
+    ) {
+      groqPlanRepaired =
+        true;
+
+      groqRepairReasons = [
+        ...new Set(
+          [
+            ...groqRepairReasons,
+            ...(
+              numericMetricRepair
+                .reasons ||
+              []
+            ),
+          ]
+        ),
+      ];
+    }
+
+    const groqRepair =
+      repairIncompleteGroqReferentialPlan(
+        groqPlan
+      );
+
+    groqPlan =
+      groqRepair.plan;
+
+    groqPlanRepaired =
+      groqPlanRepaired ||
+      Boolean(
+        groqRepair.repaired
+      );
+
+    groqRepairReasons = [
+      ...new Set(
+        [
+          ...groqRepairReasons,
+          ...(
+            groqRepair.reasons ||
+            []
+          ),
+        ]
+      ),
+    ];
+
+    const confidence =
+      evaluateGroqPrimaryConfidence(
+        groqPlan
+      );
+
+    groqPrimaryConfidence =
+      confidence.score;
+
+    groqPrimaryIssues =
+      confidence.issues;
+
+    if (
+      !confidence.critical &&
+      confidence.score >=
+        GROQ_PRIMARY_THRESHOLD
+    ) {
+      const result =
+        await executeResolvedPlan(
+          groqPlan
+        );
+
+      const semanticAnswer =
+        buildSemanticVerifiedAnswer({
+          question:
+            cleanQuestion,
+          plan:
+            groqPlan,
+          result,
+        });
+
+      updateConversation(
+        sessionId,
+        {
+          question:
+            cleanQuestion,
+          plan:
+            groqPlan,
+          result,
+        }
+      );
+
+      return {
+        ...result,
+
+        answer:
+          formatUserFacingAnswer(
+            semanticAnswer ||
+            result?.answer
+          ),
+
+        plannerSource:
+          groqPlanRepaired
+            ? "groq-repaired"
+            : (
+                groqDiagnostic
+                  .status ===
+                  "ok_after_json_retry"
+                  ? "groq-json-recovered"
+                  : "groq"
+              ),
+
+        groqPlanRepaired:
+          groqPlanRepaired,
+
+        groqRepairReasons:
+          groqRepairReasons,
+
+        groqStatus:
+          groqDiagnostic.status,
+
+        groqPlanConfidence:
+          groqPrimaryConfidence,
+
+        groqConfidenceIssues:
+          groqPrimaryIssues,
+
+        groqJsonRetryUsed:
+          Boolean(
+            groqDiagnostic
+              .jsonRetryUsed
+          ),
+
+        groqJsonRetryRecovered:
+          Boolean(
+            groqDiagnostic
+              .jsonRetryRecovered
+          ),
+      };
+    }
+
+    groqDiagnostic = {
+      ...groqDiagnostic,
+      status:
+        "low_confidence",
+      message:
+        `Groq plan confidence ${confidence.score} was below ${GROQ_PRIMARY_THRESHOLD}.`,
+    };
+
+    groqPlan =
+      null;
+  } catch (error) {
+    groqPlanningError =
+      error;
+
+    groqDiagnostic = {
+      ...classifyGroqError(
+        error
+      ),
+      jsonRetryUsed:
+        Boolean(
+          error
+            ?.groqJsonRetryUsed
+        ),
+      jsonRetryRecovered:
+        false,
+    };
+
+    groqPlan =
+      null;
+  }
+
+
+
+  const buildGroqHandoffDiagnostics =
+    () => ({
+      groqStatus:
+        groqDiagnostic.status,
+
+      groqPlanConfidence:
+        groqPrimaryConfidence,
+
+      groqConfidenceIssues:
+        groqPrimaryIssues,
+
+      groqHttpStatus:
+        groqDiagnostic.httpStatus,
+
+      groqErrorCode:
+        groqDiagnostic.code,
+
+      groqJsonRetryUsed:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryUsed
+        ),
+
+      groqJsonRetryRecovered:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryRecovered
+        ),
+
+      groqPlanningError:
+        groqPlanningError?.message ||
+        null,
+
+      groqPlanRepaired:
+        groqPlanRepaired,
+
+      groqRepairReasons:
+        groqRepairReasons,
+    });
+
+
   // ========================================================
   // DETERMINISTIC LINKED MULTI-FIELD LOOKUP
   // ========================================================
@@ -5790,6 +7206,8 @@ async function answerQuestion(
 
       plannerSource:
         "conversation-local",
+
+      ...buildGroqHandoffDiagnostics(),
     };
   }
 
@@ -5830,10 +7248,25 @@ async function answerQuestion(
       );
     }
 
-    const directFilteredFieldResult =
+    const rawDirectFilteredFieldResult =
       await executeResolvedPlan(
         directFilteredFieldPlan
       );
+
+    /**
+     * Direct single-field lookups are value-set questions, not row dumps.
+     * Collapse duplicate rows before storing the conversational result and
+     * before formatting the answer.
+     */
+    const directFilteredFieldResult =
+      normalizeDirectSingleFieldResult({
+        plan:
+          directFilteredFieldPlan,
+        result:
+          rawDirectFilteredFieldResult,
+        question:
+          cleanQuestion,
+      });
 
     updateConversation(
       sessionId,
@@ -5847,26 +7280,47 @@ async function answerQuestion(
       }
     );
 
-    return {
-      ...directFilteredFieldResult,
-
-      answer:
+    const directSingleFieldAnswer =
+      (
         directFilteredFieldPlan
           .operation ===
-          "list"
-          ? buildVerifiedListAnswer({
+        "list"
+      )
+        ? (
+            buildSemanticVerifiedAnswer({
+              question:
+                cleanQuestion,
+              plan:
+                directFilteredFieldPlan,
               result:
                 directFilteredFieldResult,
-
+            }) ||
+            buildVerifiedListAnswer({
+              result:
+                directFilteredFieldResult,
               subjectColumn:
                 directFilteredFieldPlan
                   .column,
             })
-          : directFilteredFieldResult
-              .answer,
+          )
+        : buildVerifiedListAnswer({
+            result:
+              directFilteredFieldResult,
+            subjectColumn:
+              directFilteredFieldPlan
+                .column,
+          });
+
+    return {
+      ...directFilteredFieldResult,
+
+      answer:
+        directSingleFieldAnswer,
 
       plannerSource:
         "conversation-local",
+
+      ...buildGroqHandoffDiagnostics(),
     };
   }
 
@@ -5926,22 +7380,45 @@ async function answerQuestion(
       }
     );
 
+    const semanticReferentialAnswer =
+      (
+        explicitReferentialFieldPlan.conversationalPairColumn &&
+        shouldUseSemanticReferentialNarrative(
+          cleanQuestion
+        )
+      )
+        ? buildSemanticVerifiedAnswer({
+            question:
+              normalizeSemanticReferentialQuestion(
+                cleanQuestion
+              ) ||
+              cleanQuestion,
+            plan:
+              explicitReferentialFieldPlan,
+            result:
+              explicitReferentialFieldResult,
+          })
+        : null;
+
     return {
       ...explicitReferentialFieldResult,
       answer:
-        buildContextAwareContinuousListAnswer({
-          result:
-            explicitReferentialFieldResult,
-          subjectColumn:
-            explicitReferentialFieldPlan.column,
-          pairColumn:
-            explicitReferentialFieldPlan.conversationalPairColumn ||
-            null,
-          context:
-            conversationContext,
-          preferScopeValue:
-            false,
-        }),
+        formatUserFacingAnswer(
+          semanticReferentialAnswer ||
+          buildContextAwareContinuousListAnswer({
+            result:
+              explicitReferentialFieldResult,
+            subjectColumn:
+              explicitReferentialFieldPlan.column,
+            pairColumn:
+              explicitReferentialFieldPlan.conversationalPairColumn ||
+              null,
+            context:
+              conversationContext,
+            preferScopeValue:
+              false,
+          })
+        ),
       responseStyle:
         "natural",
       debugPlan:
@@ -5950,6 +7427,8 @@ async function answerQuestion(
         [],
       plannerSource:
         "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
     };
   }
 
@@ -5992,6 +7471,27 @@ async function answerQuestion(
    * handler later in the pipeline should switch the metric while
    * preserving the previous operation.
    */
+  const sameQueryCandidateRows =
+    conversationContext
+      ?.lastDataset &&
+    Array.isArray(
+      datasets?.[
+        conversationContext.lastDataset
+      ]
+    )
+      ? datasets[
+          conversationContext.lastDataset
+        ]
+      : [];
+
+  const sameQueryExplicitValueFilters =
+    sameQueryCandidateRows.length
+      ? inferCoherentFilters(
+          sameQueryCandidateRows,
+          cleanQuestion
+        )
+      : [];
+
   const sameQueryMetricColumn =
     findFollowUpMetricColumn({
       schema,
@@ -6003,6 +7503,17 @@ async function answerQuestion(
         null,
     });
 
+  const preferExplicitValueFilter =
+    shouldPreferExplicitValueFilter({
+      isFollowUp:
+        conversationContext
+          .isFollowUp,
+      question:
+        cleanQuestion,
+      explicitValueFilters:
+        sameQueryExplicitValueFilters,
+    });
+
   const looksLikeSameQueryNewFilter =
     conversationContext
       .isFollowUp === true &&
@@ -6011,7 +7522,10 @@ async function answerQuestion(
     ) &&
     conversationContext
       .lastDataset &&
-    !sameQueryMetricColumn;
+    (
+      preferExplicitValueFilter ||
+      !sameQueryMetricColumn
+    );
 
   // ========================================================
   // EXPLICIT WORKSHEET SWITCH FOLLOW-UP
@@ -6231,6 +7745,8 @@ async function answerQuestion(
       return {
         ...worksheetSwitchResult,
         plannerSource: "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
         conversationalWorksheetSwitch: true,
       };
     }
@@ -6264,10 +7780,27 @@ async function answerQuestion(
        * phases, etc. without hardcoding their names.
        */
       let newlyMentionedFilters =
-        inferCoherentFilters(
-          previousRows,
-          cleanQuestion
-        );
+        Array.isArray(
+          sameQueryExplicitValueFilters
+        ) &&
+        sameQueryExplicitValueFilters.length
+          ? sameQueryExplicitValueFilters.map(
+              (filter) => ({
+                ...filter,
+                value:
+                  Array.isArray(
+                    filter?.value
+                  )
+                    ? [
+                        ...filter.value,
+                      ]
+                    : filter?.value,
+              })
+            )
+          : inferCoherentFilters(
+              previousRows,
+              cleanQuestion
+            );
 
       if (
         !Array.isArray(
@@ -6317,6 +7850,11 @@ async function answerQuestion(
           {};
 
         const rememberedSubject =
+          chooseContinuitySubjectColumn({
+            previousPlan,
+            newFilters:
+              newlyMentionedFilters,
+          }) ||
           inferRememberedSubjectColumn({
             schema,
 
@@ -6333,18 +7871,6 @@ async function answerQuestion(
               conversationContext,
           }) ||
           previousPlan.column ||
-          (
-            Array.isArray(
-              previousPlan
-                .selectColumns
-            ) &&
-            previousPlan
-              .selectColumns
-              .length === 1
-              ? previousPlan
-                  .selectColumns[0]
-              : null
-          ) ||
           null;
 
         /**
@@ -6538,26 +8064,39 @@ async function answerQuestion(
         if (
           operation === "list"
         ) {
-          const matchingRows =
-            filterRowsBySimpleFilters(
-              previousRows,
-              finalFilters
-            );
+          const narrativeQuestion =
+            rewriteContinuityQuestionWithFilters({
+              subjectQuestion:
+                conversationContext
+                  .lastSubjectQuestion ||
+                conversationContext
+                  .lastQuestion,
 
-          const oneToManyAnswer =
-            buildOneToManyListAnswer({
-              rows:
-                matchingRows,
+              previousFilters:
+                conversationContext
+                  .lastFilters,
 
-              subjectColumn:
-                rememberedSubject,
+              newFilters:
+                newlyMentionedFilters,
 
-              filters:
-                finalFilters,
+              fallbackQuestion:
+                cleanQuestion,
+            });
+
+          const semanticContinuityAnswer =
+            buildSemanticVerifiedAnswer({
+              question:
+                narrativeQuestion,
+
+              plan:
+                sameQueryPlan,
+
+              result:
+                sameQueryResult,
             });
 
           sameQueryAnswer =
-            oneToManyAnswer ||
+            semanticContinuityAnswer ||
             buildVerifiedListAnswer({
               result:
                 sameQueryResult,
@@ -6580,6 +8119,8 @@ async function answerQuestion(
 
           plannerSource:
             "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
         };
       }
     }
@@ -6628,6 +8169,8 @@ async function answerQuestion(
 
       plannerSource:
         "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
     };
   }
 
@@ -6830,6 +8373,8 @@ async function answerQuestion(
 
         plannerSource:
           "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
       };
     }
   }
@@ -6907,10 +8452,23 @@ async function answerQuestion(
       question: cleanQuestion,
     });
 
+  // CURRENT question semantics always beat shortcuts over the previous
+  // verified result array. If the user changes group, worksheet scope,
+  // distributed scope, or any explicit filter/value, force normal planning
+  // so compatible semantic memory can be merged safely instead of ranking
+  // stale rows from the prior answer.
+  const currentSemanticOverride =
+    currentQuestionRequiresReplan({
+      datasets,
+      question: cleanQuestion,
+      conversationContext: multiResultContext,
+      explicitGroupOverride: explicitCurrentGroupOverride,
+    });
+
   const looksLikeMultiResultAnalysis =
     verifiedMultiResultSet
       ?.count >= 3 &&
-    !explicitCurrentGroupOverride &&
+    !currentSemanticOverride.requiresReplan &&
     !explicitSelfContainedAnalytics &&
     (
       /\b(?:explain|summarize|summary|interpret|describe|difference|range|spread|gap|closest|average|mean|median|highest|lowest|above average|below average|outlier|outliers|stand out|trend|pattern|distribution|compare|ratio|percent|percentage|top\s+\d+|bottom\s+\d+)\b/i.test(
@@ -7403,6 +8961,8 @@ async function answerQuestion(
 
         plannerSource:
           "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
       };
     }
   }
@@ -7459,6 +9019,8 @@ async function answerQuestion(
         ...previousIdentityResult,
         plannerSource:
           "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
       };
     }
   }
@@ -7743,6 +9305,8 @@ async function answerQuestion(
       question: cleanQuestion,
       previousPlan:
         conversationContext?.lastPlan || null,
+      previousSemanticPlan:
+        conversationContext?.semanticPlan || null,
     });
 
   if (distributedWorksheetFollowUp) {
@@ -7755,10 +9319,16 @@ async function answerQuestion(
     return {
       ...distributedWorksheetFollowUp.result,
       answer: formatUserFacingAnswer(
-        distributedWorksheetFollowUp.result?.answer
+        buildSemanticVerifiedAnswer({
+          question: cleanQuestion,
+          plan: distributedWorksheetFollowUp.plan,
+          result: distributedWorksheetFollowUp.result,
+        }) || distributedWorksheetFollowUp.result?.answer
       ),
       debugPlan: distributedWorksheetFollowUp.plan,
       plannerSource: "conversation-multi-worksheet",
+
+      ...buildGroqHandoffDiagnostics(),
     };
   }
 
@@ -7789,7 +9359,11 @@ async function answerQuestion(
     return {
       ...crossWorksheetGroupedRanking.result,
       answer: formatUserFacingAnswer(
-        crossWorksheetGroupedRanking.result?.answer
+        buildSemanticVerifiedAnswer({
+          question: cleanQuestion,
+          plan: crossWorksheetGroupedRanking.plan,
+          result: crossWorksheetGroupedRanking.result,
+        }) || crossWorksheetGroupedRanking.result?.answer
       ),
       plannerSource: "deterministic-cross-worksheet-group-ranking",
     };
@@ -7825,7 +9399,11 @@ async function answerQuestion(
     return {
       ...distributedWorksheetResolution.result,
       answer: formatUserFacingAnswer(
-        distributedWorksheetResolution.result?.answer
+        buildSemanticVerifiedAnswer({
+          question: cleanQuestion,
+          plan: distributedWorksheetResolution.plan,
+          result: distributedWorksheetResolution.result,
+        }) || distributedWorksheetResolution.result?.answer
       ),
       plannerSource: "deterministic-multi-worksheet",
     };
@@ -7890,37 +9468,83 @@ async function answerQuestion(
   // 1. GROQ FIRST
   // ========================================================
 
-  let groqPlan = null;
-  let groqPlanningError = null;
+  /**
+   * Groq already ran before deterministic/local semantic planning.
+   * A low-confidence/failed Groq plan intentionally reaches this point
+   * as null so the local fallback can take over without a second API call.
+   */
+  if (
+    !groqPrimaryAttempted
+  ) {
+    throw new Error(
+      "Groq primary planner was not initialized."
+    );
+  }
+
 
   /**
-   * IMPORTANT:
-   * Only GROQ PLANNING is inside this try/catch.
+   * ========================================================
+   * REFERENTIAL PARAPHRASE SEMANTIC RECOVERY
+   * ========================================================
    *
-   * If Groq successfully returns a plan, execution errors must
-   * not silently cause a second planner to choose another field.
+   * A follow-up may omit the actual schema field:
+   *
+   *   "Tell me what they produce."
+   *   "Show what they provide."
+   *   "Which things are they using?"
+   *
+   * The deterministic explicit-field resolver cannot select a column when the
+   * field name itself is absent. If the normal Groq planner also fails to
+   * return valid JSON, do ONE constrained semantic re-plan before falling back
+   * to the generic local parser.
+   *
+   * This does not hardcode a worksheet, field, domain noun, or data value.
+   * Groq still chooses only from the live schema, while conversation memory
+   * supplies the verified referent/scope.
    */
-  try {
-    groqPlan =
-      await createSchemaAwarePlan({
-        question:
-          cleanQuestion,
+  if (
+    false &&
+    !groqPlan &&
+    conversationContext?.isFollowUp === true &&
+    normalizeSemanticReferentialQuestion(
+      cleanQuestion
+    )
+  ) {
+    try {
+      const recoveryQuestion =
+        [
+          "This is a referential follow-up data question.",
+          "Use the previous verified conversation subject and filters.",
+          "Resolve the live schema field whose meaning best answers the user's action.",
+          "Return a dataset lookup plan rather than a general explanation.",
+          `User question: ${cleanQuestion}`,
+        ].join(" ");
 
-        schema,
+      groqPlan =
+        await createSchemaAwarePlan({
+          question:
+            recoveryQuestion,
+          schema,
+          context:
+            conversationContext,
+          retrievalContext,
+        });
 
-        context:
-          conversationContext,
-
-        retrievalContext,
-      });
-  } catch (error) {
-    groqPlanningError =
-      error;
-
-    console.error(
-      "Groq planning failed; local fallback will be used:",
-      error
-    );
+      if (groqPlan) {
+        groqReferentialRecovery =
+          true;
+      }
+    } catch (recoveryError) {
+      if (
+        process.env.NODE_ENV !==
+          "production"
+      ) {
+        console.warn(
+          "Referential semantic recovery planner failed; continuing to local fallback:",
+          recoveryError
+        );
+      }
+    }
   }
 
   if (groqPlan) {
@@ -8122,7 +9746,9 @@ async function answerQuestion(
         oneToManyResolved,
 
         plannerSource:
-          "groq",
+          groqReferentialRecovery
+            ? "groq-referential-recovery"
+            : "groq",
       };
     } catch (groqExecutionError) {
       console.error(
@@ -8235,6 +9861,90 @@ async function answerQuestion(
         context: conversationContext,
       });
 
+    /**
+     * V7.33 STRONG LOCAL SEMANTIC RESOLVER
+     *
+     * When Groq is unavailable, independently scan every live worksheet and
+     * score the CURRENT question against live schema names, worksheet names,
+     * row structure, and explicit row-value filters.
+     *
+     * The current question wins. Previous conversation filters are inherited
+     * only for genuinely referential wording and only when those filter
+     * columns exist in the selected live worksheet.
+     */
+    const strongLocalSemanticPlan =
+      resolveStrongLocalSemanticPlan({
+        question:
+          cleanQuestion,
+        schema,
+        datasets,
+        context:
+          conversationContext,
+      });
+
+    if (
+      strongLocalSemanticPlan &&
+      (
+        localPlan?.route !==
+          "dataset" ||
+        !localPlan?.dataset ||
+        !localPlan?.column ||
+        Number(
+          strongLocalSemanticPlan.localSemanticConfidence ||
+          0
+        ) >=
+          Number(
+            localPlan.localConfidence ||
+            localPlan.confidence ||
+            0
+          )
+      )
+    ) {
+      localPlan =
+        strongLocalSemanticPlan;
+    }
+
+    /**
+     * V7.35 LOCAL/GROQ DATA-PLANNER PARITY
+     *
+     * Mirror Groq's executable DATASET/SCHEMA planning surface locally.
+     * This uses only the live schema and live row values and never calls
+     * an external model.
+     */
+    localPlan =
+      ensureLocalPlannerParity({
+        plan:
+          localPlan,
+        question:
+          cleanQuestion,
+        schema,
+        datasets,
+        context:
+          conversationContext,
+      });
+
+    /**
+     * If Groq is unavailable and the current turn is an elliptical
+     * referential follow-up, reuse the previous VERIFIED dataset/output field
+     * when it is still valid in the live schema.
+     *
+     * Example pattern:
+     *   explicit field turn -> "Tell me what they <action>."
+     *
+     * This allows the local fallback to remain useful during provider
+     * rate limits instead of routing the question back to a general LLM call.
+     */
+    localPlan =
+      recoverLocalReferentialPlanFromConversation({
+        plan:
+          localPlan,
+        question:
+          cleanQuestion,
+        context:
+          conversationContext,
+        schema,
+      });
+
     localPlan =
       repairMultiEntityFilters({
         datasets,
@@ -8267,6 +9977,28 @@ async function answerQuestion(
         localPlan
       );
 
+    // Local fallback must be deterministic AND self-aware. Attach component
+    // confidence and refuse only critical unresolved plans rather than
+    // confidently executing a guessed dataset/metric/group.
+    const localConfidenceResolution = attachLocalConfidence({
+      plan: localPlan,
+      datasets,
+      schema,
+    });
+    localPlan = localConfidenceResolution.plan;
+
+    if (localConfidenceResolution.evaluation.critical &&
+        localConfidenceResolution.evaluation.score < 0.55) {
+      localPlan = {
+        route: "clarify",
+        question:
+          "I could not confidently resolve the worksheet, metric, or grouping from that question. Could you be a little more specific?",
+        confidence: localConfidenceResolution.evaluation.score,
+        localConfidenceBreakdown: localConfidenceResolution.evaluation.breakdown,
+        localConfidenceIssues: localConfidenceResolution.evaluation.issues,
+      };
+    }
+
     if (
       process.env.NODE_ENV !==
         "production"
@@ -8289,6 +10021,73 @@ async function answerQuestion(
     let finalAnswer =
       result.answer;
 
+    const semanticLocalListAnswer =
+      String(
+        localPlan.operation ||
+        ""
+      )
+        .trim()
+        .toLowerCase() ===
+        "list"
+        ? buildSemanticVerifiedAnswer({
+            question:
+              cleanQuestion,
+            plan:
+              localPlan,
+            result,
+          })
+        : null;
+
+    if (
+      semanticLocalListAnswer
+    ) {
+      finalAnswer =
+        semanticLocalListAnswer;
+    }
+
+    /**
+     * Keep local-fallback response semantics consistent with the normal
+     * conversational path. Paired lookups should use the deterministic
+     * natural narrative rather than raw repeated "<label> - <value>" lines.
+     * No external language-model call is required here.
+     */
+    if (
+      String(
+        localPlan.operation ||
+        ""
+      )
+        .trim()
+        .toLowerCase() ===
+        "lookup" &&
+      localPlan.column &&
+      localPlan.labelColumn &&
+      normalizeText(
+        localPlan.column
+      ) !==
+      normalizeText(
+        localPlan.labelColumn
+      )
+    ) {
+      const semanticLocalAnswer =
+        buildSemanticVerifiedAnswer({
+          question:
+            normalizeSemanticReferentialQuestion(
+              cleanQuestion
+            ) ||
+            cleanQuestion,
+          plan:
+            localPlan,
+          result,
+        });
+
+      if (
+        semanticLocalAnswer
+      ) {
+        finalAnswer =
+          semanticLocalAnswer;
+      }
+    }
+
     let oneToManyResolved =
       undefined;
 
@@ -8297,6 +10096,7 @@ async function answerQuestion(
      * Groq availability does not change conversational output semantics.
      */
     if (
+      !semanticLocalListAnswer &&
       String(
         localPlan.operation ||
         ""
@@ -8368,6 +10168,33 @@ async function answerQuestion(
        * This tells us WHY Groq was unavailable without changing
        * the dataset answer.
        */
+      groqStatus:
+        groqDiagnostic.status,
+
+      groqPlanConfidence:
+        groqPrimaryConfidence,
+
+      groqConfidenceIssues:
+        groqPrimaryIssues,
+
+      groqHttpStatus:
+        groqDiagnostic.httpStatus,
+
+      groqErrorCode:
+        groqDiagnostic.code,
+
+      groqJsonRetryUsed:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryUsed
+        ),
+
+      groqJsonRetryRecovered:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryRecovered
+        ),
+
       groqPlanningError:
         groqPlanningError?.message ||
         null,
@@ -8390,13 +10217,52 @@ async function answerQuestion(
       plannerSource:
         "local-fallback",
 
+      groqStatus:
+        groqDiagnostic.status,
+
+      groqPlanConfidence:
+        groqPrimaryConfidence,
+
+      groqConfidenceIssues:
+        groqPrimaryIssues,
+
+      groqHttpStatus:
+        groqDiagnostic.httpStatus,
+
+      groqErrorCode:
+        groqDiagnostic.code,
+
+      groqJsonRetryUsed:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryUsed
+        ),
+
+      groqJsonRetryRecovered:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryRecovered
+        ),
+
       groqPlanningError:
         groqPlanningError?.message ||
         null,
 
       answer:
-        localError.message ||
-        "The chatbot could not process the question.",
+        isExternalLanguageServiceError(
+          localError
+        )
+          ? (
+              normalizeSemanticReferentialQuestion(
+                cleanQuestion
+              )
+                ? "I couldn't resolve that follow-up locally from the available conversation context. Please mention the field you want, and I can answer it directly from the dataset."
+                : "The language service is temporarily unavailable, and this question could not be completed locally. Please try again shortly."
+            )
+          : (
+              localError.message ||
+              "The chatbot could not process the question."
+            ),
     };
   }
 
