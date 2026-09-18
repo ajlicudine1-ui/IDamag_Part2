@@ -309,7 +309,7 @@ function OfficeDivisionManagement() {
                 <table className="w-full text-left">
                   <thead>
                     <tr className="bg-slate-50/50">
-                      <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Office Name</th>
+                      <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Category Name</th>
                       <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">Acronym</th>
                       <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Actions</th>
                     </tr>
@@ -351,7 +351,7 @@ function OfficeDivisionManagement() {
                     <tr className="bg-slate-50/50">
                       <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Subcategory Name</th>
                       <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">Acronym</th>
-                      <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Parent Subcategory</th>
+                      <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Parent Category</th>
                       <th className="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Actions</th>
                     </tr>
                   </thead>
