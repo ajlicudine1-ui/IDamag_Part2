@@ -325,10 +325,10 @@ function OfficeDivisionManagement() {
                         </td>
                         <td className="px-8 py-5 text-right">
                           <div className="flex items-center justify-end gap-1.5">
-                            <button onClick={() => openOfficeModal(office)} className="p-2 text-slate-400 hover:text-moss-600 hover:bg-moss-50 rounded-xl transition-all" title="Edit subcategory">
+                            <button onClick={() => openOfficeModal(office)} className="p-2 text-slate-400 hover:text-moss-600 hover:bg-moss-50 rounded-xl transition-all" title="Edit Category">
                               <Edit3 size={16} />
                             </button>
-                            <button onClick={() => handleDeleteOffice(office.id)} className="p-2 text-slate-300 hover:text-amber-600 hover:bg-amber-50 rounded-xl transition-all" title="Delete Subcategory">
+                            <button onClick={() => handleDeleteOffice(office.id)} className="p-2 text-slate-300 hover:text-amber-600 hover:bg-amber-50 rounded-xl transition-all" title="Delete Category">
                               <Trash2 size={16} />
                             </button>
                           </div>
@@ -372,7 +372,7 @@ function OfficeDivisionManagement() {
                         </td>
                         <td className="px-8 py-5 text-right">
                           <div className="flex items-center justify-end gap-1.5">
-                            <button onClick={() => openSectionModal(section)} className="p-2 text-slate-400 hover:text-moss-600 hover:bg-moss-50 rounded-xl transition-all" title="Edit Subcategory">
+                            <button onClick={() => openSectionModal(section)} className="p-2 text-slate-400 hover:text-moss-600 hover:bg-moss-50 rounded-xl transition-all" title="Edit Category">
                               <Edit3 size={16} />
                             </button>
                             <button onClick={() => handleDeleteSection(section.id)} className="p-2 text-slate-300 hover:text-amber-600 hover:bg-amber-50 rounded-xl transition-all" title="Delete Subcategory">
@@ -457,16 +457,16 @@ function OfficeDivisionManagement() {
             <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setIsSectionModalOpen(false)}></div>
             <div className="relative w-full max-w-lg bg-white rounded-[2.5rem] shadow-2xl p-10 animate-in zoom-in-95 duration-200">
               <h3 className="text-2xl font-extrabold text-slate-900 mb-8 tracking-tight">
-                {editingSection ? 'Edit Category' : 'Add New Category'}
+                {editingSection ? 'Edit Subcategory' : 'Add New Subcategory'}
               </h3>
               <form onSubmit={handleSaveSection} className="space-y-6">
                 <div>
                   <SearchableSelect 
-                    label="Belongs to Office"
+                    label="Belongs to Category"
                     options={offices}
                     value={sectionForm.officeId}
                     onChange={(val) => setSectionForm({...sectionForm, officeId: val})}
-                    placeholder="Select Parent Office..."
+                    placeholder="Select Parent Category..."
                   />
                 </div>
                 <div>
