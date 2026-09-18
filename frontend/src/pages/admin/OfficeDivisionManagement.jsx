@@ -71,7 +71,7 @@ function OfficeDivisionManagement() {
     );
 
     if (nameExists) {
-      setValidationError('An Category with this name already exists.');
+      setValidationError('A category with this name already exists.');
       return;
     }
 
@@ -99,7 +99,7 @@ function OfficeDivisionManagement() {
       setShowConfirmModal(false);
       fetchData();
     } catch (err) {
-      alert('Error saving subcategory: ' + err.message);
+      alert('Error saving category: ' + err.message);
       setShowConfirmModal(false);
     }
   };
@@ -107,7 +107,7 @@ function OfficeDivisionManagement() {
   const handleDeleteOffice = (id) => {
     setConfirmConfig({
       title: 'Delete Category?',
-      message: 'Are you sure you want to delete this Category? All associated sections and reports will be removed. This action cannot be undone.',
+      message: 'Are you sure you want to delete this category? All associated subcategories and reports will be removed. This action cannot be undone.',
       type: 'delete',
       action: () => executeDeleteOffice(id)
     });
@@ -150,7 +150,7 @@ function OfficeDivisionManagement() {
     );
 
     if (nameExists) {
-      setValidationError('A subcategory with this name already exists in the selected office.');
+      setValidationError('A subcategory with this name already exists in the selected category.');
       return;
     }
 
@@ -297,7 +297,7 @@ function OfficeDivisionManagement() {
             className="bg-moss-600 hover:bg-moss-700 text-white font-black px-6 py-3.5 rounded-2xl flex items-center gap-2 transition-all shadow-lg shadow-moss-600/20 active:scale-95 text-[11px] font-black uppercase tracking-widest"
           >
             <Plus size={18} />
-            Add New {activeTab === 'offices' ? 'Office' : 'Section'}
+            Add New {activeTab === 'offices' ? 'Category' : 'Subcategory'}
           </button>
         </div>
 
@@ -367,12 +367,12 @@ function OfficeDivisionManagement() {
                         <td className="px-8 py-5">
                           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-tight flex items-center gap-2">
                              <div className="w-1.5 h-1.5 rounded-full bg-slate-200"></div>
-                             {offices.find(o => o.id === section.officeId)?.name || 'Unknown Office'}
+                             {offices.find(o => o.id === section.officeId)?.name || 'Unknown Category'}
                           </div>
                         </td>
                         <td className="px-8 py-5 text-right">
                           <div className="flex items-center justify-end gap-1.5">
-                            <button onClick={() => openSectionModal(section)} className="p-2 text-slate-400 hover:text-moss-600 hover:bg-moss-50 rounded-xl transition-all" title="Edit Category">
+                            <button onClick={() => openSectionModal(section)} className="p-2 text-slate-400 hover:text-moss-600 hover:bg-moss-50 rounded-xl transition-all" title="Edit Subcategory">
                               <Edit3 size={16} />
                             </button>
                             <button onClick={() => handleDeleteSection(section.id)} className="p-2 text-slate-300 hover:text-amber-600 hover:bg-amber-50 rounded-xl transition-all" title="Delete Subcategory">
@@ -396,11 +396,11 @@ function OfficeDivisionManagement() {
             <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setIsOfficeModalOpen(false)}></div>
             <div className="relative w-full max-w-lg bg-white rounded-[2.5rem] shadow-2xl p-10 animate-in zoom-in-95 duration-200">
               <h3 className="text-2xl font-extrabold text-slate-900 mb-8 tracking-tight">
-                {editingOffice ? 'Edit Subcategory' : 'Add New Subcategory'}
+                {editingOffice ? 'Edit Category' : 'Add New Category'}
               </h3>
               <form onSubmit={handleSaveOffice} className="space-y-6">
                 <div>
-                  <label className="block text-sm font-bold text-slate-700 mb-2">Subcategory Name</label>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">Category Name</label>
                   <input 
                     type="text" 
                     required
@@ -410,7 +410,7 @@ function OfficeDivisionManagement() {
                       if (validationError) setValidationError('');
                     }}
                     className="w-full px-5 py-3.5 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-moss-600/10 focus:border-moss-600 transition-all outline-none"
-                    placeholder="e.g. Planning, Monitoring & Evaluation Division"
+                    placeholder="e.g. Agricultural Production"
                   />
                 </div>
                 <div>
@@ -420,7 +420,7 @@ function OfficeDivisionManagement() {
                     value={officeForm.acronym}
                     onChange={(e) => setOfficeForm({...officeForm, acronym: e.target.value})}
                     className="w-full px-5 py-3.5 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-moss-600/10 focus:border-moss-600 transition-all outline-none"
-                    placeholder="e.g. PMED"
+                    placeholder="e.g. AGPROD"
                   />
                 </div>
 
@@ -480,7 +480,7 @@ function OfficeDivisionManagement() {
                       if (validationError) setValidationError('');
                     }}
                     className="w-full px-5 py-3.5 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-moss-600/10 focus:border-moss-600 transition-all outline-none"
-                    placeholder="e.g. Information Management Section"
+                    placeholder="e.g. Rice Banner Program"
                   />
                 </div>
                 <div>
@@ -490,7 +490,7 @@ function OfficeDivisionManagement() {
                     value={sectionForm.acronym}
                     onChange={(e) => setSectionForm({...sectionForm, acronym: e.target.value})}
                     className="w-full px-5 py-3.5 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-moss-600/10 focus:border-moss-600 transition-all outline-none"
-                    placeholder="e.g. IMS"
+                    placeholder="e.g. RICE"
                   />
                 </div>
 
