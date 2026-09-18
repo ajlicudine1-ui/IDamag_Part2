@@ -71,12 +71,12 @@ function OfficeDivisionManagement() {
     );
 
     if (nameExists) {
-      setValidationError('An Subcategory with this name already exists.');
+      setValidationError('An Category with this name already exists.');
       return;
     }
 
     setConfirmConfig({
-      title: editingOffice ? 'Update Office?' : 'Add New Office?',
+      title: editingOffice ? 'Update Category?' : 'Add New Category?',
       message: editingOffice 
         ? `Are you sure you want to save changes to ${editingOffice.name}?`
         : `Are you sure you want to add "${officeForm.name}" to the system?`,
@@ -106,8 +106,8 @@ function OfficeDivisionManagement() {
 
   const handleDeleteOffice = (id) => {
     setConfirmConfig({
-      title: 'Delete Subcategory?',
-      message: 'Are you sure you want to delete this subcategory? All associated sections and reports will be removed. This action cannot be undone.',
+      title: 'Delete Category?',
+      message: 'Are you sure you want to delete this Category? All associated sections and reports will be removed. This action cannot be undone.',
       type: 'delete',
       action: () => executeDeleteOffice(id)
     });
@@ -120,7 +120,7 @@ function OfficeDivisionManagement() {
       setShowConfirmModal(false);
       fetchData();
     } catch (err) {
-      alert('Error deleting subcategory: ' + err.message);
+      alert('Error deleting category: ' + err.message);
       setShowConfirmModal(false);
     }
   };
