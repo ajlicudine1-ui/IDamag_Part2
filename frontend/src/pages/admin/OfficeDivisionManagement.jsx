@@ -178,15 +178,15 @@ function OfficeDivisionManagement() {
       setShowConfirmModal(false);
       fetchData();
     } catch (err) {
-      alert('Error saving: ' + err.message);
+      alert('Error saving subcategory: ' + err.message);
       setShowConfirmModal(false);
     }
   };
 
   const handleDeleteSection = (id) => {
     setConfirmConfig({
-      title: 'Delete?',
-      message: 'Are you sure you want to delete this? All associated reports will be removed. This action cannot be undone.',
+      title: 'Delete Subcategory?',
+      message: 'Are you sure you want to delete this subcategory? All associated reports will be removed. This action cannot be undone.',
       type: 'delete',
       action: () => executeDeleteSection(id)
     });
@@ -443,7 +443,7 @@ function OfficeDivisionManagement() {
                     type="submit"
                     className="flex-1 bg-moss-600 hover:bg-moss-700 text-white font-bold py-4 rounded-2xl shadow-lg shadow-moss-600/20 transition-all"
                   >
-                    Save Subcategory
+                    Save'''''''
                   </button>
                 </div>
               </form>
