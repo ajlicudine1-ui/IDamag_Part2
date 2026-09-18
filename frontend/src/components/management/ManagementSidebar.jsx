@@ -40,7 +40,7 @@ function ManagementSidebar({ isCollapsed, setIsCollapsed }) {
     });
 
     navItems.push({
-      name: "Subcategory Management",
+      name: "Category Management",
       icon: Building2,
       path: "/office-division-management",
     });
