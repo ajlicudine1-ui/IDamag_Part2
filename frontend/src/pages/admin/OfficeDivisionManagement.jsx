@@ -278,7 +278,7 @@ function OfficeDivisionManagement() {
               }`}
             >
               <Building2 size={16} className={activeTab === 'offices' ? 'text-moss-600' : 'text-slate-300'} />
-              Subcategories
+              Categories
             </button>
             <button 
               onClick={() => { setActiveTab('sections'); setSectionPage(1); }}
