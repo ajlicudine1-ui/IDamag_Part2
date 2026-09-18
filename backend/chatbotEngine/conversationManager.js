@@ -1,5 +1,3 @@
-const { buildSemanticPlan } = require("./semanticPlan");
-
 const conversations = new Map();
 
 const MAX_HISTORY = 10;
@@ -62,9 +60,6 @@ function createEmptyContext() {
      * metric A -> metric B
      */
     analyticalContext: null,
-
-    // Canonical semantic plan used for stable follow-up inheritance.
-    semanticPlan: null,
 
     // Used for comparison follow-ups.
     recentResults: [],
@@ -547,15 +542,6 @@ function isAnalyticalOperation(
 
     "rank_rows",
     "rank_groups",
-
-    // Distributed analytical operations must also replace the previous
-    // analytical context. Otherwise a later short follow-up such as
-    // "what about the lowest?" can accidentally reuse an older
-    // single-worksheet ranking even though the latest verified answer
-    // came from multiple worksheets.
-    "rank_worksheets",
-    "rank_across_worksheets",
-    "multi_worksheet",
   ]).has(
     String(
       operation || ""
@@ -975,14 +961,6 @@ function updateConversation(
           plan.filterGroups
         ),
     };
-
-    // Save meaning independently from the raw planner representation.
-    // Follow-ups can modify direction/month/metric without depending on
-    // whichever planner happened to create the previous turn.
-    const semantic = buildSemanticPlan({ plan, result });
-    if (semantic) {
-      context.semanticPlan = semantic;
-    }
   }
 
   if (
@@ -990,11 +968,6 @@ function updateConversation(
   ) {
     context.lastResult =
       result;
-
-    if (plan) {
-      const semantic = buildSemanticPlan({ plan, result });
-      if (semantic) context.semanticPlan = semantic;
-    }
   }
 
   /**
@@ -1129,11 +1102,6 @@ function getRelevantContext(
     analyticalContext:
       isFollowUp
         ? context.analyticalContext
-        : null,
-
-    semanticPlan:
-      isFollowUp
-        ? context.semanticPlan
         : null,
 
     relationshipScope:

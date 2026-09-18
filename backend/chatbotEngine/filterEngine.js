@@ -118,20 +118,6 @@ function compare(
   switch (
     normalizedOperator
   ) {
-    case "empty":
-      return (
-        actual === null ||
-        actual === undefined ||
-        String(actual).trim() === ""
-      );
-
-    case "not_empty":
-      return !(
-        actual === null ||
-        actual === undefined ||
-        String(actual).trim() === ""
-      );
-
     case "not_equals":
       return !(
         leftText === rightText ||
