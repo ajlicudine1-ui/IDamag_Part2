@@ -443,7 +443,7 @@ function OfficeDivisionManagement() {
                     type="submit"
                     className="flex-1 bg-moss-600 hover:bg-moss-700 text-white font-bold py-4 rounded-2xl shadow-lg shadow-moss-600/20 transition-all"
                   >
-                    Save'''''''
+                    Save Category
                   </button>
                 </div>
               </form>
@@ -457,7 +457,7 @@ function OfficeDivisionManagement() {
             <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={() => setIsSectionModalOpen(false)}></div>
             <div className="relative w-full max-w-lg bg-white rounded-[2.5rem] shadow-2xl p-10 animate-in zoom-in-95 duration-200">
               <h3 className="text-2xl font-extrabold text-slate-900 mb-8 tracking-tight">
-                {editingSection ? 'Edit Subcategory' : 'Add New Subcategory'}
+                {editingSection ? 'Edit Category' : 'Add New Category'}
               </h3>
               <form onSubmit={handleSaveSection} className="space-y-6">
                 <div>
