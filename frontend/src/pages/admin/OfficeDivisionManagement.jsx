@@ -185,8 +185,8 @@ function OfficeDivisionManagement() {
 
   const handleDeleteSection = (id) => {
     setConfirmConfig({
-      title: 'Delete Subcategory?',
-      message: 'Are you sure you want to delete this subcategory? All associated reports will be removed. This action cannot be undone.',
+      title: 'Delete Category?',
+      message: 'Are you sure you want to delete this category? All associated reports will be removed. This action cannot be undone.',
       type: 'delete',
       action: () => executeDeleteSection(id)
     });
