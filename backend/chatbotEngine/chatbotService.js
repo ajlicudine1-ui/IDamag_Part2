@@ -112,12 +112,6 @@ const {
 } = require("./responseGrammarEngine");
 
 const {
-  chooseContinuitySubjectColumn,
-  rewriteContinuityQuestionWithFilters,
-  shouldPreferExplicitValueFilter,
-} = require("./followUpContinuityEngine");
-
-const {
   normalizeExplicitColumnText,
   compactExplicitColumnText,
   expandExplicitColumnWords,
@@ -212,10 +206,6 @@ const {
 const {
   resolveStrongLocalSemanticPlan,
 } = require("./localSemanticResolver");
-
-const {
-  ensureLocalPlannerParity,
-} = require("./localPlannerParityEngine");
 
 
 
@@ -3660,27 +3650,10 @@ function buildExplicitReferentialFieldPlan({
   }
 
   // Require an actual conversational reference to the prior verified scope.
-  //
-  // "that/which/who" can be relative-clause grammar in a fresh request:
-  //   "what are the associations that are in phase 2?"
-  //
-  // Do not route that grammar as a reference to previous conversation state.
-  const hasStrongPriorReference =
-    /\b(?:they|them|their|theirs|those|these|there|therein|same|ones?|it|its)\b/.test(
-      text
-    );
-
-  const hasStandaloneDemonstrativeReference =
-    /^(?:that|this)\b/.test(
-      text
-    ) ||
-    /\b(?:that|this)\s+(?:one|ones|same)\b/.test(
-      text
-    );
-
   if (
-    !hasStrongPriorReference &&
-    !hasStandaloneDemonstrativeReference
+    !/\b(?:they|them|their|theirs|those|these|there|therein|same|ones?|it|its|that|this)\b/.test(
+      text
+    )
   ) {
     return null;
   }
@@ -5572,27 +5545,6 @@ async function answerQuestion(
    * handler later in the pipeline should switch the metric while
    * preserving the previous operation.
    */
-  const sameQueryCandidateRows =
-    conversationContext
-      ?.lastDataset &&
-    Array.isArray(
-      datasets?.[
-        conversationContext.lastDataset
-      ]
-    )
-      ? datasets[
-          conversationContext.lastDataset
-        ]
-      : [];
-
-  const sameQueryExplicitValueFilters =
-    sameQueryCandidateRows.length
-      ? inferCoherentFilters(
-          sameQueryCandidateRows,
-          cleanQuestion
-        )
-      : [];
-
   const sameQueryMetricColumn =
     findFollowUpMetricColumn({
       schema,
@@ -5604,17 +5556,6 @@ async function answerQuestion(
         null,
     });
 
-  const preferExplicitValueFilter =
-    shouldPreferExplicitValueFilter({
-      isFollowUp:
-        conversationContext
-          .isFollowUp,
-      question:
-        cleanQuestion,
-      explicitValueFilters:
-        sameQueryExplicitValueFilters,
-    });
-
   const looksLikeSameQueryNewFilter =
     conversationContext
       .isFollowUp === true &&
@@ -5623,10 +5564,7 @@ async function answerQuestion(
     ) &&
     conversationContext
       .lastDataset &&
-    (
-      preferExplicitValueFilter ||
-      !sameQueryMetricColumn
-    );
+    !sameQueryMetricColumn;
 
   // ========================================================
   // EXPLICIT WORKSHEET SWITCH FOLLOW-UP
@@ -5879,27 +5817,10 @@ async function answerQuestion(
        * phases, etc. without hardcoding their names.
        */
       let newlyMentionedFilters =
-        Array.isArray(
-          sameQueryExplicitValueFilters
-        ) &&
-        sameQueryExplicitValueFilters.length
-          ? sameQueryExplicitValueFilters.map(
-              (filter) => ({
-                ...filter,
-                value:
-                  Array.isArray(
-                    filter?.value
-                  )
-                    ? [
-                        ...filter.value,
-                      ]
-                    : filter?.value,
-              })
-            )
-          : inferCoherentFilters(
-              previousRows,
-              cleanQuestion
-            );
+        inferCoherentFilters(
+          previousRows,
+          cleanQuestion
+        );
 
       if (
         !Array.isArray(
@@ -5949,11 +5870,6 @@ async function answerQuestion(
           {};
 
         const rememberedSubject =
-          chooseContinuitySubjectColumn({
-            previousPlan,
-            newFilters:
-              newlyMentionedFilters,
-          }) ||
           inferRememberedSubjectColumn({
             schema,
 
@@ -5970,6 +5886,18 @@ async function answerQuestion(
               conversationContext,
           }) ||
           previousPlan.column ||
+          (
+            Array.isArray(
+              previousPlan
+                .selectColumns
+            ) &&
+            previousPlan
+              .selectColumns
+              .length === 1
+              ? previousPlan
+                  .selectColumns[0]
+              : null
+          ) ||
           null;
 
         /**
@@ -6163,39 +6091,26 @@ async function answerQuestion(
         if (
           operation === "list"
         ) {
-          const narrativeQuestion =
-            rewriteContinuityQuestionWithFilters({
-              subjectQuestion:
-                conversationContext
-                  .lastSubjectQuestion ||
-                conversationContext
-                  .lastQuestion,
+          const matchingRows =
+            filterRowsBySimpleFilters(
+              previousRows,
+              finalFilters
+            );
 
-              previousFilters:
-                conversationContext
-                  .lastFilters,
+          const oneToManyAnswer =
+            buildOneToManyListAnswer({
+              rows:
+                matchingRows,
 
-              newFilters:
-                newlyMentionedFilters,
+              subjectColumn:
+                rememberedSubject,
 
-              fallbackQuestion:
-                cleanQuestion,
-            });
-
-          const semanticContinuityAnswer =
-            buildSemanticVerifiedAnswer({
-              question:
-                narrativeQuestion,
-
-              plan:
-                sameQueryPlan,
-
-              result:
-                sameQueryResult,
+              filters:
+                finalFilters,
             });
 
           sameQueryAnswer =
-            semanticContinuityAnswer ||
+            oneToManyAnswer ||
             buildVerifiedListAnswer({
               result:
                 sameQueryResult,
@@ -8010,25 +7925,6 @@ async function answerQuestion(
       localPlan =
         strongLocalSemanticPlan;
     }
-
-    /**
-     * V7.35 LOCAL/GROQ DATA-PLANNER PARITY
-     *
-     * Mirror Groq's executable DATASET/SCHEMA planning surface locally.
-     * This uses only the live schema and live row values and never calls
-     * an external model.
-     */
-    localPlan =
-      ensureLocalPlannerParity({
-        plan:
-          localPlan,
-        question:
-          cleanQuestion,
-        schema,
-        datasets,
-        context:
-          conversationContext,
-      });
 
     /**
      * If Groq is unavailable and the current turn is an elliptical

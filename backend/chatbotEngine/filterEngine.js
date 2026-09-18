@@ -379,7 +379,7 @@ function findTextOccurrences(
 
   const regex =
     new RegExp(
-      `(^|[^\\p{L}\\p{N}])(${escaped})(?=$|[^\\p{L}\\p{N}])`,
+      `(^|[^\p{L}\p{N}])(${escaped})(?=$|[^\p{L}\p{N}])`,
       "gu"
     );
 
@@ -504,255 +504,6 @@ function suppressContainedMatches(
   }
 
   return accepted;
-}
-
-
-const ORDINAL_WORD_TO_NUMBER = new Map([
-  ["first", 1],
-  ["second", 2],
-  ["third", 3],
-  ["fourth", 4],
-  ["fifth", 5],
-  ["sixth", 6],
-  ["seventh", 7],
-  ["eighth", 8],
-  ["ninth", 9],
-  ["tenth", 10],
-  ["eleventh", 11],
-  ["twelfth", 12],
-  ["thirteenth", 13],
-  ["fourteenth", 14],
-  ["fifteenth", 15],
-  ["sixteenth", 16],
-  ["seventeenth", 17],
-  ["eighteenth", 18],
-  ["nineteenth", 19],
-  ["twentieth", 20],
-]);
-
-const CARDINAL_WORD_TO_NUMBER = new Map([
-  ["one", 1],
-  ["two", 2],
-  ["three", 3],
-  ["four", 4],
-  ["five", 5],
-  ["six", 6],
-  ["seven", 7],
-  ["eight", 8],
-  ["nine", 9],
-  ["ten", 10],
-  ["eleven", 11],
-  ["twelve", 12],
-  ["thirteen", 13],
-  ["fourteen", 14],
-  ["fifteen", 15],
-  ["sixteen", 16],
-  ["seventeen", 17],
-  ["eighteen", 18],
-  ["nineteen", 19],
-  ["twenty", 20],
-]);
-
-function ordinalSuffix(number) {
-  const n =
-    Number(number);
-
-  if (
-    n % 100 >= 11 &&
-    n % 100 <= 13
-  ) {
-    return "th";
-  }
-
-  switch (
-    n % 10
-  ) {
-    case 1:
-      return "st";
-    case 2:
-      return "nd";
-    case 3:
-      return "rd";
-    default:
-      return "th";
-  }
-}
-
-function numberWordFromMap(map, number) {
-  for (const [word, value] of map.entries()) {
-    if (
-      value ===
-      Number(number)
-    ) {
-      return word;
-    }
-  }
-
-  return null;
-}
-
-function buildOrdinalValueAliases({
-  column,
-  displayValue,
-} = {}) {
-  const valueText =
-    normalizeText(
-      displayValue
-    );
-
-  const columnText =
-    normalizeText(
-      column
-    );
-
-  if (
-    !valueText ||
-    !columnText
-  ) {
-    return [];
-  }
-
-  /**
-   * Only alias small ordinal/category numbers that are semantically anchored
-   * to the column/value label itself. This avoids interpreting arbitrary IDs,
-   * dates, contact numbers, or years as ordinal filters.
-   *
-   * Examples:
-   *   Phase 2  <-> second phase / phase two / 2nd phase
-   *   Level 3  <-> third level / level three / 3rd level
-   *   Quarter 1 <-> first quarter / quarter one / 1st quarter
-   */
-  const match =
-    valueText.match(
-      /^(.*?)(?:\s+)(\d{1,2})$/
-    );
-
-  if (
-    !match?.[1] ||
-    !match?.[2]
-  ) {
-    return [];
-  }
-
-  const prefix =
-    match[1]
-      .trim();
-
-  const number =
-    Number(
-      match[2]
-    );
-
-  if (
-    !Number.isInteger(number) ||
-    number < 1 ||
-    number > 20
-  ) {
-    return [];
-  }
-
-  const prefixTokens =
-    prefix
-      .split(/\s+/)
-      .filter(Boolean);
-
-  const columnTokens =
-    columnText
-      .split(/\s+/)
-      .filter(Boolean);
-
-  const hasSemanticAnchor =
-    prefixTokens.some(
-      (token) =>
-        columnTokens.includes(
-          token
-        )
-    );
-
-  if (
-    !hasSemanticAnchor
-  ) {
-    return [];
-  }
-
-  const ordinalWord =
-    numberWordFromMap(
-      ORDINAL_WORD_TO_NUMBER,
-      number
-    );
-
-  const cardinalWord =
-    numberWordFromMap(
-      CARDINAL_WORD_TO_NUMBER,
-      number
-    );
-
-  const ordinalNumeric =
-    `${number}${ordinalSuffix(number)}`;
-
-  const aliases =
-    [
-      `${prefix} ${number}`,
-      `${number} ${prefix}`,
-      `${prefix} ${ordinalNumeric}`,
-      `${ordinalNumeric} ${prefix}`,
-      ordinalWord
-        ? `${prefix} ${ordinalWord}`
-        : null,
-      ordinalWord
-        ? `${ordinalWord} ${prefix}`
-        : null,
-      cardinalWord
-        ? `${prefix} ${cardinalWord}`
-        : null,
-      cardinalWord
-        ? `${cardinalWord} ${prefix}`
-        : null,
-    ]
-      .filter(Boolean)
-      .map(
-        (value) =>
-          normalizeText(value)
-      );
-
-  return [
-    ...new Set(
-      aliases
-    ),
-  ];
-}
-
-function findOrdinalAliasSpans({
-  normalizedQuestion,
-  column,
-  displayValue,
-} = {}) {
-  const aliases =
-    buildOrdinalValueAliases({
-      column,
-      displayValue,
-    });
-
-  const matches = [];
-
-  for (const alias of aliases) {
-    const spans =
-      findTextOccurrences(
-        normalizedQuestion,
-        alias
-      );
-
-    if (
-      spans.length
-    ) {
-      matches.push({
-        alias,
-        spans,
-      });
-    }
-  }
-
-  return matches;
 }
 
 function inferValueFilters(
@@ -921,40 +672,11 @@ function inferValueFilters(
         normalizedValue
           .length >= 2
       ) {
-        let spans =
+        const spans =
           findTextOccurrences(
             normalizedQuestion,
             normalizedValue
           );
-
-        let ordinalAliasMatch =
-          false;
-
-        if (
-          !spans.length
-        ) {
-          const aliasMatches =
-            findOrdinalAliasSpans({
-              normalizedQuestion,
-              column,
-              displayValue:
-                display,
-            });
-
-          if (
-            aliasMatches.length
-          ) {
-            ordinalAliasMatch =
-              true;
-
-            spans =
-              aliasMatches
-                .flatMap(
-                  (item) =>
-                    item.spans
-                );
-          }
-        }
 
         if (!spans.length) {
           continue;
@@ -968,11 +690,6 @@ function inferValueFilters(
             display,
 
           score:
-            (
-              ordinalAliasMatch
-                ? 900
-                : 0
-            ) +
             normalizedValue
               .length,
 
@@ -981,8 +698,6 @@ function inferValueFilters(
               .length,
 
           spans,
-
-          ordinalAliasMatch,
         });
       }
     }
@@ -1464,6 +1179,4 @@ module.exports = {
   inferDatasetValueFilters,
   mergeFilters,
   applyFilters,
-  buildOrdinalValueAliases,
-  findOrdinalAliasSpans,
 };

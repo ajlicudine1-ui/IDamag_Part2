@@ -532,130 +532,6 @@ function deriveFilteredListScopePhrase({
   return ` for ${displayValue}`;
 }
 
-
-function deriveEntityNounFromField(field, count) {
-  let label =
-    humanizeFieldLabel(
-      field
-    );
-
-  if (!label) {
-    return count === 1
-      ? "item"
-      : "items";
-  }
-
-  label =
-    label.replace(
-      /^name\s+of\s+/i,
-      ""
-    );
-
-  label =
-    label.replace(
-      /\s+name$/i,
-      ""
-    );
-
-  if (count === 1) {
-    return label;
-  }
-
-  return pluralizeDisplayLabel(
-    label
-  );
-}
-
-function deriveContinuationScopePhrase(plan) {
-  const filters =
-    Array.isArray(
-      plan?.filters
-    )
-      ? plan.filters
-      : [];
-
-  if (
-    filters.length !==
-      1
-  ) {
-    return "";
-  }
-
-  const filter =
-    filters[0];
-
-  const value =
-    filter?.value;
-
-  if (
-    value === null ||
-    value === undefined ||
-    String(value).trim() === ""
-  ) {
-    return "";
-  }
-
-  const column =
-    normalizeText(
-      filter?.column
-    );
-
-  const displayValue =
-    String(value).trim();
-
-  if (
-    /\b(?:phase|province|region|municipality|city|barangay|department|division|office|category|type|status|year|month|quarter|sex|gender|level|group)\b/.test(
-      column
-    )
-  ) {
-    return ` in ${displayValue}`;
-  }
-
-  return ` for ${displayValue}`;
-}
-
-function buildScopedEntityListNarrative({
-  plan,
-  unique,
-}) {
-  if (
-    !(
-      plan?.conversationalFilterSwitch ===
-        true ||
-      plan?.directFilteredField ===
-        true
-    ) ||
-    !Array.isArray(unique) ||
-    !unique.length
-  ) {
-    return null;
-  }
-
-  const noun =
-    deriveEntityNounFromField(
-      plan?.column,
-      unique.length
-    );
-
-  const scope =
-    deriveContinuationScopePhrase(
-      plan
-    );
-
-  const intro =
-    `${unique.length} ${noun.toLowerCase()}${scope}:`;
-
-  const lines =
-    unique
-      .map(
-        (value, index) =>
-          `${index + 1}. ${value}`
-      )
-      .join("\n");
-
-  return `${intro}\n${lines}`;
-}
-
 function buildNaturalListNarrative({
   question,
   plan,
@@ -726,18 +602,6 @@ function buildNaturalListNarrative({
     return null;
   }
 
-  const continuityNarrative =
-    buildScopedEntityListNarrative({
-      plan,
-      unique,
-    });
-
-  if (
-    continuityNarrative
-  ) {
-    return continuityNarrative;
-  }
-
   const hasExplicitFilter =
     Array.isArray(
       plan?.filters
@@ -748,11 +612,7 @@ function buildNaturalListNarrative({
   if (
     hasExplicitFilter &&
     unique.length <=
-      6 &&
-    plan?.conversationalFilterSwitch !==
-      true &&
-    plan?.conversationalWorksheetSwitch !==
-      true
+      6
   ) {
     const fieldLabel =
       pluralizeDisplayLabel(
@@ -888,9 +748,4 @@ module.exports = {
   metricDisplayName,
   formatValue,
   buildLookupPairNarrative,
-  deriveEntityNounFromField,
-  deriveContinuationScopePhrase,
-  buildScopedEntityListNarrative,
-  buildConversationalFilterSwitchListNarrative:
-    buildScopedEntityListNarrative,
 };

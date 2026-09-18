@@ -918,30 +918,10 @@ function resolveDirectFilteredFieldPlan({
    *
    * The field and filter value are both resolved from live schema/data.
    */
-  /**
-   * Try the relative-clause form FIRST.
-   *
-   * Example:
-   *   "what are the associations that are in phase 2?"
-   *
-   * If the simpler preposition pattern runs first, it can incorrectly parse
-   * "association that are" as the requested field. The requested entity noun
-   * must remain separate from the filter clause.
-   */
-  let match =
+  const match =
     text.match(
-      /^(?:what|which|who|show|give|list|display|tell me|get|find)\s+(?:(?:is|are|was|were)\s+)?(?:the\s+)?(.+?)\s+(?:that|which|who)\s+(?:(?:is|are|was|were)\s+)?(?:in|at|within|inside|under|for|from|of)\s+(.+?)\??$/
+      /^(?:what|which|who|show|give|list|display|tell me|get|find)\s+(?:(?:is|are|was|were)\s+)?(?:the\s+)?(.+?)\s+(?:in|at|within|inside|under|for|from|of)\s+(.+?)\??$/
     );
-
-  if (
-    !match?.[1] ||
-    !match?.[2]
-  ) {
-    match =
-      text.match(
-        /^(?:what|which|who|show|give|list|display|tell me|get|find)\s+(?:(?:is|are|was|were)\s+)?(?:the\s+)?(.+?)\s+(?:in|at|within|inside|under|for|from|of)\s+(.+?)\??$/
-      );
-  }
 
   if (
     !match?.[1] ||
