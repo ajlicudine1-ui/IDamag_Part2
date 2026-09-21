@@ -133,7 +133,24 @@ function findBestColumnForTarget(rows, target, { numeric = null } = {}) {
     .map((column) => ({ column, score: scoreTargetToColumn(target, column) }))
     .filter((item) => numeric === null || isNumericColumn(rows, item.column) === numeric)
     .sort((a, b) => b.score - a.score);
-  return ranked[0]?.score >= 0.75 ? ranked[0].column : null;
+  if (ranked[0]?.score >= 0.75) return ranked[0].column;
+
+  // Generic identity fallback: ranking questions often use a business/domain
+  // noun ("subproject", "association", "employee") while the schema
+  // exposes a compact identity header such as "SP Name". If semantic
+  // matching cannot connect the noun to the abbreviation, a single text
+  // identity/name field is still a safe row label. This uses schema shape,
+  // not dataset-specific aliases or question strings.
+  if (numeric === false) {
+    const identityColumns = columns.filter((column) => {
+      if (isNumericColumn(rows, column)) return false;
+      const name = normalizeText(column);
+      return /(?:^|\s)(?:name|title|label)(?:$|\s)/.test(name);
+    });
+    if (identityColumns.length === 1) return identityColumns[0];
+  }
+
+  return null;
 }
 
 function resolveDetailColumns(rows, detailText) {
@@ -233,11 +250,78 @@ function repairCategoricalCountIntent({ datasets, plan, question }) {
   };
 }
 
+function questionExplicitlyNamesNumericRankingMetric({ datasets, schema, question }) {
+  const { core } = splitRankingDetailQuestion(question);
+  const targets = parseRankingTargets(core);
+  if (!targets?.metricTarget) return false;
+
+  for (const [dataset, rows] of Object.entries(datasets || {})) {
+    if (!Array.isArray(rows) || !rows.length) continue;
+    const metricColumn = findBestColumnForTarget(rows, targets.metricTarget, { numeric: true });
+    if (!metricColumn) continue;
+
+    const explicitColumns = explicitColumnsForDataset(schema, core, dataset);
+    if (explicitColumns.some((column) => normalizeText(column) === normalizeText(metricColumn))) {
+      return true;
+    }
+
+    // A very strong schema match is also safe when the header itself contains
+    // an aggregation-looking word (for example a stored column named
+    // "Total SP Cost"). In that case "highest total SP cost" ranks rows by
+    // the stored metric; it does not mean "group rows, sum SP cost, then rank".
+    if (scoreTargetToColumn(targets.metricTarget, metricColumn) >= 0.92) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function repairAggregateIntent({ datasets, plan, question }) {
+  if (!plan || plan.route !== 'dataset' || !plan.dataset) return plan;
+
+  // Ranking words take precedence over aggregation words. This avoids
+  // treating a stored metric like "Total SP Cost" as a SUM request in
+  // questions such as "which subproject has the highest total SP cost?".
+  if (detectRankingDirection(question)) return plan;
+
+  const aggregation = detectQuestionAggregation(question);
+  if (!['sum', 'average'].includes(aggregation)) return plan;
+
+  const rows = datasets?.[plan.dataset];
+  if (!Array.isArray(rows) || !rows.length) return plan;
+
+  const column = plan.column ? (findColumn(rows, plan.column) || plan.column) : null;
+  if (!column || !isNumericColumn(rows, column)) return plan;
+
+  const operation = aggregation === 'sum' ? 'sum' : 'average';
+  if (plan.operation === operation) return plan;
+
+  // Only repair value-returning plans. Count/group/rank operations carry
+  // distinct semantics and must not be silently converted.
+  const repairable = new Set(['lookup', 'list', 'value', 'select', 'get', null, undefined]);
+  if (!repairable.has(plan.operation)) return plan;
+
+  return {
+    ...plan,
+    operation,
+    groupBy: null,
+    aggregation: null,
+    labelColumn: null,
+    selectColumns: [column],
+    aggregateIntentParityApplied: true,
+  };
+}
+
 function applySimpleRowRankingInvariant({ datasets, schema, plan, question }) {
   const core = splitRankingDetailQuestion(question).core;
-  // Aggregated rankings (highest average/total/sum/median) genuinely rank
-  // groups and must not be converted into row rankings.
-  if (/\b(?:average|avg|mean|total|sum|median)\b/i.test(core)) return plan;
+  // Aggregated rankings such as "which province has the highest total sales"
+  // genuinely rank groups. But do NOT reject a row ranking merely because a
+  // real stored metric header contains words such as "Total" or "Average".
+  const hasAggregateWord = /\b(?:average|avg|mean|total|sum|median)\b/i.test(core);
+  if (hasAggregateWord && !questionExplicitlyNamesNumericRankingMetric({ datasets, schema, question })) {
+    return plan;
+  }
   const rescue = buildRankingDetailRescuePlan({ datasets, schema, question });
   if (!rescue) return plan;
 
@@ -261,6 +345,7 @@ function enforcePlannerInvariants({ datasets, schema, plan, question }) {
   let next = plan;
   next = normalizeSameColumnEqualityFilters(next);
   next = repairCategoricalCountIntent({ datasets, plan: next, question });
+  next = repairAggregateIntent({ datasets, plan: next, question });
   next = repairGroupedAggregatePlan({ datasets, schema, plan: next, question });
   next = applySimpleRowRankingInvariant({ datasets, schema, plan: next, question });
   return next;
@@ -270,6 +355,7 @@ module.exports = {
   normalizeSameColumnEqualityFilters,
   repairGroupedAggregatePlan,
   repairCategoricalCountIntent,
+  repairAggregateIntent,
   buildRankingDetailRescuePlan,
   applySimpleRowRankingInvariant,
   enforcePlannerInvariants,

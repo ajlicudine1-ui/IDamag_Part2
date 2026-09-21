@@ -5580,3 +5580,82 @@ test('real compound answer keeps the full first-clause scope for among-them aggr
     true
   );
 });
+
+// ============================================================
+// V7.36.5p — RANKING + STORED-METRIC / AGGREGATION PRECEDENCE
+// ============================================================
+
+test('highest stored metric whose header contains total is treated as row ranking, not complex filter', () => {
+  const { enforcePlannerInvariants } = require('./plannerInvariantEngine');
+
+  const datasets = {
+    Sheet1: [
+      { 'SP Name': 'Project A', Province: 'Pangasinan', Municipality: 'A', 'Total SP Cost': 100 },
+      { 'SP Name': 'Project B', Province: 'La Union', Municipality: 'B', 'Total SP Cost': 250 },
+    ],
+  };
+  const schema = [{
+    name: 'Sheet1',
+    columns: Object.keys(datasets.Sheet1[0]).map((name) => ({ name })),
+  }];
+
+  const repaired = enforcePlannerInvariants({
+    datasets,
+    schema,
+    plan: {
+      route: 'dataset',
+      dataset: 'Sheet1',
+      operation: 'lookup',
+      column: 'Total SP Cost',
+      filters: [],
+      selectColumns: ['Total SP Cost'],
+    },
+    question: 'Which subproject has the highest total SP cost, and what province and municipality is it located in?',
+  });
+
+  assert.equal(repaired.operation, 'rank_rows');
+  assert.equal(repaired.column, 'Total SP Cost');
+  assert.equal(repaired.labelColumn, 'SP Name');
+  assert.equal(repaired.direction, 'desc');
+  assert.equal(repaired.limit, 1);
+  assert.ok(repaired.selectColumns.includes('Province'));
+  assert.ok(repaired.selectColumns.includes('Municipality'));
+  assert.equal(repaired.universalSemanticRescue, true);
+});
+
+test('total numeric metric repairs lookup to sum when no ranking intent exists', () => {
+  const { enforcePlannerInvariants } = require('./plannerInvariantEngine');
+
+  const datasets = {
+    Sheet1: [
+      { Province: 'Pangasinan', 'SP Status (Stage)': 'Completed', 'Total SP Cost': 100 },
+      { Province: 'Pangasinan', 'SP Status (Stage)': 'Completed', 'Total SP Cost': 250 },
+    ],
+  };
+  const schema = [{
+    name: 'Sheet1',
+    columns: Object.keys(datasets.Sheet1[0]).map((name) => ({ name })),
+  }];
+
+  const repaired = enforcePlannerInvariants({
+    datasets,
+    schema,
+    plan: {
+      route: 'dataset',
+      dataset: 'Sheet1',
+      operation: 'lookup',
+      column: 'Total SP Cost',
+      filters: [
+        { column: 'Province', operator: 'equals', value: 'Pangasinan' },
+        { column: 'SP Status (Stage)', operator: 'equals', value: 'Completed' },
+      ],
+      selectColumns: ['Total SP Cost'],
+    },
+    question: 'what is their total SP cost',
+  });
+
+  assert.equal(repaired.operation, 'sum');
+  assert.equal(repaired.column, 'Total SP Cost');
+  assert.equal(repaired.aggregateIntentParityApplied, true);
+  assert.equal(repaired.filters.length, 2);
+});
