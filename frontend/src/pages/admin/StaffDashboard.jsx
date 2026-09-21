@@ -769,7 +769,7 @@ function StaffDashboard() {
                       {
                         id: "",
                         name:
-                          "All Sections",
+                          "Subcategoriies",
                       },
                       ...divisions,
                     ]}
@@ -779,7 +779,7 @@ function StaffDashboard() {
                     onChange={
                       setSelectedDivision
                     }
-                    placeholder="All Sections"
+                    placeholder="Subcategories"
                   />
 
                 </div>
