@@ -760,7 +760,7 @@ function StaffDashboard() {
                     onChange={
                       setSelectedOffice
                     }
-                    placeholder="Search Subcategory..."
+                    placeholder="Search Category..."
                   />
 
                   <SearchableSelect
