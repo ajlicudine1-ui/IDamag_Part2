@@ -4755,3 +4755,76 @@ test('short lowest follow-up can still reuse prior verified analytical set', () 
   });
   assert.equal(out.requiresReplan, false);
 });
+
+// ============================================================
+// V7.36.5l — COMPLEX QUESTION PARITY
+// ============================================================
+
+test('complex question parity splits independent analytical requests joined by and', () => {
+  const { decomposeComplexQuestion } = require('./complexQuestionParityEngine');
+  const result = decomposeComplexQuestion(
+    'How many associations are in Pangasinan and what is their average assistance amount?'
+  );
+  assert.equal(result.isComplex, true);
+  assert.equal(result.clauses.length, 2);
+  assert.match(result.clauses[0], /How many associations/i);
+  assert.match(result.clauses[1], /what is their average/i);
+  assert.deepEqual(result.dependentClauseIndexes, [1]);
+});
+
+test('complex question parity splits operation-first second calculation', () => {
+  const { decomposeComplexQuestion } = require('./complexQuestionParityEngine');
+  const result = decomposeComplexQuestion(
+    'What is the total Amount in Region 1 and average Quantity?'
+  );
+  assert.equal(result.isComplex, true);
+  assert.deepEqual(result.clauses, [
+    'What is the total Amount in Region 1',
+    'average Quantity',
+  ]);
+});
+
+test('complex question parity preserves ordinary AND filters', () => {
+  const { decomposeComplexQuestion } = require('./complexQuestionParityEngine');
+  const result = decomposeComplexQuestion(
+    'Which associations are in Pangasinan and La Union?'
+  );
+  assert.equal(result.isComplex, false);
+  assert.equal(result.clauses.length, 1);
+});
+
+test('complex question parity preserves linked multi-field wording', () => {
+  const { decomposeComplexQuestion } = require('./complexQuestionParityEngine');
+  const result = decomposeComplexQuestion(
+    'Show the Association and Municipality for Pangasinan'
+  );
+  assert.equal(result.isComplex, false);
+  assert.equal(result.clauses.length, 1);
+});
+
+test('complex question parity splits semicolon-separated analytical requests', () => {
+  const { decomposeComplexQuestion } = require('./complexQuestionParityEngine');
+  const result = decomposeComplexQuestion(
+    'Count the records in North; calculate the maximum Amount in South'
+  );
+  assert.equal(result.isComplex, true);
+  assert.equal(result.clauses.length, 2);
+});
+
+
+test('compound execution uses one isolated shared context for dependent clauses', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, 'chatbotService.js'),
+    'utf8'
+  );
+
+  assert.match(
+    source,
+    /const compoundSessionId\s*=\s*`\$\{sessionId\}::compound::\$\{Date\.now\(\)\}`/
+  );
+
+  assert.doesNotMatch(
+    source,
+    /::compound::\$\{Date\.now\(\)\}::\$\{index\}/
+  );
+});
