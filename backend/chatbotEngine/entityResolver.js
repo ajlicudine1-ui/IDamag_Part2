@@ -7,6 +7,12 @@ const {
   getColumns,
 } = require("./utils");
 
+const {
+  splitMultiValueCell,
+  looksLikeMultiValueColumn,
+  normalizeLooseToken,
+} = require("./valueNormalizer");
+
 /**
  * ENTITY / VALUE RESOLVER
  * -----------------------
@@ -385,6 +391,19 @@ function scoreValueMatch(
     return 4;
   }
 
+  // Conservative separator-insensitive equivalence for categorical terms
+  // such as "sugar cane" and "sugarcane".
+  const requestedLoose = normalizeLooseToken(requestedValue);
+  const actualLoose = normalizeLooseToken(actualValue);
+
+  if (
+    requestedLoose.length >= 6 &&
+    actualLoose.length >= 6 &&
+    requestedLoose === actualLoose
+  ) {
+    return 3.95;
+  }
+
   /**
    * One phrase contains the other.
    *
@@ -535,11 +554,24 @@ function searchColumnValues({
   column,
   requestedValue,
 }) {
-  const actualValues =
+  const rawValues =
     getColumnValues(
       rows,
       column
     );
+
+  // Multi-value categorical columns should resolve to the semantic token
+  // the user asked for, not to one entire source cell. This keeps a filter
+  // portable when a follow-up changes province/office/etc. and the same
+  // category appears in a differently composed cell.
+  const actualValues = looksLikeMultiValueColumn({ rows, column })
+    ? [...new Map(
+        rawValues
+          .flatMap((value) => splitMultiValueCell(value))
+          .map((value) => [normalizeValue(value), value])
+          .filter(([key]) => key)
+      ).values()]
+    : rawValues;
 
   const matches =
     actualValues

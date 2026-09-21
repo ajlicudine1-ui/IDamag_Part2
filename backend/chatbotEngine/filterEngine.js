@@ -15,6 +15,7 @@ const {
 const {
   splitMultiValueCell,
   valueMatchesToken,
+  normalizeLooseToken,
 } = require("./valueNormalizer");
 
 /**
@@ -819,6 +820,53 @@ function findOrdinalAliasSpans({
   return matches;
 }
 
+/**
+ * Find wording in the question that is equivalent after removing only
+ * internal separators/spacing. This is deliberately conservative and is
+ * used for live categorical values such as "sugarcane" vs "sugar cane".
+ */
+function findLooseEquivalentSpans(normalizedQuestion, candidateValue) {
+  const targetKey = normalizeLooseToken(candidateValue);
+
+  if (targetKey.length < 6) {
+    return [];
+  }
+
+  const words = [];
+  const wordRegex = /\S+/g;
+  let match;
+
+  while ((match = wordRegex.exec(normalizedQuestion)) !== null) {
+    words.push({
+      text: match[0],
+      start: match.index,
+      end: match.index + match[0].length,
+    });
+  }
+
+  const spans = [];
+  const maxWords = 5;
+
+  for (let start = 0; start < words.length; start += 1) {
+    for (let end = start; end < Math.min(words.length, start + maxWords); end += 1) {
+      const phrase = normalizedQuestion.slice(words[start].start, words[end].end);
+      const phraseKey = normalizeLooseToken(phrase);
+
+      if (phraseKey === targetKey) {
+        spans.push({ start: words[start].start, end: words[end].end });
+      }
+
+      // Once the compact phrase is substantially longer than the target,
+      // adding more words cannot produce an exact compact-key match.
+      if (phraseKey.length > targetKey.length + 3) {
+        break;
+      }
+    }
+  }
+
+  return spans;
+}
+
 function inferValueFilters(
   rows,
   question,
@@ -1026,6 +1074,16 @@ function inferValueFilters(
               normalizedQuestion,
               candidate.normalized
             );
+
+          // Support generic separator/spacing variants in live categorical
+          // values, e.g. dataset "sugarcane" vs question "sugar cane".
+          // Exact matching remains first priority.
+          if (!spans.length) {
+            spans = findLooseEquivalentSpans(
+              normalizedQuestion,
+              candidate.normalized
+            );
+          }
 
           let ordinalAliasMatch =
             false;

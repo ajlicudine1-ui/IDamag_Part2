@@ -5044,6 +5044,82 @@ test('continuous compound follow-up preserves explicit token from multi-value fi
   }
 });
 
+
+test('multi-value token matching tolerates spacing variants such as sugar cane and sugarcane', () => {
+  const { valueMatchesToken } = require('./valueNormalizer');
+
+  assert.equal(
+    valueMatchesToken('rice, vegetables, sugarcane', 'sugar cane'),
+    true
+  );
+
+  assert.equal(
+    valueMatchesToken('rice, vegetables, sugar cane', 'sugarcane'),
+    true
+  );
+});
+
+test('continuous compound follow-up survives live multi-value spelling variants across scopes', async () => {
+  const { answerQuestion } = require('./chatbotService');
+  const { saveCompoundContext, clearConversation } = require('./conversationManager');
+
+  const sessionId = `complex-token-spacing-${Date.now()}`;
+  clearConversation(sessionId);
+
+  const datasets = {
+    Main: [
+      { Province: 'La Union', Association: 'LU Sugar', Commodities: 'rice, sugar cane, high value crops', 'No. of members': 82 },
+      { Province: 'Pangasinan', Association: 'Pang Sugar', Commodities: 'rice, vegetables, sugarcane', 'No. of members': 65 },
+      { Province: 'Pangasinan', Association: 'Pang Rice', Commodities: 'rice, vegetables', 'No. of members': 100 },
+    ],
+  };
+
+  saveCompoundContext(sessionId, {
+    question: 'List the associations in La Union that produce sugar cane, and tell me the total number of members among them.',
+    clauses: [
+      {
+        question: 'List the associations in La Union that produce sugar cane',
+        plan: {
+          route: 'dataset',
+          dataset: 'Main',
+          operation: 'list',
+          column: 'Association',
+          labelColumn: 'Association',
+          filters: [
+            { column: 'Commodities', operator: 'equals', value: 'sugar cane' },
+            { column: 'Province', operator: 'equals', value: 'La Union' },
+          ],
+          selectColumns: ['Association'],
+          showAll: true,
+        },
+        result: { success: true, source: 'dataset', dataset: 'Main', operation: 'list', results: ['LU Sugar'] },
+      },
+      {
+        question: 'tell me the total number of members among them',
+        plan: {
+          route: 'dataset',
+          dataset: 'Main',
+          operation: 'sum',
+          column: 'No. of members',
+          filters: [
+            { column: 'Commodities', operator: 'equals', value: 'sugar cane' },
+            { column: 'Province', operator: 'equals', value: 'La Union' },
+          ],
+          selectColumns: ['No. of members'],
+        },
+        result: { success: true, source: 'dataset', dataset: 'Main', operation: 'sum', value: 82 },
+      },
+    ],
+  });
+
+  const result = await answerQuestion(datasets, 'what about pangasinan?', sessionId);
+
+  assert.equal(result.operation, 'compound');
+  assert.equal(result.success, true);
+  assert.match(result.results[0].answer || '', /Pang Sugar/i);
+  assert.equal(result.results[1].value, 65);
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
