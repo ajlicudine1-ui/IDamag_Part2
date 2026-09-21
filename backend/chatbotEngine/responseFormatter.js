@@ -1098,6 +1098,7 @@ function formatRankingAnswer({
   labelColumn,
   aggregation,
   direction,
+  selectColumns = [],
   results = [],
 }) {
   if (!results.length) {
@@ -1138,13 +1139,25 @@ function formatRankingAnswer({
         ? `${aggregation} ${metric}`
         : metric;
 
-    return (
+    const detailColumns = (Array.isArray(selectColumns) ? selectColumns : [])
+      .filter((name) =>
+        name &&
+        name !== labelColumn &&
+        name !== column &&
+        item?.row &&
+        nonEmpty(item.row?.[name])
+      );
+
+    const detailText = detailColumns.length
+      ? ` ${detailColumns.map((name) => `${humanizeLabel(name)}: ${formatVerifiedValue(item.row?.[name])}`).join('; ')}.`
+      : '';
+
+    const base =
       `${item.label} has the ${rankWord} ` +
       `${aggregatePhrase} at ` +
-      `${formatVerifiedValue(
-        item.value
-      )}.`
-    );
+      `${formatVerifiedValue(item.value)}.`;
+
+    return detailText ? `${base}${detailText}` : base;
   }
 
   const heading =
@@ -1626,6 +1639,8 @@ function formatVerifiedResultAnswer({
       direction:
         result?.direction ||
         plan?.direction,
+      selectColumns:
+        Array.isArray(plan?.selectColumns) ? plan.selectColumns : [],
       results:
         rows,
     });

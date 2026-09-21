@@ -236,7 +236,13 @@ const {
 const {
   buildCompoundParityQuestion,
   hasAllInheritedScopeColumns,
+  mergeInheritedScopeIntoPlan,
 } = require("./compoundContextParityEngine");
+
+const {
+  enforcePlannerInvariants,
+  buildRankingDetailRescuePlan,
+} = require("./plannerInvariantEngine");
 
 
 
@@ -4497,16 +4503,14 @@ async function answerQuestion(
             );
 
           /**
-           * V7.36.5o — SHARED COMPOUND-SCOPE PARITY
+           * SHARED COMPOUND-SCOPE PARITY
            *
-           * A dependent clause such as "among them", "their total", or
-           * "those records" refers to the exact filtered set established by
-           * the preceding verified clause. Groq and the local planner must
-           * obey the same rule, so this repair is planner-source agnostic.
-           *
-           * If either planner drops part of the verified scope, rerun the
-           * clause with only the missing scope made explicit. This avoids
-           * dataset-specific rules and keeps Groq/local behavior aligned.
+           * Do NOT ask either planner to rediscover scope that was already
+           * verified by the preceding clause. Merge the missing scope into
+           * the executable plan itself, then execute that exact plan through
+           * the same validation/grounding pipeline. This keeps Groq and the
+           * local planner behavior identical and prevents planner retries from
+           * changing the metric/operation while trying to restore scope.
            */
           if (
             index > 0 &&
@@ -4520,30 +4524,25 @@ async function answerQuestion(
                   item?.result?.debugPlan?.route === "dataset"
                 );
 
-            const previousPlan =
-              previousVerified?.result?.debugPlan || null;
+            const previousPlan = previousVerified?.result?.debugPlan || null;
+            const currentPlan = subResult?.debugPlan || null;
+            const mergedScope = mergeInheritedScopeIntoPlan({
+              previousPlan,
+              currentPlan,
+              question: subQuestion,
+            });
 
-            const currentPlan =
-              subResult?.debugPlan || null;
-
-            const parityQuestion =
-              buildCompoundParityQuestion({
-                question: subQuestion,
-                previousPlan,
-                currentPlan,
-              });
-
-            if (parityQuestion) {
-              const parityResult =
-                await answerQuestion(
-                  input,
-                  parityQuestion,
-                  compoundSessionId,
-                  {
-                    disableCompound: true,
-                    compoundParityRetry: true,
-                  }
-                );
+            if (mergedScope.changed && mergedScope.plan) {
+              const parityResult = await answerQuestion(
+                input,
+                subQuestion,
+                compoundSessionId,
+                {
+                  disableCompound: true,
+                  compoundParityRetry: true,
+                  forcedPlan: mergedScope.plan,
+                }
+              );
 
               if (
                 parityResult?.success !== false &&
@@ -4553,14 +4552,7 @@ async function answerQuestion(
                   question: subQuestion,
                 })
               ) {
-                subResult = {
-                  ...parityResult,
-                  debugPlan: {
-                    ...(parityResult?.debugPlan || {}),
-                    compoundContextParityApplied: true,
-                    compoundContextParitySource: "shared",
-                  },
-                };
+                subResult = parityResult;
               }
             }
           }
@@ -5284,6 +5276,26 @@ async function answerQuestion(
         );
       }
 
+      // Some shared semantic-rescue plans are already fully grounded from
+      // the live schema. Preserve their structural intent across later
+      // generic repair passes (which may otherwise reinterpret phrases like
+      // "number of members" as a grouped count).
+      const protectedSemanticStructure = plan?.universalSemanticRescue
+        ? {
+            operation: plan.operation,
+            column: plan.column,
+            labelColumn: plan.labelColumn,
+            groupBy: plan.groupBy,
+            aggregation: plan.aggregation,
+            direction: plan.direction,
+            selectColumns: Array.isArray(plan.selectColumns) ? [...plan.selectColumns] : [],
+            limit: plan.limit,
+            showAll: plan.showAll,
+            referentialDetailEnrichment: plan.referentialDetailEnrichment,
+            universalSemanticRescue: true,
+          }
+        : null;
+
       /**
        * ==================================================
        * V7.36 COMMON PARITY GUARDS
@@ -5320,19 +5332,40 @@ async function answerQuestion(
             question: cleanQuestion,
           });
 
+        plan = enforcePlannerInvariants({
+          datasets,
+          schema,
+          plan,
+          question: cleanQuestion,
+        });
+
         const parityRows =
           datasets[
             plan.dataset
           ];
 
-        plan =
-          resolveComplexFilterPlan({
-            plan,
-            question:
-              cleanQuestion,
-            rows:
-              parityRows,
-          });
+        if (!plan?.referentialDetailEnrichment) {
+          plan =
+            resolveComplexFilterPlan({
+              plan,
+              question:
+                cleanQuestion,
+              rows:
+                parityRows,
+            });
+        }
+
+        // Boolean/filter reconstruction can introduce two equality filters
+        // on the same categorical column (e.g. Province=A and Province=B).
+        // Re-apply shared invariants after that reconstruction so such
+        // mutually exclusive equalities become an IN/OR scope before
+        // grounding and execution.
+        plan = enforcePlannerInvariants({
+          datasets,
+          schema,
+          plan,
+          question: cleanQuestion,
+        });
 
         if (
           plan?.complexFilterGroundingFailed ===
@@ -5497,6 +5530,24 @@ async function answerQuestion(
             internalOptions?.reportTitle ||
             null,
         });
+
+      // Re-assert cross-planner invariants after all semantic aggregate
+      // repairs. This is important for grouped wording such as "for each
+      // province", because some generic metric guards intentionally collapse
+      // grouped operations back to scalar operations.
+      plan = enforcePlannerInvariants({
+        datasets,
+        schema,
+        plan,
+        question: cleanQuestion,
+      });
+
+      if (protectedSemanticStructure && plan?.route === "dataset") {
+        plan = {
+          ...plan,
+          ...protectedSemanticStructure,
+        };
+      }
 
       plan = detectColumnAmbiguity({
         plan,
@@ -5999,6 +6050,25 @@ async function answerQuestion(
           entityResolution.changes || [],
       };
     };
+
+
+  // ========================================================
+  // SHARED FORCED-PLAN EXECUTION
+  // ========================================================
+  // Internal only. Compound parity uses this to execute an already verified
+  // plan after adding inherited scope, without asking Groq or the local
+  // planner to reinterpret the clause. All normal validation, grounding,
+  // entity resolution and result verification still run inside
+  // executeResolvedPlan().
+  if (internalOptions?.forcedPlan) {
+    const forcedPlan = enforcePlannerInvariants({
+      datasets,
+      schema,
+      plan: internalOptions.forcedPlan,
+      question: cleanQuestion,
+    });
+    return executeResolvedPlan(forcedPlan);
+  }
 
 
   // ========================================================
@@ -7301,6 +7371,33 @@ async function answerQuestion(
 
 
   // ========================================================
+  // UNIVERSAL RANKING + DETAIL RESCUE
+  // ========================================================
+  // Handles schema-driven requests such as:
+  //   "Which <entity> has the highest <metric>, and what <fields> ...?"
+  // This is not tied to any worksheet vocabulary. It only activates when
+  // live schema columns provide both a categorical label and numeric metric.
+  const rankingDetailRescuePlan = buildRankingDetailRescuePlan({
+    datasets,
+    schema,
+    question: cleanQuestion,
+  });
+
+  if (rankingDetailRescuePlan) {
+    const rankingDetailResult = await executeResolvedPlan(rankingDetailRescuePlan);
+    updateConversation(sessionId, {
+      question: cleanQuestion,
+      plan: rankingDetailRescuePlan,
+      result: rankingDetailResult,
+    });
+    return {
+      ...rankingDetailResult,
+      plannerSource: "shared-semantic-rescue",
+      ...buildGroqHandoffDiagnostics(),
+    };
+  }
+
+  // ========================================================
   // DETERMINISTIC LINKED MULTI-FIELD LOOKUP
   // ========================================================
   //
@@ -7484,10 +7581,18 @@ async function answerQuestion(
      * Collapse duplicate rows before storing the conversational result and
      * before formatting the answer.
      */
+    // executeResolvedPlan may apply shared planner invariants (for example,
+    // collapsing Province=A + Province=B into Province IN [A,B]). Use the
+    // VERIFIED executed plan for all downstream formatting and memory so the
+    // response cannot fall back to the narrower pre-repair planner draft.
+    const executedDirectFilteredFieldPlan =
+      rawDirectFilteredFieldResult?.debugPlan ||
+      directFilteredFieldPlan;
+
     const directFilteredFieldResult =
       normalizeDirectSingleFieldResult({
         plan:
-          directFilteredFieldPlan,
+          executedDirectFilteredFieldPlan,
         result:
           rawDirectFilteredFieldResult,
         question:
@@ -7500,7 +7605,7 @@ async function answerQuestion(
         question:
           cleanQuestion,
         plan:
-          directFilteredFieldPlan,
+          executedDirectFilteredFieldPlan,
         result:
           directFilteredFieldResult,
       }
@@ -7508,7 +7613,7 @@ async function answerQuestion(
 
     const directSingleFieldAnswer =
       (
-        directFilteredFieldPlan
+        executedDirectFilteredFieldPlan
           .operation ===
         "list"
       )
@@ -7517,7 +7622,7 @@ async function answerQuestion(
               question:
                 cleanQuestion,
               plan:
-                directFilteredFieldPlan,
+                executedDirectFilteredFieldPlan,
               result:
                 directFilteredFieldResult,
             }) ||
@@ -7525,7 +7630,7 @@ async function answerQuestion(
               result:
                 directFilteredFieldResult,
               subjectColumn:
-                directFilteredFieldPlan
+                executedDirectFilteredFieldPlan
                   .column,
             })
           )
@@ -7533,7 +7638,7 @@ async function answerQuestion(
             result:
               directFilteredFieldResult,
             subjectColumn:
-              directFilteredFieldPlan
+              executedDirectFilteredFieldPlan
                 .column,
           });
 

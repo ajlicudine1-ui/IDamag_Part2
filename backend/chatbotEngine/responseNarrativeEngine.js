@@ -473,6 +473,21 @@ function pluralizeDisplayLabel(value) {
   );
 }
 
+function formatScopeFilterValue(value) {
+  if (Array.isArray(value)) {
+    const items = value
+      .map((item) => String(item ?? "").trim())
+      .filter(Boolean);
+
+    if (!items.length) return "";
+    if (items.length === 1) return items[0];
+    if (items.length === 2) return `${items[0]} and ${items[1]}`;
+    return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
+  }
+
+  return String(value ?? "").trim();
+}
+
 function deriveFilteredListScopePhrase({
   question,
   plan,
@@ -511,9 +526,7 @@ function deriveFilteredListScopePhrase({
     );
 
   const displayValue =
-    String(
-      value
-    ).trim();
+    formatScopeFilterValue(value);
 
   if (
     /\bunder\b/.test(
@@ -619,7 +632,7 @@ function deriveContinuationScopePhrase(plan) {
     );
 
   const displayValue =
-    String(value).trim();
+    formatScopeFilterValue(value);
 
   if (
     /\b(?:phase|province|region|municipality|city|barangay|department|division|office|category|type|status|year|month|quarter|sex|gender|level|group)\b/.test(
@@ -874,6 +887,28 @@ function buildSemanticVerifiedAnswer({ question, plan, result } = {}) {
   if (op === 'lookup' && results.length) {
     const pairNarrative = buildLookupPairNarrative({ question, plan, result });
     if (pairNarrative) return pairNarrative;
+  }
+
+  if (op === 'row_count' && result?.value !== undefined && result?.value !== null) {
+    const rawQuestion = String(question || '').replace(/[?!.]+$/g, '').trim();
+    const howMany = rawQuestion.match(/^how\s+many\s+(.+)$/i);
+    if (howMany?.[1]) {
+      const subject = howMany[1]
+        .replace(/^\s*(?:is|are|was|were)\s+/i, '')
+        .replace(/\s+\b(?:is|are|was|were)\b\s+/i, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (subject) {
+        return `There are ${formatValue(result.value, null)} ${subject}.`;
+      }
+    }
+
+    const countOf = rawQuestion.match(/\b(?:count|number)\s+of\s+(.+)$/i);
+    if (countOf?.[1]) {
+      return `There are ${formatValue(result.value, null)} ${countOf[1].trim()}.`;
+    }
+
+    return `${formatValue(result.value, null)} matching records were found.`;
   }
 
   if (result?.value !== undefined && result?.value !== null && (op === 'lookup' || op === 'average' || op === 'sum' || op === 'minimum' || op === 'maximum' || op === 'median')) {

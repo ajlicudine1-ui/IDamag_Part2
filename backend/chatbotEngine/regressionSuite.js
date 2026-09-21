@@ -3114,7 +3114,7 @@ test('all simple list answers use the same format across planner sources', () =>
 
     assert.strictEqual(
       answer,
-      'The associations for SEC,DOLE are Association A, Association B, and Association C.'
+      'The associations for SEC and DOLE are Association A, Association B, and Association C.'
     );
   }
 });
@@ -3189,7 +3189,7 @@ test('IN filters do not render array values as awkward list scopes', () => {
 
   assert.strictEqual(
     answer,
-    'The associations for SEC,DOLE are Association A and Association B.'
+    'The associations for SEC and DOLE are Association A and Association B.'
   );
 });
 
@@ -5118,6 +5118,130 @@ test('continuous compound follow-up survives live multi-value spelling variants 
   assert.equal(result.success, true);
   assert.match(result.results[0].answer || '', /Pang Sugar/i);
   assert.equal(result.results[1].value, 65);
+});
+
+
+// ============================================================
+// PROBLEM #1 — COMPLEX QUESTION ARCHITECTURE REGRESSIONS
+// ============================================================
+
+test('same-column multi-value scope becomes IN instead of impossible AND', async () => {
+  const input = {
+    Main: [
+      { Province: 'Pangasinan', Association: 'P1' },
+      { Province: 'La Union', Association: 'L1' },
+      { Province: 'Ilocos Sur', Association: 'I1' },
+    ],
+  };
+
+  const result = await answerQuestion(
+    input,
+    'Show the associations in Pangasinan and La Union.',
+    `same-column-in-${Date.now()}`
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'list');
+  assert.deepEqual(new Set(result.results), new Set(['P1', 'L1']));
+  assert.equal(result.debugPlan?.filters?.length, 1);
+  assert.equal(result.debugPlan?.filters?.[0]?.operator, 'in');
+  assert.deepEqual(new Set(result.debugPlan?.filters?.[0]?.value), new Set(['Pangasinan', 'La Union']));
+});
+
+test('compound category scope carries into grouped for-each aggregate', async () => {
+  const input = {
+    Main: [
+      { Province: 'Pangasinan', Association: 'P1', 'No. of members': 100 },
+      { Province: 'Pangasinan', Association: 'P2', 'No. of members': 60 },
+      { Province: 'La Union', Association: 'L1', 'No. of members': 80 },
+      { Province: 'La Union', Association: 'L2', 'No. of members': 40 },
+      { Province: 'Ilocos Sur', Association: 'I1', 'No. of members': 200 },
+    ],
+  };
+
+  const result = await answerQuestion(
+    input,
+    'How many associations are in Pangasinan and La Union, and what is the average number of members for each province?',
+    `grouped-scope-${Date.now()}`
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'compound');
+  const second = result.results?.[1];
+  assert.equal(second?.operation, 'group_average');
+  assert.equal(second?.debugPlan?.groupBy, 'Province');
+  const provinceFilter = second?.debugPlan?.filters?.find((filter) => filter.column === 'Province');
+  assert.equal(provinceFilter?.operator, 'in');
+  assert.deepEqual(new Set(provinceFilter?.value), new Set(['Pangasinan', 'La Union']));
+  assert.match(second?.answer || '', /Pangasinan/i);
+  assert.match(second?.answer || '', /La Union/i);
+});
+
+test('ranking with dependent detail fields returns the ranked entity and requested fields', async () => {
+  const input = {
+    Main: [
+      { Province: 'Pangasinan', Barangay: 'A', Association: 'P1', 'No. of members': 100 },
+      { Province: 'Ilocos Sur', Barangay: 'B', Association: 'I1', 'No. of members': 200 },
+    ],
+  };
+
+  const result = await answerQuestion(
+    input,
+    'Which association has the highest number of members, and what province and barangay is it located in?',
+    `rank-detail-${Date.now()}`
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'rank_rows');
+  assert.equal(result.results?.[0]?.label, 'I1');
+  assert.equal(result.results?.[0]?.value, 200);
+  assert.equal(result.results?.[0]?.row?.Province, 'Ilocos Sur');
+  assert.equal(result.results?.[0]?.row?.Barangay, 'B');
+  assert.match(result.answer || '', /Ilocos Sur/i);
+  assert.match(result.answer || '', /Barangay:\s*B/i);
+});
+
+test('referential compound ranking preserves the identity column from the listed set', async () => {
+  const input = {
+    Main: [
+      { Association: 'A1', Province: 'P1', 'Climate-related Risks/Hazards': 'Drought', 'Total Land Area (ha)': 20 },
+      { Association: 'A2', Province: 'P2', 'Climate-related Risks/Hazards': 'Drought', 'Total Land Area (ha)': 30 },
+      { Association: 'A3', Province: 'P3', 'Climate-related Risks/Hazards': 'Flood', 'Total Land Area (ha)': 100 },
+    ],
+  };
+
+  const result = await answerQuestion(
+    input,
+    'List the associations exposed to drought, then tell me which one has the largest total land area.',
+    `referential-rank-${Date.now()}`
+  );
+
+  assert.equal(result.success, true);
+  const second = result.results?.[1];
+  assert.equal(second?.debugPlan?.labelColumn, 'Association');
+  assert.equal(second?.debugPlan?.groupBy, 'Association');
+  assert.match(second?.answer || '', /A2/i);
+  assert.doesNotMatch(second?.answer || '', /P2 has the highest/i);
+});
+
+test('how-many categorical target is counted rather than summed as a text metric', async () => {
+  const input = {
+    Main: [
+      { Association: 'A1', Registration: 'DOLE', 'Land Area': 10 },
+      { Association: 'A2', Registration: 'DOLE', 'Land Area': 20 },
+      { Association: 'A3', Registration: 'SEC', 'Land Area': 30 },
+    ],
+  };
+
+  const result = await answerQuestion(
+    input,
+    'How many associations are registered under DOLE?',
+    `categorical-count-${Date.now()}`
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'row_count');
+  assert.equal(result.value, 2);
 });
 
 async function run() {
