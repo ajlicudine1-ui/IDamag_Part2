@@ -9,6 +9,7 @@ import {
   CalendarDays,
   Star,
   SlidersHorizontal,
+  X,
 } from "lucide-react";
 
 import ManagementLayout from "../../components/management/ManagementLayout";
@@ -467,7 +468,7 @@ function FeedbackManagement() {
               className="
                 grid grid-cols-1 gap-4
                 md:grid-cols-2
-                xl:grid-cols-[auto_minmax(230px,1.55fr)_minmax(190px,1.15fr)_minmax(145px,0.8fr)_minmax(165px,0.95fr)_minmax(165px,0.95fr)_auto]
+                xl:grid-cols-[auto_minmax(230px,1.55fr)_minmax(190px,1.15fr)_minmax(145px,0.8fr)_minmax(165px,0.95fr)_minmax(165px,0.95fr)_auto_auto]
                 xl:items-end
               "
             >
@@ -617,17 +618,15 @@ function FeedbackManagement() {
                   disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-300
                 "
               >
+                <X size={15} />
                 Clear
               </button>
 
-            </div>
-
-            <div className="mt-4 flex justify-end border-t border-slate-100 pt-4">
-              <span className="text-xs font-bold text-slate-400">
+              <div className="flex h-[42px] items-center justify-start whitespace-nowrap text-xs font-bold text-slate-400 md:justify-end xl:justify-end">
                 {activeTab === "dashboard"
                   ? `${filteredDashboardFeedback.length} of ${dashboardFeedback.length} records`
                   : `${filteredWebsiteFeedback.length} of ${websiteFeedback.length} records`}
-              </span>
+              </div>
             </div>
           </div>
 
