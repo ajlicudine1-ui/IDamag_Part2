@@ -52,11 +52,22 @@ function getPreviousScopeFilters(previousPlan) {
   return merged;
 }
 
+function getPreviousScopeColumns(previousPlan) {
+  return getPreviousScopeFilters(previousPlan)
+    .map((filter) => normalizeText(filter?.column || ''))
+    .filter(Boolean);
+}
+
 function questionReferencesPreviousCategoryScope(question, previousPlan) {
   const text = normalizeText(question);
   if (!text) return false;
-  const categoryColumns = categoriesToFilters(previousPlan).map((f) => normalizeText(f.column)).filter(Boolean);
-  return categoryColumns.some((column) => {
+
+  // Use every verified previous-scope column, not only `categories` plans.
+  // A first clause may encode multi-value scope directly as
+  // `filters: [{ column: 'Province', operator: 'in', ... }]`.
+  // Later clauses such as "for each province" still refer to that scope.
+  const scopeColumns = getPreviousScopeColumns(previousPlan);
+  return scopeColumns.some((column) => {
     const escaped = column.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`\\b(?:each|every|these|those|same)\\s+${escaped}\\b|\\bfor\\s+each\\s+${escaped}\\b`).test(text);
   });
@@ -125,6 +136,66 @@ function applyReferentialIdentity(previousPlan, currentPlan, question) {
   return next;
 }
 
+function questionExplicitlyNamesColumn(question, column) {
+  const text = normalizeText(question);
+  const name = normalizeText(column);
+  if (!text || !name) return false;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\s+/g, '\\s+');
+  return new RegExp(`\\b${escaped}\\b`).test(text);
+}
+
+function removeGroupingPhraseArtifacts({ plan, question, inheritedFilters } = {}) {
+  if (!plan || plan.route !== 'dataset' || !plan.groupBy || !Array.isArray(plan.filters)) return plan;
+  const text = normalizeText(question);
+  const group = normalizeText(plan.groupBy);
+  if (!text || !group) return plan;
+
+  // Only act when the question explicitly uses a grouping construction.
+  const escapedGroup = group.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const groupedPhrase = new RegExp(`\\b(?:for\\s+each|for\\s+every|per|by)\\s+${escapedGroup}\\b`).test(text);
+  if (!groupedPhrase) return plan;
+
+  const inheritedColumns = new Set((inheritedFilters || []).map(getFilterColumnKey).filter(Boolean));
+  const filtered = plan.filters.filter((filter) => {
+    const filterColumn = getFilterColumnKey(filter);
+    if (!filterColumn || filterColumn === group || inheritedColumns.has(filterColumn)) return true;
+
+    const values = Array.isArray(filter?.value) ? filter.value : [filter?.value];
+    const valueLooksLikeGroupLabel = values.some((value) => normalizeText(value) === group);
+    if (!valueLooksLikeGroupLabel) return true;
+
+    // A planner can misread the group label (e.g. "province" in
+    // "for each province") as a categorical value of another column
+    // (e.g. Proponent LGU = Province). Remove that artifact unless the
+    // user explicitly named that filter column in the question.
+    return questionExplicitlyNamesColumn(question, filter?.column);
+  });
+
+  if (filtered.length === plan.filters.length) return plan;
+  return {
+    ...plan,
+    filters: filtered,
+    groupingPhraseFilterArtifactRemoved: true,
+  };
+}
+
+function dedupeFilters(filters) {
+  const out = [];
+  const seen = new Set();
+  for (const filter of Array.isArray(filters) ? filters : []) {
+    const cloned = cloneFilter(filter);
+    if (!cloned) continue;
+    const value = Array.isArray(cloned.value)
+      ? [...cloned.value].map((item) => normalizeText(item)).sort().join('|')
+      : normalizeText(cloned.value);
+    const key = `${getFilterColumnKey(cloned)}::${normalizeText(cloned.operator || 'equals')}::${value}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(cloned);
+  }
+  return out;
+}
+
 function mergeInheritedScopeIntoPlan({ previousPlan, currentPlan, question } = {}) {
   if (!currentPlan || typeof currentPlan !== 'object') return { plan: currentPlan, changed: false, inheritedFilters: [] };
   const missing = getMissingInheritedFilters({ previousPlan, currentPlan, question });
@@ -136,11 +207,33 @@ function mergeInheritedScopeIntoPlan({ previousPlan, currentPlan, question } = {
       ...mergedPlan,
       route: 'dataset',
       dataset: currentPlan.dataset || previousPlan?.dataset,
-      filters: [...(Array.isArray(currentPlan.filters) ? currentPlan.filters.map(cloneFilter).filter(Boolean) : []), ...missing],
+      filters: dedupeFilters([
+        ...(Array.isArray(currentPlan.filters) ? currentPlan.filters : []),
+        ...missing,
+      ]),
       compoundContextParityApplied: true,
       compoundContextParitySource: 'shared-direct-plan',
     };
     changed = true;
+  }
+
+  const artifactCleaned = removeGroupingPhraseArtifacts({
+    plan: mergedPlan,
+    question,
+    inheritedFilters: missing,
+  });
+  if (artifactCleaned !== mergedPlan) {
+    mergedPlan = artifactCleaned;
+    changed = true;
+  }
+
+  // Keep executable filters stable and duplicate-free regardless of planner source.
+  if (Array.isArray(mergedPlan.filters)) {
+    const deduped = dedupeFilters(mergedPlan.filters);
+    if (deduped.length !== mergedPlan.filters.length) {
+      mergedPlan = { ...mergedPlan, filters: deduped, duplicateFiltersRemoved: true };
+      changed = true;
+    }
   }
 
   const identityAdjusted = applyReferentialIdentity(previousPlan, mergedPlan, question);

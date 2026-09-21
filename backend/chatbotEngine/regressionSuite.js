@@ -5659,3 +5659,85 @@ test('total numeric metric repairs lookup to sum when no ranking intent exists',
   assert.equal(repaired.aggregateIntentParityApplied, true);
   assert.equal(repaired.filters.length, 2);
 });
+
+test('grouped compound clause inherits multi-value scope from previous filters and removes grouping-label filter artifacts', () => {
+  const { mergeInheritedScopeIntoPlan } = require('./compoundContextParityEngine');
+
+  const previousPlan = {
+    route: 'dataset',
+    dataset: 'Sheet1',
+    operation: 'row_count',
+    filters: [
+      {
+        column: 'Province',
+        operator: 'in',
+        value: ['Pangasinan', 'La Union'],
+      },
+    ],
+  };
+
+  const currentPlan = {
+    route: 'dataset',
+    dataset: 'Sheet1',
+    operation: 'group_average',
+    column: 'Total SP Cost',
+    groupBy: 'Province',
+    labelColumn: 'Province',
+    filters: [
+      {
+        column: 'Proponent LGU',
+        operator: 'equals',
+        value: 'Province',
+      },
+    ],
+    selectColumns: ['Province', 'Total SP Cost'],
+  };
+
+  const merged = mergeInheritedScopeIntoPlan({
+    previousPlan,
+    currentPlan,
+    question: 'what is the average total SP cost for each province',
+  });
+
+  assert.equal(merged.changed, true);
+  assert.equal(merged.plan.operation, 'group_average');
+  assert.equal(merged.plan.groupBy, 'Province');
+  assert.equal(merged.plan.groupingPhraseFilterArtifactRemoved, true);
+  assert.equal(
+    merged.plan.filters.some((filter) => filter.column === 'Proponent LGU'),
+    false
+  );
+  const provinceFilter = merged.plan.filters.find((filter) => filter.column === 'Province');
+  assert.equal(provinceFilter?.operator, 'in');
+  assert.deepEqual(new Set(provinceFilter?.value), new Set(['Pangasinan', 'La Union']));
+});
+
+test('grouped compound scope inheritance is planner-source agnostic', () => {
+  const { mergeInheritedScopeIntoPlan } = require('./compoundContextParityEngine');
+  const previousPlan = {
+    route: 'dataset',
+    dataset: 'AnyDataset',
+    filters: [{ column: 'Region', operator: 'in', value: ['North', 'South'] }],
+  };
+
+  for (const plannerSource of ['groq', 'local-fallback']) {
+    const merged = mergeInheritedScopeIntoPlan({
+      previousPlan,
+      currentPlan: {
+        route: 'dataset',
+        dataset: 'AnyDataset',
+        operation: 'group_average',
+        column: 'Amount',
+        groupBy: 'Region',
+        labelColumn: 'Region',
+        filters: [],
+        plannerSource,
+      },
+      question: 'what is the average amount for each region',
+    });
+
+    const regionFilter = merged.plan.filters.find((filter) => filter.column === 'Region');
+    assert.equal(regionFilter?.operator, 'in');
+    assert.deepEqual(new Set(regionFilter?.value), new Set(['North', 'South']));
+  }
+});
