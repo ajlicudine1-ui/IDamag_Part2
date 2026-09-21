@@ -16,6 +16,7 @@ const { currentQuestionRequiresReplan } = require('./currentQuestionOverrideEngi
 const { buildSemanticVerifiedAnswer } = require('./responseNarrativeEngine');
 const { currentQuestionOverridesAnalyticalGroup } = require('./plannerNormalizer');
 const { updateConversation, getRelevantContext, clearConversation, saveCompoundContext } = require('./conversationManager');
+const { answerQuestion } = require('./chatbotService');
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
@@ -4849,6 +4850,74 @@ test('explicit operation change does not force compound operation inheritance', 
   assert.match(source, /const explicitlyChangesOperation\s*=/);
   assert.match(source, /!explicitlyChangesOperation\s*&&\s*previousCompoundContext/);
 });
+
+
+test('real answerQuestion continues prior compound intent before Groq can collapse the follow-up', async () => {
+  const sessionId = 'v7365p-real-compound-followup';
+  clearConversation(sessionId);
+
+  const datasets = {
+    Main: [
+      { Phase: 'Phase 3', Province: 'Pangasinan', Association: 'A', 'Total Land Area (ha)': 100 },
+      { Phase: 'Phase 3', Province: 'Pangasinan', Association: 'B', 'Total Land Area (ha)': 82.78 },
+      { Phase: 'Phase 2', Province: 'Pangasinan', Association: 'C', 'Total Land Area (ha)': 50 },
+      { Phase: 'Phase 2', Province: 'Pangasinan', Association: 'D', 'Total Land Area (ha)': 70 },
+      { Phase: 'Phase 2', Province: 'La Union', Association: 'E', 'Total Land Area (ha)': 500 },
+    ],
+  };
+
+  saveCompoundContext(sessionId, {
+    question: 'How many Phase 3 associations are in Pangasinan, and what is their total land area?',
+    clauses: [
+      {
+        question: 'How many Phase 3 associations are in Pangasinan',
+        plan: {
+          route: 'dataset',
+          dataset: 'Main',
+          operation: 'row_count',
+          filters: [
+            { column: 'Phase', operator: 'equals', value: 'Phase 3' },
+            { column: 'Province', operator: 'equals', value: 'Pangasinan' },
+          ],
+          selectColumns: [],
+        },
+        result: { success: true, source: 'dataset', dataset: 'Main', operation: 'row_count', value: 2 },
+      },
+      {
+        question: 'what is their total land area?',
+        plan: {
+          route: 'dataset',
+          dataset: 'Main',
+          operation: 'sum',
+          column: 'Total Land Area (ha)',
+          filters: [
+            { column: 'Phase', operator: 'equals', value: 'Phase 3' },
+            { column: 'Province', operator: 'equals', value: 'Pangasinan' },
+          ],
+          selectColumns: [],
+        },
+        result: { success: true, source: 'dataset', dataset: 'Main', operation: 'sum', value: 182.78 },
+      },
+    ],
+  });
+
+  const result = await answerQuestion(datasets, 'what about phase 2?', sessionId);
+
+  assert.equal(result.operation, 'compound');
+  assert.equal(result.plannerSource, 'conversation-compound');
+  assert.equal(result.results.length, 2);
+  assert.equal(result.results[0].operation, 'row_count');
+  assert.equal(result.results[0].value, 2);
+  assert.equal(result.results[1].operation, 'sum');
+  assert.equal(result.results[1].value, 120);
+
+  for (const item of result.results) {
+    const filters = item.debugPlan.filters;
+    assert.ok(filters.some((f) => f.column === 'Phase' && f.value === 'Phase 2'));
+    assert.ok(filters.some((f) => f.column === 'Province' && f.value === 'Pangasinan'));
+  }
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
