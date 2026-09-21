@@ -1982,6 +1982,34 @@ function executePlan({
         );
       }
 
+      const requestedDetailColumns =
+        (Array.isArray(plan.selectColumns)
+          ? plan.selectColumns
+          : [])
+          .filter((column) =>
+            column &&
+            column !== labelColumn &&
+            column !== metricColumn &&
+            Object.prototype.hasOwnProperty.call(filteredRows[0] || {}, column)
+          );
+
+      const rankedAnswerLines = ranked.map((item, index) => {
+        const details = requestedDetailColumns
+          .map((column) => {
+            const value = item.row?.[column];
+            if (value === null || value === undefined || String(value).trim() === "") {
+              return null;
+            }
+            return `${column}: ${String(value).trim()}`;
+          })
+          .filter(Boolean);
+
+        return (
+          `${index + 1}. ${item.label}: ${formatNumber(item.value)}` +
+          (details.length ? ` — ${details.join("; ")}` : "")
+        );
+      });
+
       return {
         success: true,
         source: "dataset",
@@ -1995,12 +2023,7 @@ function executePlan({
         answer:
           `${direction === "desc" ? "Top" : "Bottom"} ${ranked.length} ` +
           `${labelColumn} by ${metricColumn} in ${datasetName}${filterText}:\n` +
-          ranked
-            .map(
-              (item, index) =>
-                `${index + 1}. ${item.label}: ${formatNumber(item.value)}`
-            )
-            .join("\n"),
+          rankedAnswerLines.join("\n"),
       };
     }
 

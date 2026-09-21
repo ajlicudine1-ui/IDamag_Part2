@@ -696,6 +696,92 @@ function isNumericLikeColumn({
 }
 
 
+
+function splitDependentDetailTail(question) {
+  const original = String(question || "").replace(/\s+/g, " ").trim();
+  if (!original) {
+    return { coreQuestion: original, detailTail: "" };
+  }
+
+  const match = original.match(
+    /^(.*?)(?:,?\s+and\s+)((?:what|which|where|who)\b.+)$/i
+  );
+
+  if (!match?.[1] || !match?.[2]) {
+    return { coreQuestion: original, detailTail: "" };
+  }
+
+  const tail = match[2].trim();
+  const normalizedTail = normalizeText(tail);
+
+  const referential =
+    /\b(?:it|its|they|them|their|those|these|that|this|same)\b/.test(
+      normalizedTail
+    );
+
+  const independentAnalyticalOperation =
+    /\b(?:total|sum|average|avg|mean|median|minimum|maximum|max|min|count|number\s+of|how\s+many|how\s+much|percentage|percent|ratio|difference|top|bottom|highest|lowest|largest|smallest|compare|rank)\b/.test(
+      normalizedTail
+    );
+
+  if (!referential || independentAnalyticalOperation) {
+    return { coreQuestion: original, detailTail: "" };
+  }
+
+  return {
+    coreQuestion: match[1].trim(),
+    detailTail: tail,
+  };
+}
+
+function inferRequestedDetailColumns({
+  detailTail,
+  columns,
+  excluded = [],
+} = {}) {
+  const tail = normalizeText(detailTail);
+  if (!tail || !Array.isArray(columns)) {
+    return [];
+  }
+
+  const excludedSet = new Set(
+    excluded.filter(Boolean).map((value) => normalizeText(value))
+  );
+
+  return columns
+    .map((column, index) => {
+      const name = column?.name || column;
+      const normalizedName = normalizeText(name);
+      if (!normalizedName || excludedSet.has(normalizedName)) {
+        return null;
+      }
+
+      const tokens = normalizedName
+        .split(/\s+/)
+        .filter((token) => token && !["of", "the", "no", "number"].includes(token));
+
+      if (!tokens.length) {
+        return null;
+      }
+
+      const exactPhrase = tail.includes(normalizedName);
+      const tokenCoverage = tokens.every((token) => tail.includes(token));
+
+      if (!exactPhrase && !tokenCoverage) {
+        return null;
+      }
+
+      return {
+        column: name,
+        score: (exactPhrase ? 10 : 0) + tokens.length,
+        index,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((item) => item.column);
+}
+
 function parseRankingTargets(
   question
 ) {
@@ -1008,14 +1094,19 @@ function repairRankingIdentityPlan({
       question,
     });
 
+  const {
+    coreQuestion: rankingCoreQuestion,
+    detailTail: rankingDetailTail,
+  } = splitDependentDetailTail(question);
+
   const direction =
     detectRankingDirection(
-      question
+      rankingCoreQuestion
     );
 
   const targets =
     parseRankingTargets(
-      question
+      rankingCoreQuestion
     );
 
   if (
@@ -1404,9 +1495,20 @@ function repairRankingIdentityPlan({
     }
   }
 
+  const requestedDetailColumns =
+    inferRequestedDetailColumns({
+      detailTail: rankingDetailTail,
+      columns,
+      excluded: [
+        ...identityColumns,
+        metric.column.name,
+      ],
+    });
+
   const selectColumns = [
     ...identityColumns,
     metric.column.name,
+    ...requestedDetailColumns,
   ];
 
   /**
@@ -1567,6 +1669,7 @@ function repairRankingIdentityPlan({
         [
           finalLabelColumn,
           metric.column.name,
+          ...requestedDetailColumns,
         ].filter(Boolean)
       ),
     ],

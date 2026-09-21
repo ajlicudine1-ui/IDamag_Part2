@@ -4918,6 +4918,132 @@ test('real answerQuestion continues prior compound intent before Groq can collap
   }
 });
 
+
+// ============================================================
+// V7.36.5q — SYSTEMIC COMPLEX-QUESTION CLASSIFICATION
+// ============================================================
+
+test('dependent detail enrichment stays one request instead of being split', () => {
+  const { decomposeComplexQuestion } = require('./complexQuestionParityEngine');
+  const result = decomposeComplexQuestion(
+    'Which association has the highest number of members, and what province and barangay is it located in?'
+  );
+
+  assert.equal(result.isComplex, false);
+  assert.equal(result.clauses.length, 1);
+});
+
+test('dependent analytical calculation still splits as a compound request', () => {
+  const { decomposeComplexQuestion } = require('./complexQuestionParityEngine');
+  const result = decomposeComplexQuestion(
+    'List the associations in La Union that produce sugar cane, and tell me the total number of members among them.'
+  );
+
+  assert.equal(result.isComplex, true);
+  assert.equal(result.clauses.length, 2);
+  assert.deepEqual(result.dependentClauseIndexes, [1]);
+});
+
+
+test('ranked entity plus referential detail fields executes as one row-aware request', async () => {
+  const { answerQuestion } = require('./chatbotService');
+  const { clearConversation } = require('./conversationManager');
+
+  const sessionId = `rank-detail-${Date.now()}`;
+  clearConversation(sessionId);
+
+  const datasets = {
+    Main: [
+      { Association: 'A', Province: 'North', Barangay: 'One', 'No. of members': 50 },
+      { Association: 'B', Province: 'South', Barangay: 'Two', 'No. of members': 100 },
+      { Association: 'C', Province: 'East', Barangay: 'Three', 'No. of members': 80 },
+    ],
+  };
+
+  const result = await answerQuestion(
+    datasets,
+    'Which association has the highest number of members, and what province and barangay is it located in?',
+    sessionId
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'rank_rows');
+  assert.equal(result.column, 'No. of members');
+  assert.equal(result.labelColumn, 'Association');
+  assert.equal(result.results[0].label, 'B');
+  assert.equal(result.results[0].row.Province, 'South');
+  assert.equal(result.results[0].row.Barangay, 'Two');
+  assert.ok((result.debugPlan.selectColumns || []).includes('Province'));
+  assert.ok((result.debugPlan.selectColumns || []).includes('Barangay'));
+});
+
+test('continuous compound follow-up preserves explicit token from multi-value field instead of whole prior cell', async () => {
+  const { answerQuestion } = require('./chatbotService');
+  const { saveCompoundContext, clearConversation } = require('./conversationManager');
+
+  const sessionId = `complex-token-${Date.now()}`;
+  clearConversation(sessionId);
+
+  const datasets = {
+    Main: [
+      { Province: 'La Union', Association: 'LU Sugar', Commodities: 'rice, sugar cane, high value crops', 'No. of members': 82 },
+      { Province: 'Pangasinan', Association: 'Pang Sugar', Commodities: 'rice, vegetables, sugar cane', 'No. of members': 65 },
+      { Province: 'Pangasinan', Association: 'Pang Rice', Commodities: 'rice, vegetables', 'No. of members': 100 },
+    ],
+  };
+
+  saveCompoundContext(sessionId, {
+    question: 'List the associations in La Union that produce sugar cane, and tell me the total number of members among them.',
+    clauses: [
+      {
+        question: 'List the associations in La Union that produce sugar cane',
+        plan: {
+          route: 'dataset',
+          dataset: 'Main',
+          operation: 'list',
+          column: 'Association',
+          labelColumn: 'Association',
+          filters: [
+            { column: 'Commodities', operator: 'equals', value: 'rice, sugar cane, high value crops' },
+            { column: 'Province', operator: 'equals', value: 'La Union' },
+          ],
+          selectColumns: ['Association'],
+          showAll: true,
+        },
+        result: { success: true, source: 'dataset', dataset: 'Main', operation: 'list', results: ['LU Sugar'] },
+      },
+      {
+        question: 'tell me the total number of members among them',
+        plan: {
+          route: 'dataset',
+          dataset: 'Main',
+          operation: 'sum',
+          column: 'No. of members',
+          filters: [
+            { column: 'Commodities', operator: 'equals', value: 'rice, sugar cane, high value crops' },
+            { column: 'Province', operator: 'equals', value: 'La Union' },
+          ],
+          selectColumns: ['No. of members'],
+        },
+        result: { success: true, source: 'dataset', dataset: 'Main', operation: 'sum', value: 82 },
+      },
+    ],
+  });
+
+  const result = await answerQuestion(datasets, 'what about pangasinan?', sessionId);
+
+  assert.equal(result.operation, 'compound');
+  assert.equal(result.results.length, 2);
+  assert.match(result.results[0].answer || '', /Pang Sugar/i);
+  assert.equal(result.results[1].value, 65);
+
+  for (const item of result.results) {
+    const filters = item.debugPlan.filters || [];
+    assert.ok(filters.some((f) => f.column === 'Province' && f.value === 'Pangasinan'));
+    assert.ok(filters.some((f) => f.column === 'Commodities' && /sugar cane/i.test(String(f.value))));
+  }
+});
+
 async function run() {
   let passed = 0;
   const failures = [];

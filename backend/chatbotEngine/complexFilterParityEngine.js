@@ -448,6 +448,16 @@ function resolveComplexFilterPlan({
       .length;
 
   /**
+   * Coordination is not automatically boolean filtering. Questions may
+   * join requested output fields/details with "and" (for example, ask
+   * for a ranked row and then its location). When none of the coordinated
+   * clauses grounds to a live filter, leave the analytical plan untouched.
+   */
+  if (groundedCount === 0) {
+    return plan;
+  }
+
+  /**
    * Only rewrite the plan when EVERY boolean clause is independently
    * grounded to exactly one live dataset filter. Partial boolean parsing is
    * unsafe because it silently drops part of the user's condition.

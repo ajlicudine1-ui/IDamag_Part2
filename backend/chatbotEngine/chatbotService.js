@@ -5232,6 +5232,21 @@ async function answerQuestion(
           ]
         )
       ) {
+        /**
+         * Final shared planner normalization. Groq, local fallback,
+         * conversation continuations, and deterministic plans all pass
+         * through the same schema-driven ranking/output repair immediately
+         * before execution. This prevents later local-parity repairs from
+         * accidentally undoing an earlier correct ranking interpretation.
+         */
+        plan =
+          normalizePlannerPlan({
+            datasets,
+            schema,
+            plan,
+            question: cleanQuestion,
+          });
+
         const parityRows =
           datasets[
             plan.dataset
@@ -5990,17 +6005,47 @@ async function answerQuestion(
           .filter(Boolean)
       );
 
+      /**
+       * Re-ground the PREVIOUS clause from its original wording before
+       * inheriting its scope. This prevents a planner-normalized value from
+       * becoming overly specific across follow-ups (for example preserving
+       * a whole multi-value cell instead of the explicitly asked token).
+       * The original user wording is the stable semantic source; the live
+       * worksheet still validates every reconstructed filter.
+       */
+      const previousExplicitFilters =
+        inferCoherentFilters(
+          rows,
+          earlyPreviousCompoundContext?.question ||
+            previousClause?.question ||
+            ""
+        );
+
+      const previousExplicitByColumn =
+        new Map(
+          (Array.isArray(previousExplicitFilters)
+            ? previousExplicitFilters
+            : [])
+            .filter((filter) => filter?.column)
+            .map((filter) => [filter.column, filter])
+        );
+
       const inheritedFilters =
         (Array.isArray(previousPlan.filters) ? previousPlan.filters : [])
           .filter((filter) =>
             filter?.column && !replacementColumns.has(filter.column)
           )
-          .map((filter) => ({
-            ...filter,
-            value: Array.isArray(filter?.value)
-              ? [...filter.value]
-              : filter?.value,
-          }));
+          .map((filter) => {
+            const explicit = previousExplicitByColumn.get(filter.column);
+            const source = explicit || filter;
+
+            return {
+              ...source,
+              value: Array.isArray(source?.value)
+                ? [...source.value]
+                : source?.value,
+            };
+          });
 
       const finalFilters = [
         ...inheritedFilters,
@@ -6037,7 +6082,12 @@ async function answerQuestion(
       continuedClauses.length === earlyPreviousCompoundContext.clauses.length
     ) {
       saveCompoundContext(sessionId, {
-        question: cleanQuestion,
+        // Preserve the original compound semantic request across multiple
+        // elliptical follow-ups. The short follow-up changes scope, but it
+        // does not replace the subject/operations that define the compound.
+        question:
+          earlyPreviousCompoundContext.question ||
+          cleanQuestion,
         clauses: continuedClauses,
       });
 
@@ -7758,7 +7808,12 @@ async function answerQuestion(
       continuedClauses.length === previousCompoundContext.clauses.length
     ) {
       saveCompoundContext(sessionId, {
-        question: cleanQuestion,
+        // Preserve the original compound semantic request across multiple
+        // elliptical follow-ups. The short follow-up changes scope, but it
+        // does not replace the subject/operations that define the compound.
+        question:
+          earlyPreviousCompoundContext.question ||
+          cleanQuestion,
         clauses: continuedClauses,
       });
 

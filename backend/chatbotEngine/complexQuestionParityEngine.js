@@ -27,6 +27,31 @@ const ANALYTICAL_START =
 const ANALYTICAL_ANYWHERE =
   /\b(?:total|sum|average|avg|mean|median|minimum|maximum|max|min|count|number\s+of|how\s+many|how\s+much|percentage|percent|ratio|difference|top|bottom|highest|lowest|largest|smallest|compare|rank)\b/i;
 
+const STRONG_ANALYTICAL_OPERATION =
+  /\b(?:total|sum|average|avg|mean|median|minimum|maximum|max|min|count|number\s+of|how\s+many|how\s+much|percentage|percent|ratio|difference|top|bottom|highest|lowest|largest|smallest|compare|rank)\b/i;
+
+function isReferentialDetailClause(value) {
+  const clause = cleanClause(value);
+  if (!clause || !isDependentComplexClause(clause)) {
+    return false;
+  }
+
+  /**
+   * A dependent clause that only asks for additional attributes of the
+   * same selected/ranked entity is not an independent analytical request.
+   *
+   * Examples:
+   *   "and what province and barangay is it located in"
+   *   "and what is its registration number"
+   *
+   * Keep these attached to the original question so the planner can build
+   * one row-aware result with extra output fields. A dependent clause with
+   * its own analytical operation (total/average/count/etc.) remains a true
+   * compound clause.
+   */
+  return !STRONG_ANALYTICAL_OPERATION.test(clause);
+}
+
 function cleanClause(value) {
   return String(value || "")
     .replace(/\s+/g, " ")
@@ -150,6 +175,18 @@ function decomposeComplexQuestion(question) {
     };
   }
 
+  // Dependent detail/enrichment clauses belong to the SAME selected row or
+  // ranked entity and must not be split into a second analytical request.
+  // This prevents questions such as "Which record is highest, and what
+  // location is it in?" from losing the selected entity between clauses.
+  if (meaningful.slice(1).some(isReferentialDetailClause)) {
+    return {
+      isComplex: false,
+      clauses: [original],
+      dependentClauseIndexes: [],
+    };
+  }
+
   // Defensive check: every clause after the first must itself look like
   // an analytical request. If not, keep the whole sentence intact.
   if (!meaningful.slice(1).every(looksLikeIndependentClause)) {
@@ -178,5 +215,6 @@ module.exports = {
   hasAnalyticalCue,
   looksLikeIndependentClause,
   isDependentComplexClause,
+  isReferentialDetailClause,
   decomposeComplexQuestion,
 };
