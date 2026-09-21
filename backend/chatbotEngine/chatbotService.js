@@ -33,6 +33,7 @@ const {
   updateConversation,
   getRecentResults,
   applyConversationCorrection,
+  saveCompoundContext,
 } = require("./conversationManager");
 
 const {
@@ -4512,6 +4513,21 @@ async function answerQuestion(
         });
       }
 
+      /**
+       * Persist the COMPLETE verified compound intent to the user's real
+       * session. This is what allows the next short turn, e.g.
+       * "what about Phase 2?", to preserve every previous operation rather
+       * than inheriting only the final clause.
+       */
+      saveCompoundContext(sessionId, {
+        question: cleanQuestion,
+        clauses: subResults.map((item) => ({
+          question: item.question,
+          plan: item.result?.debugPlan || null,
+          result: item.result || null,
+        })),
+      });
+
       return {
         success:
           subResults.every(
@@ -7445,6 +7461,176 @@ async function answerQuestion(
       preferExplicitValueFilter ||
       !sameQueryMetricColumn
     );
+
+  // ========================================================
+  // CONTINUOUS COMPOUND FOLLOW-UP
+  // ========================================================
+  //
+  // Example:
+  //   Q1: "How many <rows> are in X, and what is their total <metric>?"
+  //   Q2: "What about Y?"
+  //
+  // Preserve ALL verified operations from Q1 and replace only the scope
+  // explicitly mentioned in Q2. This runs before ordinary single-plan
+  // continuity so a compound question is never collapsed to its last clause.
+  //
+  const previousCompoundContext =
+    conversationContext?.compoundContext;
+
+  const compoundFollowUpPrefix =
+    /^(?:what|how)\s+about\b|^and\b|^for\b|^also\b|^then\b/i.test(
+      String(cleanQuestion || "").trim()
+    );
+
+  const explicitlyChangesOperation =
+    /\b(?:list|show|display|name|count|how many|number of|sum|total|average|avg|mean|minimum|maximum|highest|lowest|top|bottom|rank|compare|difference|median)\b/i.test(
+      String(cleanQuestion || "")
+    );
+
+  if (
+    conversationContext?.isFollowUp === true &&
+    compoundFollowUpPrefix &&
+    !explicitlyChangesOperation &&
+    previousCompoundContext &&
+    Array.isArray(previousCompoundContext.clauses) &&
+    previousCompoundContext.clauses.length > 1
+  ) {
+    const continuedClauses = [];
+    let foundExplicitScope = false;
+
+    for (const previousClause of previousCompoundContext.clauses) {
+      const previousPlan = previousClause?.plan || {};
+      const previousDataset = previousPlan?.dataset;
+      const rows =
+        previousDataset && Array.isArray(datasets?.[previousDataset])
+          ? datasets[previousDataset]
+          : [];
+
+      if (!rows.length || previousPlan.route !== "dataset") {
+        continue;
+      }
+
+      let newFilters = inferCoherentFilters(
+        rows,
+        cleanQuestion
+      );
+
+      if (!Array.isArray(newFilters) || !newFilters.length) {
+        const preferredColumns = new Set(
+          (Array.isArray(previousPlan.filters) ? previousPlan.filters : [])
+            .map((filter) => filter?.column)
+            .filter(Boolean)
+        );
+
+        newFilters = inferApproximateFollowUpFilter({
+          rows,
+          question: cleanQuestion,
+          preferredColumns,
+        });
+      }
+
+      if (!Array.isArray(newFilters) || !newFilters.length) {
+        continue;
+      }
+
+      foundExplicitScope = true;
+
+      const replacementColumns = new Set(
+        newFilters
+          .map((filter) => filter?.column)
+          .filter(Boolean)
+      );
+
+      const inheritedFilters =
+        (Array.isArray(previousPlan.filters) ? previousPlan.filters : [])
+          .filter((filter) =>
+            filter?.column &&
+            !replacementColumns.has(filter.column)
+          )
+          .map((filter) => ({
+            ...filter,
+            value: Array.isArray(filter?.value)
+              ? [...filter.value]
+              : filter?.value,
+          }));
+
+      const finalFilters = [
+        ...inheritedFilters,
+        ...newFilters.map((filter) => ({
+          ...filter,
+          value: Array.isArray(filter?.value)
+            ? [...filter.value]
+            : filter?.value,
+        })),
+      ];
+
+      const continuedPlan = {
+        ...previousPlan,
+        route: "dataset",
+        dataset: previousDataset,
+        filters: finalFilters,
+        filterGroups: [],
+        filterGroupLogic: null,
+        outputRequested: true,
+        conversationalCompoundContinuation: true,
+      };
+
+      const continuedResult =
+        await executeResolvedPlan(continuedPlan);
+
+      continuedClauses.push({
+        question: previousClause.question || cleanQuestion,
+        plan: continuedResult?.debugPlan || continuedPlan,
+        result: continuedResult,
+      });
+    }
+
+    if (
+      foundExplicitScope &&
+      continuedClauses.length === previousCompoundContext.clauses.length
+    ) {
+      saveCompoundContext(sessionId, {
+        question: cleanQuestion,
+        clauses: continuedClauses,
+      });
+
+      const subResults = continuedClauses.map((item) => ({
+        question: item.question,
+        result: item.result,
+      }));
+
+      return {
+        success: continuedClauses.every(
+          (item) => item.result?.success !== false
+        ),
+        source: "dataset",
+        operation: "compound",
+        questionCount: continuedClauses.length,
+        questions: continuedClauses.map((item) => item.question),
+        results: continuedClauses.map((item) => ({
+          question: item.question,
+          success: item.result?.success,
+          dataset: item.result?.dataset || null,
+          operation: item.result?.operation || null,
+          value: item.result?.value,
+          categories: item.result?.categories,
+          answer: item.result?.answer,
+          plannerSource: "conversation",
+          debugPlan: item.result?.debugPlan || item.plan,
+        })),
+        answer: improveCompoundAnswerWording(subResults),
+        responseStyle: "natural",
+        plannerSource: "conversation-compound",
+        debugPlan: {
+          route: "compound",
+          operation: "compound",
+          conversationalCompoundContinuation: true,
+          inheritedOperationCount: continuedClauses.length,
+          previousCompoundQuestion: previousCompoundContext.question || null,
+        },
+      };
+    }
+  }
 
   // ========================================================
   // EXPLICIT WORKSHEET SWITCH FOLLOW-UP

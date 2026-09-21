@@ -15,7 +15,7 @@ const { buildSemanticPlan, semanticPlanToExecutable } = require('./semanticPlan'
 const { currentQuestionRequiresReplan } = require('./currentQuestionOverrideEngine');
 const { buildSemanticVerifiedAnswer } = require('./responseNarrativeEngine');
 const { currentQuestionOverridesAnalyticalGroup } = require('./plannerNormalizer');
-const { updateConversation, getRelevantContext, clearConversation } = require('./conversationManager');
+const { updateConversation, getRelevantContext, clearConversation, saveCompoundContext } = require('./conversationManager');
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
@@ -4771,6 +4771,84 @@ test('referential metric follow-up does not clear verified scope as a fresh anal
   );
 });
 
+
+
+// ============================================================
+// V7.36.5o — CONTINUOUS COMPOUND Q&A
+// ============================================================
+
+test('compound context is persisted to the real session for later follow-ups', () => {
+  const sessionId = 'v7365o-compound-memory';
+  clearConversation(sessionId);
+
+  saveCompoundContext(sessionId, {
+    question: 'How many Phase 3 associations are in Pangasinan, and what is their total land area?',
+    clauses: [
+      {
+        question: 'How many Phase 3 associations are in Pangasinan',
+        plan: {
+          route: 'dataset',
+          dataset: 'Main',
+          operation: 'row_count',
+          filters: [
+            { column: 'Phase', operator: 'equals', value: 'Phase 3' },
+            { column: 'Province', operator: 'equals', value: 'Pangasinan' },
+          ],
+        },
+        result: { success: true, operation: 'row_count', value: 2 },
+      },
+      {
+        question: 'what is their total land area?',
+        plan: {
+          route: 'dataset',
+          dataset: 'Main',
+          operation: 'sum',
+          column: 'Total Land Area (ha)',
+          filters: [
+            { column: 'Phase', operator: 'equals', value: 'Phase 3' },
+            { column: 'Province', operator: 'equals', value: 'Pangasinan' },
+          ],
+        },
+        result: { success: true, operation: 'sum', value: 182.78 },
+      },
+    ],
+  });
+
+  const context = getRelevantContext(sessionId, 'what about phase 2?');
+  assert.equal(context.isFollowUp, true);
+  assert.ok(context.compoundContext);
+  assert.equal(context.compoundContext.clauses.length, 2);
+  assert.equal(context.compoundContext.clauses[0].plan.operation, 'row_count');
+  assert.equal(context.compoundContext.clauses[1].plan.operation, 'sum');
+  assert.equal(context.compoundContext.clauses[1].plan.column, 'Total Land Area (ha)');
+});
+
+test('continuous compound follow-up preserves unrelated filters and replaces only the mentioned column', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, 'chatbotService.js'),
+    'utf8'
+  );
+
+  assert.match(source, /conversationalCompoundContinuation/);
+  assert.match(
+    source,
+    /!replacementColumns\.has\(filter\.column\)/
+  );
+  assert.match(
+    source,
+    /previousCompoundContext\.clauses\.length > 1/
+  );
+});
+
+test('explicit operation change does not force compound operation inheritance', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, 'chatbotService.js'),
+    'utf8'
+  );
+
+  assert.match(source, /const explicitlyChangesOperation\s*=/);
+  assert.match(source, /!explicitlyChangesOperation\s*&&\s*previousCompoundContext/);
+});
 async function run() {
   let passed = 0;
   const failures = [];
