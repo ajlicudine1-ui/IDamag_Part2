@@ -19,6 +19,7 @@ function FeedbackManagement() {
 
   const [sortField, setSortField] = useState("");
   const [sortOrder, setSortOrder] = useState("desc");
+  const [selectedDashboard, setSelectedDashboard] = useState("");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
 
@@ -198,13 +199,39 @@ function FeedbackManagement() {
     return true;
   };
 
+  const dashboardNames = Array.from(
+    new Set(
+      dashboardFeedback
+        .map((feedback) =>
+          String(
+            feedback.dashboard_name ??
+              feedback.dashboardName ??
+              ""
+          ).trim()
+        )
+        .filter(Boolean)
+    )
+  ).sort((a, b) => a.localeCompare(b));
+
   const filteredDashboardFeedback = dashboardFeedback
-    .filter((feedback) =>
-      isWithinDateRange(
+    .filter((feedback) => {
+      const dashboardName = String(
+        feedback.dashboard_name ??
+          feedback.dashboardName ??
+          ""
+      ).trim();
+
+      const matchesDashboard =
+        !selectedDashboard ||
+        dashboardName === selectedDashboard;
+
+      const matchesDate = isWithinDateRange(
         feedback.created_at ??
           feedback.createdAt
-      )
-    )
+      );
+
+      return matchesDashboard && matchesDate;
+    })
     .sort((a, b) => {
       if (!sortField) {
         return 0;
@@ -251,12 +278,14 @@ function FeedbackManagement() {
   const clearFilters = () => {
     setSortField("");
     setSortOrder("desc");
+    setSelectedDashboard("");
     setFromDate("");
     setToDate("");
   };
 
   const hasActiveFilters =
     Boolean(sortField) ||
+    Boolean(selectedDashboard) ||
     Boolean(fromDate) ||
     Boolean(toDate);
 
@@ -441,6 +470,36 @@ function FeedbackManagement() {
 
               {activeTab === "dashboard" && (
                 <>
+                  <div className="min-w-[230px] flex-1 sm:flex-none">
+                    <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">
+                      Dashboard Name
+                    </label>
+
+                    <select
+                      value={selectedDashboard}
+                      onChange={(e) =>
+                        setSelectedDashboard(e.target.value)
+                      }
+                      className="
+                        w-full rounded-xl border border-slate-200 bg-white
+                        px-4 py-2.5 text-sm font-bold text-slate-700
+                        outline-none transition-all
+                        focus:border-moss-600 focus:ring-4 focus:ring-moss-600/10
+                      "
+                    >
+                      <option value="">All dashboards</option>
+
+                      {dashboardNames.map((dashboardName) => (
+                        <option
+                          key={dashboardName}
+                          value={dashboardName}
+                        >
+                          {dashboardName}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
                   <div className="min-w-[210px] flex-1 sm:flex-none">
                     <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">
                       Sort Rating By
@@ -588,6 +647,11 @@ function FeedbackManagement() {
                         <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">
                           User
                         </th>
+
+                        <th className="min-w-[260px] px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                          Dashboard Name
+                        </th>
+
                         <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">
                           User Interface
                         </th>
@@ -625,7 +689,7 @@ function FeedbackManagement() {
                       0 ? (
                         <tr>
                           <td
-                            colSpan="8"
+                            colSpan="9"
                             className="px-6 py-16 text-center text-sm font-bold text-slate-400"
                           >
                             {hasActiveFilters
@@ -666,6 +730,14 @@ function FeedbackManagement() {
                                   </div>
 
                                 </div>
+                              </td>
+
+                              <td className="px-6 py-5">
+                                <p className="text-sm font-bold leading-relaxed text-slate-700">
+                                  {feedback.dashboard_name ??
+                                    feedback.dashboardName ??
+                                    "—"}
+                                </p>
                               </td>
 
                               <td className="px-6 py-5">
