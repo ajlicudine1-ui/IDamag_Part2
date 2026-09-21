@@ -769,7 +769,7 @@ function StaffDashboard() {
                       {
                         id: "",
                         name:
-                          "Subcategoriies",
+                          "Subcategories",
                       },
                       ...divisions,
                     ]}
