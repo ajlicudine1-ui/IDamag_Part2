@@ -985,69 +985,117 @@ function inferValueFilters(
         normalizedValue
           .length >= 2
       ) {
-        let spans =
-          findTextOccurrences(
-            normalizedQuestion,
-            normalizedValue
-          );
+        /**
+         * Match both the complete cell and, when the cell is a real
+         * delimited multi-value field, each individual live token.
+         *
+         * Example:
+         *   Commodities = "rice, sugar cane, high value crops"
+         *   Question    = "associations that produce sugar cane"
+         *
+         * The previous implementation only looked for the COMPLETE cell
+         * text in the question, so the explicit live value "sugar cane"
+         * could be silently omitted. Token matching is generic and uses the
+         * same multi-value normalizer already used by filter execution.
+         */
+        const valueCandidates =
+          splitMultiValueCell(
+            display
+          )
+            .map((candidate) => ({
+              display:
+                String(candidate || "").trim(),
+              normalized:
+                normalizeText(candidate),
+              tokenized:
+                normalizeText(candidate) !== normalizedValue,
+            }))
+            .filter((candidate) =>
+              candidate.normalized.length >= 2
+            );
 
-        let ordinalAliasMatch =
+        let candidateMatched =
           false;
 
-        if (
-          !spans.length
+        for (
+          const candidate of
+          valueCandidates
         ) {
-          const aliasMatches =
-            findOrdinalAliasSpans({
+          let spans =
+            findTextOccurrences(
               normalizedQuestion,
-              column,
-              displayValue:
-                display,
-            });
+              candidate.normalized
+            );
+
+          let ordinalAliasMatch =
+            false;
 
           if (
-            aliasMatches.length
+            !spans.length &&
+            !candidate.tokenized
           ) {
-            ordinalAliasMatch =
-              true;
+            const aliasMatches =
+              findOrdinalAliasSpans({
+                normalizedQuestion,
+                column,
+                displayValue:
+                  display,
+              });
 
-            spans =
-              aliasMatches
-                .flatMap(
-                  (item) =>
-                    item.spans
-                );
+            if (
+              aliasMatches.length
+            ) {
+              ordinalAliasMatch =
+                true;
+
+              spans =
+                aliasMatches
+                  .flatMap(
+                    (item) =>
+                      item.spans
+                  );
+            }
           }
+
+          if (!spans.length) {
+            continue;
+          }
+
+          candidateMatched =
+            true;
+
+          matches.push({
+            column,
+            operator:
+              "equals",
+            value:
+              candidate.tokenized
+                ? candidate.display
+                : display,
+
+            score:
+              (
+                ordinalAliasMatch
+                  ? 900
+                  : 0
+              ) +
+              candidate.normalized.length +
+              (candidate.tokenized ? 25 : 0),
+
+            normalizedLength:
+              candidate.normalized.length,
+
+            spans,
+
+            ordinalAliasMatch,
+            multiValueTokenMatch:
+              candidate.tokenized,
+          });
         }
 
-        if (!spans.length) {
+        if (!candidateMatched) {
           continue;
         }
-
-        matches.push({
-          column,
-          operator:
-            "equals",
-          value:
-            display,
-
-          score:
-            (
-              ordinalAliasMatch
-                ? 900
-                : 0
-            ) +
-            normalizedValue
-              .length,
-
-          normalizedLength:
-            normalizedValue
-              .length,
-
-          spans,
-
-          ordinalAliasMatch,
-        });
       }
     }
   }

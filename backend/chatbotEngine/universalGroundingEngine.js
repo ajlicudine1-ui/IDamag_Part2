@@ -299,6 +299,19 @@ function planContainsGroundedFilter(
   );
 }
 
+function stripReferentialGroundingTail(phrase) {
+  return String(phrase || "")
+    .replace(
+      /\s+\b(?:among|for|of|within|from)\s+(?:them|those|these|that|this|the same|the previous|the above)\b.*$/i,
+      ""
+    )
+    .replace(
+      /\s+\b(?:among|for|of|within)\s+(?:the|these|those)\s+(?:ones|records|rows|entries|results|associations|items)\b.*$/i,
+      ""
+    )
+    .trim();
+}
+
 function extractExplicitGroundingPhrases(
   question
 ) {
@@ -379,7 +392,9 @@ function extractExplicitGroundingPhrases(
       phrases
         .map(
           (phrase) =>
-            phrase.trim()
+            stripReferentialGroundingTail(
+              phrase
+            )
         )
         .filter(
           (phrase) =>
@@ -644,6 +659,7 @@ function enforceUniversalGrounding({
 
 
 module.exports = {
+  stripReferentialGroundingTail,
   extractExplicitGroundingPhrases,
   phraseGrounded,
   filterMatchesRows,

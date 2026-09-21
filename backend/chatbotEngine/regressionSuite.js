@@ -4902,3 +4902,92 @@ test('compound execution uses one isolated shared context for dependent clauses'
     /::compound::\$\{Date\.now\(\)\}::\$\{index\}/
   );
 });
+
+
+// ============================================================
+// V7.36.5n — MULTI-VALUE FILTER + REFERENTIAL METRIC GROUNDING
+// ============================================================
+
+test('live token inside a delimited multi-value cell becomes a grounded filter', () => {
+  const { inferValueFilters } = require('./filterEngine');
+
+  const rows = [
+    {
+      Province: 'La Union',
+      Association: 'A',
+      Commodities: 'rice, sugar cane, high value crops',
+      Enterprises: 'Sugar Cane Vinegar Production',
+    },
+    {
+      Province: 'La Union',
+      Association: 'B',
+      Commodities: 'rice, vegetables',
+      Enterprises: 'Sugar Cane Vinegar Production',
+    },
+  ];
+
+  const filters = inferValueFilters(
+    rows,
+    'List the associations in La Union that produce sugar cane'
+  );
+
+  assert.ok(filters.some((filter) =>
+    filter.column === 'Province' &&
+    filter.value === 'La Union'
+  ));
+
+  assert.ok(filters.some((filter) =>
+    filter.column === 'Commodities' &&
+    String(filter.value).trim().toLowerCase() === 'sugar cane'
+  ));
+});
+
+test('referential tail is removed from explicit metric grounding phrase', () => {
+  const {
+    extractExplicitGroundingPhrases,
+  } = require('./universalGroundingEngine');
+
+  const phrases = extractExplicitGroundingPhrases(
+    'tell me the total number of members among them'
+  );
+
+  assert.ok(
+    phrases.some((phrase) =>
+      /members$/i.test(phrase)
+    )
+  );
+
+  assert.equal(
+    phrases.some((phrase) =>
+      /among them/i.test(phrase)
+    ),
+    false
+  );
+});
+
+test('number of members among them grounds to No. of members column', () => {
+  const {
+    enforceUniversalGrounding,
+  } = require('./universalGroundingEngine');
+
+  const rows = [
+    { Association: 'A', 'No. of members': 10 },
+    { Association: 'B', 'No. of members': 20 },
+  ];
+
+  const result = enforceUniversalGrounding({
+    plan: {
+      route: 'dataset',
+      dataset: 'Sheet1',
+      operation: 'sum',
+      column: 'No. of members',
+      filters: [],
+    },
+    question: 'tell me the total number of members among them',
+    rows,
+    columns: ['Association', 'No. of members'],
+  });
+
+  assert.equal(result.valid, true);
+  assert.equal(result.plan.route, 'dataset');
+});
