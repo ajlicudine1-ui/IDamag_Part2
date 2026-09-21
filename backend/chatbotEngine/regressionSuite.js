@@ -4697,6 +4697,80 @@ test('numeric metric field normalization generically equates number-of and No.-o
   );
 });
 
+
+// ============================================================
+// V7.36.5m — COMPOUND GROUNDING + REFERENTIAL SCOPE SAFETY
+// ============================================================
+
+test('categorical phrase containing a number does not create an overlapping unrelated numeric filter', () => {
+  const { inferValueFilters } = require('./filterEngine');
+
+  const rows = [
+    { Phase: 'Phase 2', Province: 'Pangasinan', 'CRAO-MIS Balance': '3' },
+    { Phase: 'Phase 3', Province: 'Pangasinan', 'CRAO-MIS Balance': '-4' },
+    { Phase: 'Phase 3', Province: 'La Union', 'CRAO-MIS Balance': '7' },
+  ];
+
+  const filters = inferValueFilters(
+    rows,
+    'How many Phase 3 associations are in Pangasinan?'
+  );
+
+  assert.ok(filters.some((filter) =>
+    filter.column === 'Phase' &&
+    filter.value === 'Phase 3'
+  ));
+
+  assert.ok(filters.some((filter) =>
+    filter.column === 'Province' &&
+    filter.value === 'Pangasinan'
+  ));
+
+  assert.equal(
+    filters.some((filter) =>
+      filter.column === 'CRAO-MIS Balance' &&
+      String(filter.value) === '3'
+    ),
+    false
+  );
+});
+
+test('independent numeric occurrence survives categorical phrase overlap suppression', () => {
+  const { inferValueFilters } = require('./filterEngine');
+
+  const rows = [
+    { Phase: 'Phase 3', Balance: '3' },
+    { Phase: 'Phase 2', Balance: '7' },
+  ];
+
+  const filters = inferValueFilters(
+    rows,
+    'Show Phase 3 with Balance 3'
+  );
+
+  assert.ok(filters.some((filter) =>
+    filter.column === 'Phase' &&
+    filter.value === 'Phase 3'
+  ));
+
+  assert.ok(filters.some((filter) =>
+    filter.column === 'Balance' &&
+    String(filter.value) === '3'
+  ));
+});
+
+test('referential metric follow-up does not clear verified scope as a fresh analytical question', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, 'chatbotService.js'),
+    'utf8'
+  );
+
+  assert.match(
+    source,
+    /startsFreshAnalyticalScope\s*&&\s*!looksLikeContinuousFollowUp\(\s*cleanQuestion\s*\)/s
+  );
+});
+
 async function run() {
   let passed = 0;
   const failures = [];

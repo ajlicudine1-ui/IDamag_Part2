@@ -507,6 +507,70 @@ function suppressContainedMatches(
 }
 
 
+/**
+ * Remove a shorter live-value match when every occurrence of it is already
+ * contained inside a longer live-value match from ANY column.
+ *
+ * This prevents a categorical value such as "Phase 3" from also creating
+ * an unrelated numeric filter like CRAO-MIS Balance = 3 simply because the
+ * digit 3 exists elsewhere in the worksheet. If the number appears again
+ * independently (for example "Phase 3 with balance 3"), that independent
+ * occurrence is preserved.
+ *
+ * This is schema/value driven and does not hardcode any worksheet field.
+ */
+function suppressCrossColumnContainedMatches(
+  matches
+) {
+  const source = Array.isArray(matches)
+    ? matches
+    : [];
+
+  return source.filter((candidate) => {
+    const candidateSpans = Array.isArray(candidate?.spans)
+      ? candidate.spans
+      : [];
+
+    if (!candidateSpans.length) {
+      return true;
+    }
+
+    const candidateLength = Math.max(
+      0,
+      Number(candidate?.normalizedLength) || 0
+    );
+
+    const everyOccurrenceCovered = candidateSpans.every(
+      (candidateSpan) =>
+        source.some((other) => {
+          if (other === candidate) {
+            return false;
+          }
+
+          const otherLength = Math.max(
+            0,
+            Number(other?.normalizedLength) || 0
+          );
+
+          if (otherLength <= candidateLength) {
+            return false;
+          }
+
+          const otherSpans = Array.isArray(other?.spans)
+            ? other.spans
+            : [];
+
+          return otherSpans.some((otherSpan) =>
+            spanContains(otherSpan, candidateSpan)
+          );
+        })
+    );
+
+    return !everyOccurrenceCovered;
+  });
+}
+
+
 const ORDINAL_WORD_TO_NUMBER = new Map([
   ["first", 1],
   ["second", 2],
@@ -988,7 +1052,12 @@ function inferValueFilters(
     }
   }
 
-  matches.sort(
+  const nonOverlappingMatches =
+    suppressCrossColumnContainedMatches(
+      matches
+    );
+
+  nonOverlappingMatches.sort(
     (a, b) =>
       b.score -
       a.score
@@ -1017,7 +1086,7 @@ function inferValueFilters(
 
   for (
     const match of
-    matches
+    nonOverlappingMatches
   ) {
     if (
       !grouped.has(

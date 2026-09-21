@@ -225,6 +225,10 @@ const {
 } = require("./complexFilterParityEngine");
 
 const {
+  decomposeComplexQuestion,
+} = require("./complexQuestionParityEngine");
+
+const {
   enforceUniversalGrounding,
 } = require("./universalGroundingEngine");
 
@@ -2892,115 +2896,18 @@ function applyConversationContext(
 function splitCompoundQuestions(
   question
 ) {
-  const original =
-    String(
-      question || ""
-    )
-      .replace(/\s+/g, " ")
-      .trim();
-
-  if (
-    !original
-  ) {
-    return [];
-  }
-
-  let pieces =
-    original
-      .split(
-        /\?\s*(?=[A-Za-z0-9])/g
-      )
-      .map(
-        (part) =>
-          String(
-            part || ""
-          )
-            .trim()
-            .replace(
-              /^[,;:\-\s]+/,
-              ""
-            )
-      )
-      .filter(Boolean);
-
-  if (
-    pieces.length === 1
-  ) {
-    pieces =
-      original
-        .split(
-          /\s*(?:,|;)?\s+\b(?:and|also|plus)\b\s+(?=(?:what|which|who|where|when|how\s+many|how\s+much|how|calculate|compute|find|give|show|tell)\b|(?:the\s+)?(?:total|sum|average|avg|mean|median|minimum|maximum|max|min|count|number\s+of)\b)/i
-        )
-        .map(
-          (part) =>
-            String(
-              part || ""
-            )
-              .trim()
-              .replace(
-                /^[,;:\-\s]+/,
-                ""
-              )
-        )
-        .filter(Boolean);
-  }
-
-  if (
-    pieces.length === 1 &&
-    original.includes(";")
-  ) {
-    const semicolonParts =
-      original
-        .split(/\s*;\s*/)
-        .map(
-          (part) =>
-            part.trim()
-        )
-        .filter(Boolean);
-
-    const analyticalCue =
-      /\b(?:what|which|who|where|when|how|calculate|compute|find|give|show|tell|total|sum|average|avg|mean|median|minimum|maximum|max|min|count|number)\b/i;
-
-    if (
-      semicolonParts.length > 1 &&
-      semicolonParts.every(
-        (part) =>
-          analyticalCue.test(
-            part
-          )
-      )
-    ) {
-      pieces =
-        semicolonParts;
-    }
-  }
-
-  if (
-    pieces.length < 2
-  ) {
-    return [
-      original,
-    ];
-  }
-
-  const meaningful =
-    pieces.filter(
-      (part) =>
-        normalizeText(
-          part
-        )
-          .split(/\s+/)
-          .filter(Boolean)
-          .length >= 2
+  /**
+   * Complex-question decomposition is intentionally shared before
+   * Groq/local routing. This guarantees planner parity: Groq and
+   * the local fallback receive the same subquestions and therefore
+   * neither path gains a complex-query feature the other lacks.
+   */
+  const decomposition =
+    decomposeComplexQuestion(
+      question
     );
 
-  return (
-    meaningful.length >= 2
-      ? meaningful
-      : [
-          original,
-        ]
-  );
+  return decomposition.clauses;
 }
 
 
@@ -4549,6 +4456,16 @@ async function answerQuestion(
     ) {
       const subResults = [];
 
+      /**
+       * Use ONE isolated session for all clauses in this compound
+       * request. Later clauses such as "what about their total?"
+       * may safely inherit VERIFIED scope from the immediately
+       * preceding clause, while the compound namespace prevents
+       * leakage into/out of the user's normal conversation.
+       */
+      const compoundSessionId =
+        `${sessionId}::compound::${Date.now()}`;
+
       for (
         let index = 0;
         index <
@@ -4559,9 +4476,6 @@ async function answerQuestion(
           compoundQuestions[
             index
           ];
-
-        const compoundSessionId =
-          `${sessionId}::compound::${Date.now()}::${index}`;
 
         let subResult;
 
@@ -4665,6 +4579,8 @@ async function answerQuestion(
             "compound",
           questions:
             compoundQuestions,
+          sharedCompoundContext:
+            true,
         },
       };
     }
@@ -4793,6 +4709,9 @@ async function answerQuestion(
 
   if (
     startsFreshAnalyticalScope &&
+    !looksLikeContinuousFollowUp(
+      cleanQuestion
+    ) &&
     conversationContext &&
     typeof conversationContext ===
       "object"
