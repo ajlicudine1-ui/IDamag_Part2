@@ -233,6 +233,10 @@ const {
   enforceUniversalGrounding,
 } = require("./universalGroundingEngine");
 
+const {
+  buildCompoundParityQuestion,
+  hasAllInheritedScopeColumns,
+} = require("./compoundContextParityEngine");
 
 
 
@@ -4491,6 +4495,75 @@ async function answerQuestion(
                   true,
               }
             );
+
+          /**
+           * V7.36.5o — SHARED COMPOUND-SCOPE PARITY
+           *
+           * A dependent clause such as "among them", "their total", or
+           * "those records" refers to the exact filtered set established by
+           * the preceding verified clause. Groq and the local planner must
+           * obey the same rule, so this repair is planner-source agnostic.
+           *
+           * If either planner drops part of the verified scope, rerun the
+           * clause with only the missing scope made explicit. This avoids
+           * dataset-specific rules and keeps Groq/local behavior aligned.
+           */
+          if (
+            index > 0 &&
+            internalOptions?.compoundParityRetry !== true
+          ) {
+            const previousVerified =
+              [...subResults]
+                .reverse()
+                .find((item) =>
+                  item?.result?.success !== false &&
+                  item?.result?.debugPlan?.route === "dataset"
+                );
+
+            const previousPlan =
+              previousVerified?.result?.debugPlan || null;
+
+            const currentPlan =
+              subResult?.debugPlan || null;
+
+            const parityQuestion =
+              buildCompoundParityQuestion({
+                question: subQuestion,
+                previousPlan,
+                currentPlan,
+              });
+
+            if (parityQuestion) {
+              const parityResult =
+                await answerQuestion(
+                  input,
+                  parityQuestion,
+                  compoundSessionId,
+                  {
+                    disableCompound: true,
+                    compoundParityRetry: true,
+                  }
+                );
+
+              if (
+                parityResult?.success !== false &&
+                hasAllInheritedScopeColumns({
+                  previousPlan,
+                  currentPlan: parityResult?.debugPlan,
+                  question: subQuestion,
+                })
+              ) {
+                subResult = {
+                  ...parityResult,
+                  debugPlan: {
+                    ...(parityResult?.debugPlan || {}),
+                    compoundContextParityApplied: true,
+                    compoundContextParitySource: "shared",
+                  },
+                };
+              }
+            }
+          }
         } catch (error) {
           subResult = {
             success:

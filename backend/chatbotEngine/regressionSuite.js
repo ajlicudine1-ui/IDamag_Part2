@@ -5340,3 +5340,119 @@ test('number of members among them grounds to No. of members column', () => {
   assert.equal(result.valid, true);
   assert.equal(result.plan.route, 'dataset');
 });
+
+// ============================================================
+// V7.36.5o — SHARED COMPOUND-SCOPE PARITY
+// ============================================================
+
+test('dependent compound clause inherits every missing verified scope filter generically', () => {
+  const {
+    getMissingInheritedFilters,
+  } = require('./compoundContextParityEngine');
+
+  const missing = getMissingInheritedFilters({
+    previousPlan: {
+      route: 'dataset',
+      dataset: 'Sales',
+      filters: [
+        { column: 'Region', operator: 'equals', value: 'North' },
+        { column: 'Product', operator: 'equals', value: 'Rice' },
+      ],
+    },
+    currentPlan: {
+      route: 'dataset',
+      dataset: 'Sales',
+      operation: 'sum',
+      column: 'Quantity',
+      filters: [
+        { column: 'Product', operator: 'equals', value: 'Rice' },
+      ],
+    },
+    question: 'what is their total quantity?',
+  });
+
+  assert.deepEqual(missing, [
+    { column: 'Region', operator: 'equals', value: 'North' },
+  ]);
+});
+
+test('compound parity question is planner-source agnostic for Groq and local plans', () => {
+  const {
+    buildCompoundParityQuestion,
+  } = require('./compoundContextParityEngine');
+
+  const previousPlan = {
+    route: 'dataset',
+    dataset: 'Inventory',
+    filters: [
+      { column: 'Category', operator: 'equals', value: 'Seed' },
+      { column: 'Office', operator: 'equals', value: 'Field Unit A' },
+    ],
+  };
+
+  for (const plannerSource of ['groq', 'local-fallback']) {
+    const question = buildCompoundParityQuestion({
+      question: 'tell me the total amount among them',
+      previousPlan,
+      currentPlan: {
+        route: 'dataset',
+        dataset: 'Inventory',
+        operation: 'sum',
+        column: 'Amount',
+        filters: [
+          { column: 'Category', operator: 'equals', value: 'Seed' },
+        ],
+        plannerSource,
+      },
+    });
+
+    assert.match(question, /Office:\s*Field Unit A/i);
+    assert.doesNotMatch(question, /plannerSource/i);
+  }
+});
+
+test('real compound answer keeps the full first-clause scope for among-them aggregation', async () => {
+  const { answerQuestion } = require('./chatbotService');
+
+  const input = {
+    Main: [
+      {
+        Province: 'La Union',
+        Association: 'LU Sugar',
+        Commodities: 'rice, sugar cane, high value crops',
+        'No. of members': 82,
+      },
+      {
+        Province: 'Pangasinan',
+        Association: 'Pang Sugar',
+        Commodities: 'rice, vegetables, sugarcane',
+        'No. of members': 65,
+      },
+      {
+        Province: 'Ilocos Sur',
+        Association: 'IS Sugar',
+        Commodities: 'rice, corn, sugarcane',
+        'No. of members': 88,
+      },
+    ],
+  };
+
+  const result = await answerQuestion(
+    input,
+    'List the associations in La Union that produce sugar cane, and tell me the total number of members among them.',
+    `compound-scope-${Date.now()}`
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'compound');
+  assert.equal(result.results?.[1]?.value, 82);
+  assert.ok(
+    result.results?.[1]?.debugPlan?.filters?.some((filter) =>
+      filter.column === 'Province' && filter.value === 'La Union'
+    )
+  );
+  assert.equal(
+    result.results?.[1]?.debugPlan?.compoundContextParityApplied,
+    true
+  );
+});
