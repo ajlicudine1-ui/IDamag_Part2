@@ -45,6 +45,56 @@ function normalizeSameColumnEqualityFilters(plan) {
   return changed ? { ...plan, filters: normalized, sameColumnScopeNormalized: true } : plan;
 }
 
+
+function dedupePlanFilters(plan) {
+  if (!plan || plan.route !== 'dataset' || !Array.isArray(plan.filters) || plan.filters.length < 2) return plan;
+  const seen = new Set();
+  const filters = [];
+  for (const filter of plan.filters) {
+    if (!filter || !filter.column) continue;
+    const values = Array.isArray(filter.value) ? filter.value : [filter.value];
+    const valueKey = values.map((value) => normalizeText(value)).sort().join('|');
+    const key = `${normalizeText(filter.column)}::${normalizeText(filter.operator || 'equals')}::${valueKey}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    filters.push(cloneFilter(filter));
+  }
+  return filters.length === plan.filters.length
+    ? plan
+    : { ...plan, filters, duplicateFiltersRemoved: true };
+}
+
+function removeProjectionFieldFilterArtifacts({ datasets, plan, question }) {
+  if (!plan || plan.route !== 'dataset' || !plan.dataset || !Array.isArray(plan.filters) || !plan.filters.length) return plan;
+  const rows = datasets?.[plan.dataset];
+  if (!Array.isArray(rows) || !rows.length) return plan;
+
+  const { core, detail } = splitRankingDetailQuestion(question);
+  if (!detail) return plan;
+  const requestedDetailColumns = resolveDetailColumns(rows, detail);
+  if (!requestedDetailColumns.length) return plan;
+
+  const detailNames = new Set(requestedDetailColumns.map((column) => normalizeText(column)));
+  const coreText = normalizeText(core);
+  const filtered = plan.filters.filter((filter) => {
+    if (!filter?.column) return false;
+    const columnName = normalizeText(filter.column);
+    const values = Array.isArray(filter.value) ? filter.value : [filter.value];
+    const valuesAreRequestedFields = values.length > 0 && values.every((value) => detailNames.has(normalizeText(value)));
+    if (!valuesAreRequestedFields) return true;
+
+    // Keep a real user filter when its column was explicitly stated in the
+    // ranking core. Otherwise a planner may have mistaken requested output
+    // fields (e.g. province/municipality) for categorical filter values.
+    const escaped = columnName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return Boolean(columnName && new RegExp(`\\b${escaped}\\b`).test(coreText));
+  });
+
+  return filtered.length === plan.filters.length
+    ? plan
+    : { ...plan, filters: filtered, projectionFieldFilterArtifactRemoved: true };
+}
+
 function isNumericColumn(rows, column) {
   if (!column || !Array.isArray(rows) || !rows.length) return false;
   let usable = 0;
@@ -348,11 +398,15 @@ function enforcePlannerInvariants({ datasets, schema, plan, question }) {
   next = repairAggregateIntent({ datasets, plan: next, question });
   next = repairGroupedAggregatePlan({ datasets, schema, plan: next, question });
   next = applySimpleRowRankingInvariant({ datasets, schema, plan: next, question });
+  next = removeProjectionFieldFilterArtifacts({ datasets, plan: next, question });
+  next = dedupePlanFilters(next);
   return next;
 }
 
 module.exports = {
   normalizeSameColumnEqualityFilters,
+  dedupePlanFilters,
+  removeProjectionFieldFilterArtifacts,
   repairGroupedAggregatePlan,
   repairCategoricalCountIntent,
   repairAggregateIntent,

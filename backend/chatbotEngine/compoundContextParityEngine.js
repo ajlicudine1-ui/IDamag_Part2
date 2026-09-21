@@ -73,12 +73,33 @@ function questionReferencesPreviousCategoryScope(question, previousPlan) {
   });
 }
 
-function shouldInheritScope(question, previousPlan) {
-  return hasDependentCompoundReference(question) || questionReferencesPreviousCategoryScope(question, previousPlan);
+function hasImplicitCompoundDependency(question, currentPlan) {
+  const text = normalizeText(question);
+  if (!text || !currentPlan || currentPlan.route !== 'dataset') return false;
+
+  const operation = normalizeText(currentPlan.operation || '').replace(/\s+/g, '_');
+  const dependentOperations = new Set([
+    'sum', 'average', 'avg', 'mean', 'median', 'minimum', 'min', 'maximum', 'max',
+    'group_sum', 'group_average', 'group_count', 'rank_rows', 'rank_groups', 'row_count', 'distinct_count'
+  ]);
+  if (!dependentOperations.has(operation)) return false;
+
+  // Inside a compound request, a later calculation/ranking clause commonly
+  // inherits the immediately preceding verified scope even when the user
+  // omits an explicit pronoun: "..., and what is the average cost?".
+  // Restrict this to clauses that look like follow-on questions so an
+  // unrelated standalone request never receives stale scope.
+  return /^(?:and\s+)?(?:what|which|how|tell|show|give|calculate|compute|find)\b/.test(text);
+}
+
+function shouldInheritScope(question, previousPlan, currentPlan) {
+  return hasDependentCompoundReference(question) ||
+    questionReferencesPreviousCategoryScope(question, previousPlan) ||
+    hasImplicitCompoundDependency(question, currentPlan);
 }
 
 function getMissingInheritedFilters({ previousPlan, currentPlan, question } = {}) {
-  if (!shouldInheritScope(question, previousPlan)) return [];
+  if (!shouldInheritScope(question, previousPlan, currentPlan)) return [];
   if (!previousPlan || typeof previousPlan !== 'object' || previousPlan.route !== 'dataset' || !previousPlan.dataset) return [];
   const currentIsDataset = currentPlan?.route === 'dataset' && currentPlan?.dataset;
   if (currentIsDataset && String(currentPlan.dataset) !== String(previousPlan.dataset)) return [];
@@ -273,6 +294,7 @@ function hasAllInheritedScopeColumns({ previousPlan, currentPlan, question } = {
 
 module.exports = {
   hasDependentCompoundReference,
+  hasImplicitCompoundDependency,
   getPreviousScopeFilters,
   getMissingInheritedFilters,
   getPreviousIdentityColumn,

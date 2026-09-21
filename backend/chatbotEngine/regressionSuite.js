@@ -5741,3 +5741,77 @@ test('grouped compound scope inheritance is planner-source agnostic', () => {
     assert.deepEqual(new Set(regionFilter?.value), new Set(['North', 'South']));
   }
 });
+
+test('planner invariant removes ranking detail fields misread as categorical filters', () => {
+  const { enforcePlannerInvariants } = require('./plannerInvariantEngine');
+  const datasets = {
+    Sheet1: [
+      { 'SP Name': 'A', 'Total SP Cost': '100', Province: 'North', Municipality: 'Town A', 'Proponent LGU': 'Province' },
+      { 'SP Name': 'B', 'Total SP Cost': '200', Province: 'South', Municipality: 'Town B', 'Proponent LGU': 'Municipality' },
+    ],
+  };
+  const schema = buildSchema(datasets);
+  const plan = enforcePlannerInvariants({
+    datasets,
+    schema,
+    question: 'Which subproject has the highest total SP cost, and what province and municipality is it located in?',
+    plan: {
+      route: 'dataset', dataset: 'Sheet1', operation: 'rank_rows', column: 'Total SP Cost', labelColumn: 'SP Name', direction: 'desc',
+      filters: [{ column: 'Proponent LGU', operator: 'in', value: ['Province', 'Municipality'] }],
+      selectColumns: ['SP Name', 'Total SP Cost', 'Province', 'Municipality'], limit: 1,
+    },
+  });
+  assert.equal(plan.filters.length, 0);
+  assert.equal(plan.projectionFieldFilterArtifactRemoved, true);
+});
+
+test('planner invariant removes exact duplicate filters generically', () => {
+  const { enforcePlannerInvariants } = require('./plannerInvariantEngine');
+  const datasets = { Main: [{ Region: 'North', Amount: '10' }] };
+  const schema = buildSchema(datasets);
+  const plan = enforcePlannerInvariants({
+    datasets,
+    schema,
+    question: 'What is the total amount in North?',
+    plan: {
+      route: 'dataset', dataset: 'Main', operation: 'sum', column: 'Amount',
+      filters: [
+        { column: 'Region', operator: 'equals', value: 'North' },
+        { column: 'Region', operator: 'equals', value: 'North' },
+      ],
+      selectColumns: ['Amount'],
+    },
+  });
+  assert.equal(plan.filters.length, 1);
+});
+
+test('compound follow-on aggregate inherits scope even without a pronoun', () => {
+  const { mergeInheritedScopeIntoPlan } = require('./compoundContextParityEngine');
+  const previousPlan = {
+    route: 'dataset', dataset: 'Main', operation: 'list', column: 'Project',
+    filters: [{ column: 'Region', operator: 'equals', value: 'North' }],
+  };
+  const currentPlan = {
+    route: 'dataset', dataset: 'Main', operation: 'average', column: 'Amount', filters: [],
+  };
+  const merged = mergeInheritedScopeIntoPlan({
+    previousPlan,
+    currentPlan,
+    question: 'what is the average amount',
+  });
+  assert.equal(merged.changed, true);
+  assert.equal(merged.plan.filters[0].column, 'Region');
+  assert.equal(merged.plan.filters[0].value, 'North');
+});
+
+test('aggregate formatter avoids total Total and average Average wording', () => {
+  const { formatAggregateAnswer } = require('./responseFormatter');
+  assert.equal(
+    formatAggregateAnswer({ operation: 'sum', column: 'Total SP Cost', value: 100 }),
+    'the total sp cost is 100.'
+  );
+  assert.equal(
+    formatAggregateAnswer({ operation: 'average', column: 'Average Price', value: 25 }),
+    'the average price is 25.'
+  );
+});

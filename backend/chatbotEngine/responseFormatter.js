@@ -842,10 +842,28 @@ function formatAggregateAnswer({
   dataset,
   subject = "",
 }) {
-  const label =
+  const rawLabel =
     lowerLabel(
       column
     );
+
+  const normalizedOperation = String(operation || "").trim().toLowerCase();
+  const label = (() => {
+    if (!rawLabel) return rawLabel;
+    if (normalizedOperation === "sum") {
+      return rawLabel.replace(/^(?:total|sum of|sum)\s+/i, "").trim() || rawLabel;
+    }
+    if (["average", "avg", "mean"].includes(normalizedOperation)) {
+      return rawLabel.replace(/^(?:average|avg|mean)\s+/i, "").trim() || rawLabel;
+    }
+    if (["minimum", "min"].includes(normalizedOperation)) {
+      return rawLabel.replace(/^(?:minimum|min|lowest)\s+/i, "").trim() || rawLabel;
+    }
+    if (["maximum", "max"].includes(normalizedOperation)) {
+      return rawLabel.replace(/^(?:maximum|max|highest)\s+/i, "").trim() || rawLabel;
+    }
+    return rawLabel;
+  })();
 
   const formatted =
     formatVerifiedValue(
