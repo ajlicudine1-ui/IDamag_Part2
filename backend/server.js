@@ -178,7 +178,7 @@ console.log(
 const allowedOrigins = [
   "http://localhost:5173",
   "http://192.168.56.1:5173",
-  "https://i-damag-part2.vercel.app",
+  "https://i-damag-portal.vercel.app",
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
@@ -395,7 +395,7 @@ function getGoogleOAuthClient() {
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
   const redirectUri =
     process.env.GOOGLE_REDIRECT_URI ||
-    "https://i-damag-part2.vercel.app/api/google/callback";
+    "https://i-damag-portal.vercel.app/api/google/callback";
 
   if (!clientId || !clientSecret) {
     throw new Error(
