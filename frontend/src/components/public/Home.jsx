@@ -29,25 +29,6 @@ const closeDevelopmentNotice = () => {
   sessionStorage.setItem(NOTICE_SESSION_KEY, "true");
   setShowNotice(false);
 };
-  /*
-   * =========================================================
-   * GOOGLE FORM SETTINGS
-   * =========================================================
-   *
-   * Replace these with your actual Google Form details.
-   *
-   * Example form:
-   * https://docs.google.com/forms/d/e/FORM_ID/viewform
-   *
-   * Example comment field:
-   * entry.123456789
-   */
-
-  const GOOGLE_FORM_ACTION_URL =
-    "https://docs.google.com/forms/d/e/1FAIpQLScTfjWfhn-oIbHgnrOHGRVsDYAEP0AFg3phMzjqzy1agedcaQ/formResponse";
-
-  const WEBSITE_SUGGESTION_ENTRY_ID = "entry.673085768";
-
   useEffect(() => {
     const loadOffices = async () => {
       try {
@@ -80,9 +61,8 @@ const closeDevelopmentNotice = () => {
   }, [showNotice]);
 
   /*
-   * Submit website suggestions directly to Google Forms.
-   * IMPORTANT: form submissions must use /formResponse,
-   * not /viewform.
+   * Submit website suggestions directly to the I-DAMAG backend.
+   * The backend stores the suggestion in the website_feedback table.
    */
   const handleSubmitWebsiteSuggestion = async () => {
     const trimmedComment = comment.trim();
@@ -91,18 +71,31 @@ const closeDevelopmentNotice = () => {
 
     setSubmittingComment(true);
 
-    const formData = new FormData();
-    formData.append(
-      WEBSITE_SUGGESTION_ENTRY_ID,
-      trimmedComment
-    );
-
     try {
-      await fetch(GOOGLE_FORM_ACTION_URL, {
+      const response = await fetch("/api/website-feedback", {
         method: "POST",
-        mode: "no-cors",
-        body: formData,
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          websiteSuggestion: trimmedComment,
+        }),
       });
+
+      let data = null;
+
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          data?.message ||
+            "Unable to submit website feedback."
+        );
+      }
 
       setComment("");
       setCommentSubmitted(true);
@@ -116,7 +109,8 @@ const closeDevelopmentNotice = () => {
       );
 
       alert(
-        "Unable to submit your suggestion. Please try again."
+        error?.message ||
+          "Unable to submit your suggestion. Please try again."
       );
     } finally {
       setSubmittingComment(false);
@@ -449,8 +443,8 @@ const closeDevelopmentNotice = () => {
                   "
                 >
                   Share your comments, suggestions, or issues below.
-                  Your feedback will be submitted directly to our
-                  Website Suggestions form.
+                  Your feedback will be submitted directly to the
+                  I-DAMAG system.
                 </p>
 
                 {commentSubmitted ? (
