@@ -5961,3 +5961,61 @@ test('problem2 lookup removes duplicate projected entity rows from denormalized 
   assert.equal(result.results[1]['Name of Association'], 'Beta Association');
   assert.equal(result.duplicateLookupRowsRemoved, true);
 });
+
+test('problem2 aggregate field guard prefers explicitly named numeric measure over entity noun', () => {
+  const { enforceExplicitQuestionColumn } = require('./plannerNormalizer');
+  const { buildSchema } = require('./schemaBuilder');
+
+  const datasets = {
+    Main: [
+      { Province: 'North', Association: 'Group A', 'Total Land Area (ha)': '10.5' },
+      { Province: 'North', Association: 'Group B', 'Total Land Area (ha)': '20.0' },
+    ],
+  };
+  const schema = buildSchema(datasets);
+
+  const repaired = enforceExplicitQuestionColumn({
+    plan: {
+      route: 'dataset',
+      dataset: 'Main',
+      operation: 'sum',
+      column: 'Total Land Area (ha)',
+      filters: [{ column: 'Province', operator: 'equals', value: 'North' }],
+      selectColumns: ['Total Land Area (ha)'],
+    },
+    schema,
+    question: 'What is the total land area of the North associations?',
+  });
+
+  assert.equal(repaired.operation, 'sum');
+  assert.equal(repaired.column, 'Total Land Area (ha)');
+  assert.equal(repaired.dataset, 'Main');
+});
+
+test('problem2 aggregate field guard does not replace a numeric metric with an explicit text entity', () => {
+  const { enforceExplicitQuestionColumn } = require('./plannerNormalizer');
+  const { buildSchema } = require('./schemaBuilder');
+
+  const datasets = {
+    Main: [
+      { Association: 'Group A', Amount: '10' },
+      { Association: 'Group B', Amount: '20' },
+    ],
+  };
+  const schema = buildSchema(datasets);
+
+  const repaired = enforceExplicitQuestionColumn({
+    plan: {
+      route: 'dataset',
+      dataset: 'Main',
+      operation: 'sum',
+      column: 'Amount',
+      filters: [],
+      selectColumns: ['Amount'],
+    },
+    schema,
+    question: 'What is the total for the associations?',
+  });
+
+  assert.equal(repaired.column, 'Amount');
+});

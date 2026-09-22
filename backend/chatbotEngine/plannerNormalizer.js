@@ -3654,17 +3654,83 @@ function enforceExplicitQuestionColumn({
     return plan;
   }
 
-  const match =
-    findExplicitSchemaColumn({
-      schema,
-      question,
+  const aggregateMetricOperations =
+    new Set([
+      "sum",
+      "average",
+      "median",
+      "minimum",
+      "maximum",
+    ]);
 
-      preferredDataset:
-        plan.dataset || null,
-    });
+  let match = null;
 
-  if (!match) {
-    return plan;
+  if (
+    aggregateMetricOperations.has(
+      normalizedOperation
+    )
+  ) {
+    /**
+     * Aggregate operations must stay attached to an explicitly named numeric
+     * measure, not an entity/label field that also appears in the question.
+     * Example pattern: "total land area of the associations" names both a
+     * numeric measure and a text entity field. The measure must win.
+     *
+     * This is driven entirely by the current live schema. If no explicitly
+     * named numeric field can be verified, preserve the planner's current
+     * metric instead of replacing it with a text field.
+     */
+    const explicitColumns =
+      findExplicitSchemaColumns({
+        schema,
+        question,
+        preferredDataset:
+          plan.dataset || null,
+      });
+
+    match =
+      explicitColumns.find(
+        (candidate) => {
+          const datasetSchema =
+            (schema || []).find(
+              (entry) =>
+                String(entry?.name || "") ===
+                String(candidate?.dataset || plan.dataset || "")
+            );
+
+          const columnSchema =
+            (datasetSchema?.columns || []).find(
+              (column) =>
+                String(column?.name || "") ===
+                String(candidate?.column || "")
+            );
+
+          return Boolean(
+            columnSchema &&
+            isNumericLikeColumn({
+              column: columnSchema,
+              rows: [],
+            })
+          );
+        }
+      ) || null;
+
+    if (!match) {
+      return plan;
+    }
+  } else {
+    match =
+      findExplicitSchemaColumn({
+        schema,
+        question,
+
+        preferredDataset:
+          plan.dataset || null,
+      });
+
+    if (!match) {
+      return plan;
+    }
   }
 
   const resolved = {
