@@ -10224,6 +10224,44 @@ async function answerQuestion(
       let finalAnswer =
         result.answer;
 
+      /**
+       * Preserve the verified semantic subject for projected list queries.
+       *
+       * executeResolvedPlan already knows the authoritative output field
+       * (plan.column) and the filter field(s). Rebuild the list narrative here
+       * before any row-aware fallback is considered so the outer Groq path
+       * cannot overwrite:
+       *
+       *   output: Association
+       *   filter: Commodities contains X
+       *
+       * with wording that incorrectly names Commodities as the returned
+       * entity. This is schema-driven and applies to any output/filter pair.
+       */
+      const semanticGroqListAnswer =
+        String(
+          groqPlan.operation ||
+          ""
+        )
+          .trim()
+          .toLowerCase() ===
+          "list"
+          ? buildSemanticVerifiedAnswer({
+              question:
+                cleanQuestion,
+              plan:
+                groqPlan,
+              result,
+            })
+          : null;
+
+      if (
+        semanticGroqListAnswer
+      ) {
+        finalAnswer =
+          semanticGroqListAnswer;
+      }
+
       let oneToManyResolved =
         undefined;
 
@@ -10246,6 +10284,7 @@ async function answerQuestion(
        * hardcoded here.
        */
       if (
+        !semanticGroqListAnswer &&
         String(
           groqPlan.operation ||
           ""
