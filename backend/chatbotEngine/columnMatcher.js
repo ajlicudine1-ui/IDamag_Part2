@@ -61,37 +61,6 @@ function scoreSemanticAlias(target, column) {
   return bestScore;
 }
 
-function morphologyTokens(value) {
-  return normalizeText(value)
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .split(/\s+/)
-    .map((token) => singularizeToken(token))
-    .filter((token) => token && !QUESTION_WORDS.has(token));
-}
-
-function scoreMorphologyOverlap(target, column) {
-  const targetTokens = new Set(morphologyTokens(target));
-  const columnTokens = new Set(morphologyTokens(column));
-
-  if (!targetTokens.size || !columnTokens.size) return 0;
-
-  let matched = 0;
-  for (const token of columnTokens) {
-    if (targetTokens.has(token)) matched += 1;
-  }
-
-  if (!matched) return 0;
-
-  const coverage = matched / columnTokens.size;
-  const precision = matched / targetTokens.size;
-
-  // Morphology-aware overlap is deliberately a supporting signal. Exact
-  // header/alias matches still outrank it, but plural/singular wording such as
-  // "municipalities" -> "Municipality" or "members" -> "No. of members"
-  // gets a useful boost without dataset-specific aliases.
-  return (coverage * 1.35) + (precision * 0.45);
-}
-
 function scoreColumnTarget(target, column) {
   const cleanTarget = cleanTargetText(target);
   const cleanColumn = cleanTargetText(column);
@@ -157,9 +126,7 @@ function scoreColumnTarget(target, column) {
   const normalScore =
     directSimilarity + coverage + phraseBonus + compactBonus;
 
-  const morphologyScore = scoreMorphologyOverlap(target, column);
-
-  return Math.max(normalScore, semanticScore, morphologyScore);
+  return Math.max(normalScore, semanticScore);
 }
 
 function findDatasetName(datasets, requestedName) {
@@ -291,112 +258,17 @@ function questionExplicitlyNamesColumn(question, column) {
   return phrase.test(questionText);
 }
 
-function contextColumnCandidates(context) {
-  if (!context || context.isFollowUp !== true) return [];
-
-  const values = [
-    ...(Array.isArray(context.lastMetric) ? context.lastMetric : [context.lastMetric]),
-    context.lastSubjectColumn,
-    context.lastPlan?.column,
-    context.lastPlan?.labelColumn,
-    context.lastPlan?.groupBy,
-    ...(Array.isArray(context.lastPlan?.selectColumns) ? context.lastPlan.selectColumns : []),
-    context.semanticPlan?.column,
-    context.semanticPlan?.metricColumn,
-    context.semanticPlan?.labelColumn,
-    context.semanticPlan?.groupBy,
-    ...(Array.isArray(context.semanticPlan?.selectColumns) ? context.semanticPlan.selectColumns : []),
-  ];
-
-  const seen = new Set();
-  return values
-    .map((value) => String(value || "").trim())
-    .filter((value) => {
-      const key = normalizeText(value);
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-}
-
-function resolveContextColumn(rows, context, candidates) {
-  const liveColumns = getColumns(rows);
-  const liveByNormalized = new Map(
-    liveColumns.map((column) => [normalizeText(column), column])
-  );
-
-  const candidateSet = new Set(
-    (candidates || []).map((item) => normalizeText(item.column))
-  );
-
-  for (const previous of contextColumnCandidates(context)) {
-    const exact = liveByNormalized.get(normalizeText(previous));
-    if (exact && candidateSet.has(normalizeText(exact))) return exact;
-
-    // A previous verified field may have been stored using a harmless schema
-    // spelling variant. Resolve it only when the live match is strong and is
-    // one of the current ambiguity candidates.
-    const ranked = rankColumns(rows, previous);
-    const best = ranked[0];
-    if (
-      best &&
-      best.score >= 1.25 &&
-      candidateSet.has(normalizeText(best.column))
-    ) {
-      return best.column;
-    }
-  }
-
-  return null;
-}
-
-function buildColumnClarification(plan, ranked) {
-  const first = ranked?.[0]?.column;
-  const second = ranked?.[1]?.column;
-  if (!first || !second) return "Which field should I use?";
-
-  const operation = normalizeText(plan?.operation || "");
-  const operationLabel = {
-    sum: "total",
-    average: "average",
-    median: "median",
-    minimum: "minimum",
-    maximum: "maximum",
-    rank_rows: "ranking",
-    rank_groups: "ranking",
-    list: "list",
-    lookup: "lookup",
-    distinct_count: "count",
-    non_empty_count: "count",
-  }[operation] || "answer";
-
-  return `For this ${operationLabel}, did you mean "${first}" or "${second}"?`;
-}
-
-/**
- * Conservative ambiguity guard shared by Groq and local plans.
- *
- * Rules:
- * 1. An explicitly named live field always wins.
- * 2. For a real follow-up, verified conversational context may break a
- *    near-tie between live fields.
- * 3. If the tie remains unresolved, ask a targeted clarification that names
- *    the two live fields instead of guessing.
- *
- * The logic is schema-driven and contains no dataset-specific field names.
- */
-function detectColumnAmbiguity({
-  plan,
-  datasets,
-  question,
-  context = null,
-  minScore = 0.8,
-  maxGap = 0.18,
-}) {
+function detectColumnAmbiguity({ plan, datasets, question, minScore = 0.9, maxGap = 0.08 }) {
   if (!plan || plan.route !== "dataset" || !plan.dataset || !plan.column) return plan;
   const rows = datasets?.[plan.dataset];
   if (!Array.isArray(rows) || !rows.length) return plan;
 
+  // Explicit live-schema wording ALWAYS wins over fuzzy ambiguity scoring.
+  // Examples:
+  //   Municipality  <-> municipalities
+  //   Commodity     <-> commodities
+  //   Association   <-> associations
+  // This is generic and based only on the selected worksheet's live columns.
   const explicitlyNamedLiveColumn = getColumns(rows).find((column) =>
     questionExplicitlyNamesColumn(question, column)
   );
@@ -413,48 +285,23 @@ function detectColumnAmbiguity({
   if (ranked.length < 2) return plan;
   const [first, second] = ranked;
 
-  const nearTie =
+  if (
     first.score >= minScore &&
     second.score >= minScore &&
     Math.abs(first.score - second.score) <= maxGap &&
-    normalizeText(first.column) !== normalizeText(second.column);
-
-  if (!nearTie) return plan;
-
-  const contextualColumn = resolveContextColumn(rows, context, ranked);
-  if (contextualColumn) {
-    const selectColumns = Array.isArray(plan.selectColumns)
-      ? plan.selectColumns.map((column) =>
-          normalizeText(column) === normalizeText(plan.column)
-            ? contextualColumn
-            : column
-        )
-      : plan.selectColumns;
-
+    normalizeText(first.column) !== normalizeText(second.column)
+  ) {
     return {
-      ...plan,
-      column: contextualColumn,
-      selectColumns,
-      contextualAmbiguityResolved: true,
-      ambiguityCandidates: ranked.map((item) => ({
-        column: item.column,
-        score: Number(item.score.toFixed(4)),
-      })),
+      route: "clarify",
+      question: `Did you mean "${first.column}" or "${second.column}"?`,
+      ambiguity: {
+        dataset: plan.dataset,
+        candidates: ranked.map((item) => ({ column: item.column, score: Number(item.score.toFixed(4)) })),
+      },
     };
   }
 
-  return {
-    route: "clarify",
-    question: buildColumnClarification(plan, ranked),
-    ambiguity: {
-      dataset: plan.dataset,
-      candidates: ranked.map((item) => ({
-        column: item.column,
-        score: Number(item.score.toFixed(4)),
-      })),
-      contextAttempted: Boolean(context?.isFollowUp),
-    },
-  };
+  return plan;
 }
 
 module.exports = {
@@ -462,15 +309,11 @@ module.exports = {
   compactMatchText,
   scoreSemanticAlias,
   scoreColumnTarget,
-  scoreMorphologyOverlap,
   findDatasetName,
   findColumn,
   rankColumns,
   findDatasetsContainingColumn,
   findSharedColumns,
   questionExplicitlyNamesColumn,
-  contextColumnCandidates,
-  resolveContextColumn,
-  buildColumnClarification,
   detectColumnAmbiguity,
 };

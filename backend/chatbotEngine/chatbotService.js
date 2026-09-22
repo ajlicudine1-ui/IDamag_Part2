@@ -5556,7 +5556,6 @@ async function answerQuestion(
         plan,
         datasets,
         question: cleanQuestion,
-        context: conversationContext,
       });
 
       if (plan?.route === "dataset" && plan?.column) {
