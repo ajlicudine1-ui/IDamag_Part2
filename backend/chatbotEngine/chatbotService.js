@@ -108,6 +108,16 @@ const {
 } = require("./responseNarrativeEngine");
 
 const {
+  finalizeUserFacingGrammar,
+} = require("./responseGrammarEngine");
+
+const {
+  chooseContinuitySubjectColumn,
+  rewriteContinuityQuestionWithFilters,
+  shouldPreferExplicitValueFilter,
+} = require("./followUpContinuityEngine");
+
+const {
   normalizeExplicitColumnText,
   compactExplicitColumnText,
   expandExplicitColumnWords,
@@ -198,6 +208,15 @@ const {
 const {
   currentQuestionRequiresReplan,
 } = require("./currentQuestionOverrideEngine");
+
+const {
+  resolveStrongLocalSemanticPlan,
+} = require("./localSemanticResolver");
+
+const {
+  ensureLocalPlannerParity,
+} = require("./localPlannerParityEngine");
+
 
 
 
@@ -1257,7 +1276,26 @@ function buildVerifiedListAnswer({
     );
   }
 
-  return items
+  /**
+   * A list answer represents distinct values unless the user explicitly asks
+   * for row-by-row records. Preserve first-seen display casing while removing
+   * duplicate values case-insensitively.
+   */
+  const distinctItems =
+    [
+      ...new Map(
+        items.map(
+          (value) => [
+            normalizeText(
+              value
+            ),
+            value,
+          ]
+        )
+      ).values(),
+    ];
+
+  return distinctItems
     .map(
       (value, index) =>
         `${index + 1}. ${value}`
@@ -1265,6 +1303,134 @@ function buildVerifiedListAnswer({
     .join(
       "\n"
     );
+}
+
+
+function normalizeDirectSingleFieldResult({
+  plan,
+  result,
+}) {
+  if (
+    !plan ||
+    !result ||
+    !plan.column ||
+    !Array.isArray(
+      result.results
+    )
+  ) {
+    return result;
+  }
+
+  const selectedColumns =
+    Array.isArray(
+      plan.selectColumns
+    )
+      ? plan.selectColumns
+          .filter(Boolean)
+      : [];
+
+  const isSingleField =
+    selectedColumns.length <=
+      1 &&
+    (
+      !selectedColumns.length ||
+      normalizeText(
+        selectedColumns[0]
+      ) ===
+        normalizeText(
+          plan.column
+        )
+    );
+
+  if (
+    !isSingleField
+  ) {
+    return result;
+  }
+
+  const distinctMap =
+    new Map();
+
+  for (
+    const item of
+    result.results
+  ) {
+    const value =
+      typeof item ===
+        "object" &&
+      item !== null
+        ? item[
+            plan.column
+          ]
+        : item;
+
+    if (
+      value === null ||
+      value === undefined ||
+      String(
+        value
+      ).trim() ===
+        ""
+    ) {
+      continue;
+    }
+
+    const displayValue =
+      String(
+        value
+      ).trim();
+
+    const key =
+      normalizeText(
+        displayValue
+      );
+
+    if (
+      !distinctMap.has(
+        key
+      )
+    ) {
+      distinctMap.set(
+        key,
+        typeof item ===
+          "object" &&
+        item !== null
+          ? {
+              ...item,
+              [
+                plan.column
+              ]:
+                displayValue,
+            }
+          : displayValue
+      );
+    }
+  }
+
+  const distinctResults =
+    [
+      ...distinctMap.values(),
+    ];
+
+  if (
+    distinctResults.length ===
+      result.results.length
+  ) {
+    return result;
+  }
+
+  return {
+    ...result,
+    results:
+      distinctResults,
+    count:
+      distinctResults.length,
+    distinctResultCount:
+      distinctResults.length,
+    duplicateRowsRemoved:
+      result.results.length -
+      distinctResults.length,
+  };
 }
 
 
@@ -2270,47 +2436,440 @@ function formatUserFacingAnswer(answer) {
   // Avoid raw Markdown markers in the chatbot bubble.
   output = output.replace(/\*\*/g, "");
 
-  return output;
+  return finalizeUserFacingGrammar(
+    output
+  );
 }
 
 
-function shouldUseSemanticReferentialNarrative(question) {
-  const text =
+function normalizeSemanticReferentialQuestion(question) {
+  const original =
     String(
       question || ""
     )
       .replace(/\s+/g, " ")
       .trim();
 
-  if (!text) {
-    return false;
+  if (!original) {
+    return null;
+  }
+
+  const text =
+    normalizeText(
+      original
+    );
+
+  /**
+   * Copular/prepositional relations are intentionally NOT rewritten.
+   *
+   * Examples:
+   *   "What municipalities are they from?"
+   *   "Which office are they under?"
+   *   "What category are they in?"
+   *
+   * These are relationships, but "from", "under", and "in" are not action
+   * verbs. Keeping them on the verified pair formatter avoids bad grammar
+   * such as "They from ..." or "froms ...".
+   */
+  if (
+    /\b(?:are|were|is|was)\s+(?:they|these|those|them|it|he|she)\s+(?:from|in|at|under|within|inside|on|of|for|with|without|near|around|through|across|over|below|above|between|among|into|onto|to)\b/i.test(
+      original
+    )
+  ) {
+    return null;
   }
 
   /**
-   * Use the semantic/value-first formatter only when the CURRENT question
-   * contains a clear action relation.
+   * 1. Standard auxiliary action.
+   *
+   * Covers:
+   *   "What products do they sell?"
+   *   "Which services do those groups provide?"
+   *   "What projects did these teams manage?"
+   *
+   * The subject phrase may vary. We canonicalize only the grammatical shell;
+   * the actual requested field, label field, filters, and result values still
+   * come from the live verified plan/result.
+   */
+  let match =
+    original.match(
+      /\b(?:do|does|did)\s+(.+?)\s+([a-z][a-z-]*)\s*[?.!]*$/i
+    );
+
+  if (
+    match?.[2]
+  ) {
+    const verb =
+      normalizeText(
+        match[2]
+      );
+
+    if (
+      verb &&
+      !/^(?:be|am|is|are|was|were|been|being|do|does|did)$/.test(
+        verb
+      )
+    ) {
+      return `What values do they ${verb}?`;
+    }
+  }
+
+  /**
+   * 2. Direct/pronoun action without "do".
+   *
+   * Covers paraphrases such as:
+   *   "Tell me what they produce."
+   *   "What are the products they sell?"
+   *   "Show the activities they conduct."
+   */
+  match =
+    original.match(
+      /\b(?:they|these|those)\s+([a-z][a-z-]*)\b/i
+    );
+
+  if (
+    match?.[1]
+  ) {
+    const verb =
+      normalizeText(
+        match[1]
+      );
+
+    const auxiliaries =
+      /^(?:am|is|are|was|were|be|been|being|do|does|did|have|has|had|can|could|may|might|must|shall|should|will|would)$/;
+
+    if (
+      verb &&
+      !auxiliaries.test(
+        verb
+      )
+    ) {
+      return `What values do they ${verb}?`;
+    }
+  }
+
+  /**
+   * 3. Progressive action.
+   *
+   * Keep the user's wording because responseNarrativeEngine already handles
+   * action-progressive questions. This expands routing to paraphrases such as:
+   *   "What products are they selling?"
+   *   "Which systems are they using?"
+   */
+  if (
+    /\b(?:am|is|are|was|were)\s+(?:they|these|those|them|it|he|she)\s+[a-z][a-z-]*ing\b/i.test(
+      original
+    )
+  ) {
+    return original;
+  }
+
+  /**
+   * 4. Possessive field paraphrase.
    *
    * Examples:
-   *   "What commodities do they produce?"
-   *   "What services do they provide?"
-   *   "What crops do they grow?"
-   *   "What systems are they using?"
+   *   "Tell me their commodities."
+   *   "Show me their activities."
+   *   "What are their services?"
    *
-   * Do NOT force the semantic formatter for copular/prepositional relations
-   * such as:
-   *   "What municipalities are they from?"
-   *   "Which office are they under?"
-   *
-   * Those keep the older verified pair formatter.
-   *
-   * This is generic and does not name any dataset, worksheet, field, or value.
+   * At this stage the explicit referential-field resolver has already
+   * identified the real live-schema field. We only normalize the grammatical
+   * relation so the deterministic narrative can render a compact natural
+   * answer instead of raw "<label> - <value>" pairs.
    */
-  return (
-    /\b(?:do|does|did)\s+(?:they|these|those|them)\s+[a-z][a-z-]*\b/i.test(
-      text
+  if (
+    /\btheir\b/i.test(
+      original
+    )
+  ) {
+    return "What values do they have?";
+  }
+
+  /**
+   * 4. Passive paraphrase.
+   *
+   * Examples:
+   *   "What products are produced by them?"
+   *   "Which services were provided by those groups?"
+   *
+   * The deterministic formatter may not safely recover every English base
+   * verb from an arbitrary past participle. Instead of inventing a malformed
+   * verb, route the verified relation through the neutral "have" wording.
+   * This preserves correct data and natural grammar without domain hardcoding.
+   */
+  if (
+    /\b(?:is|are|was|were|be|been|being)\s+[a-z][a-z-]*(?:ed|en)\s+by\s+(?:them|these|those)\b/i.test(
+      original
+    )
+  ) {
+    return "What values do they have?";
+  }
+
+  return null;
+}
+
+function shouldUseSemanticReferentialNarrative(question) {
+  return Boolean(
+    normalizeSemanticReferentialQuestion(
+      question
+    )
+  );
+}
+
+
+function recoverLocalReferentialPlanFromConversation({
+  plan,
+  question,
+  context,
+  schema,
+}) {
+  if (
+    !plan ||
+    typeof plan !== "object" ||
+    context?.isFollowUp !== true ||
+    !normalizeSemanticReferentialQuestion(
+      question
+    )
+  ) {
+    return plan;
+  }
+
+  // A valid local dataset plan already has enough information.
+  if (
+    plan.route === "dataset" &&
+    plan.dataset &&
+    plan.column
+  ) {
+    return plan;
+  }
+
+  const datasetName =
+    context.lastDataset ||
+    context.semanticPlan?.dataset ||
+    null;
+
+  if (!datasetName) {
+    return plan;
+  }
+
+  const datasetSchema =
+    Array.isArray(schema)
+      ? schema.find(
+          (item) =>
+            normalizeText(
+              item?.name
+            ) ===
+            normalizeText(
+              datasetName
+            )
+        )
+      : null;
+
+  const liveColumns =
+    Array.isArray(
+      datasetSchema?.columns
+    )
+      ? datasetSchema.columns
+          .map(
+            (item) =>
+              typeof item === "string"
+                ? item
+                : item?.name
+          )
+          .filter(Boolean)
+      : [];
+
+  const findLiveColumn =
+    (candidate) => {
+      const normalized =
+        normalizeText(
+          candidate
+        );
+
+      if (!normalized) {
+        return null;
+      }
+
+      return liveColumns.find(
+        (column) =>
+          normalizeText(
+            column
+          ) ===
+          normalized
+      ) || null;
+    };
+
+  // Prefer the immediately previous verified output/metric field.
+  // This is conversation-derived, not domain hardcoding.
+  const valueColumn =
+    findLiveColumn(
+      context.lastMetric
     ) ||
-    /\b(?:are|were|is|was)\s+(?:they|these|those|it)\s+[a-z][a-z-]*ing\b/i.test(
-      text
+    findLiveColumn(
+      context.lastSubjectColumn
+    ) ||
+    findLiveColumn(
+      context.lastPlan?.column
+    ) ||
+    findLiveColumn(
+      context.semanticPlan?.metricColumn
+    ) ||
+    findLiveColumn(
+      context.semanticPlan?.column
+    ) ||
+    null;
+
+  if (!valueColumn) {
+    return plan;
+  }
+
+  const pairColumnCandidates = [
+    context.lastPlan?.conversationalPairColumn,
+    context.lastPlan?.labelColumn,
+    context.semanticPlan?.labelColumn,
+    context.semanticPlan?.groupBy,
+  ];
+
+  let pairColumn = null;
+
+  for (
+    const candidate
+    of pairColumnCandidates
+  ) {
+    const live =
+      findLiveColumn(
+        candidate
+      );
+
+    if (
+      live &&
+      normalizeText(
+        live
+      ) !==
+      normalizeText(
+        valueColumn
+      )
+    ) {
+      pairColumn =
+        live;
+      break;
+    }
+  }
+
+  const filters =
+    Array.isArray(
+      context.lastFilters
+    )
+      ? context.lastFilters.map(
+          (filter) => ({
+            ...filter,
+            value:
+              Array.isArray(
+                filter?.value
+              )
+                ? [
+                    ...filter.value,
+                  ]
+                : filter?.value,
+          })
+        )
+      : [];
+
+  const selectColumns =
+    [
+      pairColumn,
+      valueColumn,
+    ]
+      .filter(Boolean)
+      .filter(
+        (column, index, all) =>
+          all.findIndex(
+            (item) =>
+              normalizeText(
+                item
+              ) ===
+              normalizeText(
+                column
+              )
+          ) === index
+      );
+
+  return {
+    ...plan,
+    route:
+      "dataset",
+    dataset:
+      datasetName,
+    operation:
+      "lookup",
+    column:
+      valueColumn,
+    labelColumn:
+      pairColumn ||
+      valueColumn,
+    groupBy:
+      null,
+    aggregation:
+      null,
+    direction:
+      null,
+    filters,
+    selectColumns,
+    outputRequested:
+      true,
+    transform:
+      null,
+    showAll:
+      true,
+    limit:
+      Math.max(
+        Number(
+          plan.limit
+        ) || 10,
+        100
+      ),
+    conversationalPairColumn:
+      pairColumn ||
+      null,
+    localReferentialRecovery:
+      true,
+  };
+}
+
+function isExternalLanguageServiceError(error) {
+  const message =
+    String(
+      error?.message ||
+      error ||
+      ""
+    )
+      .toLowerCase();
+
+  if (!message) {
+    return false;
+  }
+
+  return (
+    message.includes(
+      "rate limit"
+    ) ||
+    message.includes(
+      "tokens per day"
+    ) ||
+    message.includes(
+      "too many requests"
+    ) ||
+    message.includes(
+      "quota"
+    ) ||
+    message.includes(
+      "service unavailable"
+    ) ||
+    message.includes(
+      "temporarily unavailable"
+    ) ||
+    /\b429\b/.test(
+      message
     )
   );
 }
@@ -3101,10 +3660,27 @@ function buildExplicitReferentialFieldPlan({
   }
 
   // Require an actual conversational reference to the prior verified scope.
-  if (
-    !/\b(?:they|them|their|theirs|those|these|there|therein|same|ones?|it|its|that|this)\b/.test(
+  //
+  // "that/which/who" can be relative-clause grammar in a fresh request:
+  //   "what are the associations that are in phase 2?"
+  //
+  // Do not route that grammar as a reference to previous conversation state.
+  const hasStrongPriorReference =
+    /\b(?:they|them|their|theirs|those|these|there|therein|same|ones?|it|its)\b/.test(
       text
-    )
+    );
+
+  const hasStandaloneDemonstrativeReference =
+    /^(?:that|this)\b/.test(
+      text
+    ) ||
+    /\b(?:that|this)\s+(?:one|ones|same)\b/.test(
+      text
+    );
+
+  if (
+    !hasStrongPriorReference &&
+    !hasStandaloneDemonstrativeReference
   ) {
     return null;
   }
@@ -3145,11 +3721,43 @@ function buildExplicitReferentialFieldPlan({
         )
       : [];
 
+  /**
+   * Preserve the most recent VERIFIED relationship label when the user repeats
+   * the same referential field question.
+   *
+   * Example conversation shape:
+   *   previous plan: labelColumn = <location>, column = <multi-value field>
+   *   repeated question asks for the same <multi-value field>
+   *
+   * conversationManager may now expose lastSubjectColumn as the requested
+   * field itself. Without this recovery the plan degrades from:
+   *
+   *   lookup(label + value)
+   *
+   * to:
+   *
+   *   list(value only)
+   *
+   * and the response loses the row relationship. Prefer the immediately
+   * previous verified pair/label column when it is different from the current
+   * requested field. No dataset or field name is hardcoded.
+   */
+  const previousPairCandidates = [
+    context.lastSubjectColumn,
+    context.lastPlan?.conversationalPairColumn,
+    context.lastPlan?.labelColumn,
+    context.semanticPlan?.labelColumn,
+    context.semanticPlan?.groupBy,
+  ];
+
   const previousSubjectColumn =
-    context.lastSubjectColumn &&
-    normalizeText(context.lastSubjectColumn) !== normalizeText(requested.column)
-      ? context.lastSubjectColumn
-      : null;
+    previousPairCandidates.find(
+      (candidate) =>
+        candidate &&
+        normalizeText(candidate) !==
+          normalizeText(requested.column)
+    ) ||
+    null;
 
   const selectColumns = [];
   if (previousSubjectColumn) selectColumns.push(previousSubjectColumn);
@@ -4747,10 +5355,23 @@ async function answerQuestion(
       );
     }
 
-    const directFilteredFieldResult =
+    const rawDirectFilteredFieldResult =
       await executeResolvedPlan(
         directFilteredFieldPlan
       );
+
+    /**
+     * Direct single-field lookups are value-set questions, not row dumps.
+     * Collapse duplicate rows before storing the conversational result and
+     * before formatting the answer.
+     */
+    const directFilteredFieldResult =
+      normalizeDirectSingleFieldResult({
+        plan:
+          directFilteredFieldPlan,
+        result:
+          rawDirectFilteredFieldResult,
+      });
 
     updateConversation(
       sessionId,
@@ -4764,23 +5385,42 @@ async function answerQuestion(
       }
     );
 
-    return {
-      ...directFilteredFieldResult,
-
-      answer:
+    const directSingleFieldAnswer =
+      (
         directFilteredFieldPlan
           .operation ===
-          "list"
-          ? buildVerifiedListAnswer({
+        "list"
+      )
+        ? (
+            buildSemanticVerifiedAnswer({
+              question:
+                cleanQuestion,
+              plan:
+                directFilteredFieldPlan,
               result:
                 directFilteredFieldResult,
-
+            }) ||
+            buildVerifiedListAnswer({
+              result:
+                directFilteredFieldResult,
               subjectColumn:
                 directFilteredFieldPlan
                   .column,
             })
-          : directFilteredFieldResult
-              .answer,
+          )
+        : buildVerifiedListAnswer({
+            result:
+              directFilteredFieldResult,
+            subjectColumn:
+              directFilteredFieldPlan
+                .column,
+          });
+
+    return {
+      ...directFilteredFieldResult,
+
+      answer:
+        directSingleFieldAnswer,
 
       plannerSource:
         "conversation-local",
@@ -4852,6 +5492,9 @@ async function answerQuestion(
       )
         ? buildSemanticVerifiedAnswer({
             question:
+              normalizeSemanticReferentialQuestion(
+                cleanQuestion
+              ) ||
               cleanQuestion,
             plan:
               explicitReferentialFieldPlan,
@@ -4929,6 +5572,27 @@ async function answerQuestion(
    * handler later in the pipeline should switch the metric while
    * preserving the previous operation.
    */
+  const sameQueryCandidateRows =
+    conversationContext
+      ?.lastDataset &&
+    Array.isArray(
+      datasets?.[
+        conversationContext.lastDataset
+      ]
+    )
+      ? datasets[
+          conversationContext.lastDataset
+        ]
+      : [];
+
+  const sameQueryExplicitValueFilters =
+    sameQueryCandidateRows.length
+      ? inferCoherentFilters(
+          sameQueryCandidateRows,
+          cleanQuestion
+        )
+      : [];
+
   const sameQueryMetricColumn =
     findFollowUpMetricColumn({
       schema,
@@ -4940,6 +5604,17 @@ async function answerQuestion(
         null,
     });
 
+  const preferExplicitValueFilter =
+    shouldPreferExplicitValueFilter({
+      isFollowUp:
+        conversationContext
+          .isFollowUp,
+      question:
+        cleanQuestion,
+      explicitValueFilters:
+        sameQueryExplicitValueFilters,
+    });
+
   const looksLikeSameQueryNewFilter =
     conversationContext
       .isFollowUp === true &&
@@ -4948,7 +5623,10 @@ async function answerQuestion(
     ) &&
     conversationContext
       .lastDataset &&
-    !sameQueryMetricColumn;
+    (
+      preferExplicitValueFilter ||
+      !sameQueryMetricColumn
+    );
 
   // ========================================================
   // EXPLICIT WORKSHEET SWITCH FOLLOW-UP
@@ -5201,10 +5879,27 @@ async function answerQuestion(
        * phases, etc. without hardcoding their names.
        */
       let newlyMentionedFilters =
-        inferCoherentFilters(
-          previousRows,
-          cleanQuestion
-        );
+        Array.isArray(
+          sameQueryExplicitValueFilters
+        ) &&
+        sameQueryExplicitValueFilters.length
+          ? sameQueryExplicitValueFilters.map(
+              (filter) => ({
+                ...filter,
+                value:
+                  Array.isArray(
+                    filter?.value
+                  )
+                    ? [
+                        ...filter.value,
+                      ]
+                    : filter?.value,
+              })
+            )
+          : inferCoherentFilters(
+              previousRows,
+              cleanQuestion
+            );
 
       if (
         !Array.isArray(
@@ -5254,6 +5949,11 @@ async function answerQuestion(
           {};
 
         const rememberedSubject =
+          chooseContinuitySubjectColumn({
+            previousPlan,
+            newFilters:
+              newlyMentionedFilters,
+          }) ||
           inferRememberedSubjectColumn({
             schema,
 
@@ -5270,18 +5970,6 @@ async function answerQuestion(
               conversationContext,
           }) ||
           previousPlan.column ||
-          (
-            Array.isArray(
-              previousPlan
-                .selectColumns
-            ) &&
-            previousPlan
-              .selectColumns
-              .length === 1
-              ? previousPlan
-                  .selectColumns[0]
-              : null
-          ) ||
           null;
 
         /**
@@ -5475,26 +6163,39 @@ async function answerQuestion(
         if (
           operation === "list"
         ) {
-          const matchingRows =
-            filterRowsBySimpleFilters(
-              previousRows,
-              finalFilters
-            );
+          const narrativeQuestion =
+            rewriteContinuityQuestionWithFilters({
+              subjectQuestion:
+                conversationContext
+                  .lastSubjectQuestion ||
+                conversationContext
+                  .lastQuestion,
 
-          const oneToManyAnswer =
-            buildOneToManyListAnswer({
-              rows:
-                matchingRows,
+              previousFilters:
+                conversationContext
+                  .lastFilters,
 
-              subjectColumn:
-                rememberedSubject,
+              newFilters:
+                newlyMentionedFilters,
 
-              filters:
-                finalFilters,
+              fallbackQuestion:
+                cleanQuestion,
+            });
+
+          const semanticContinuityAnswer =
+            buildSemanticVerifiedAnswer({
+              question:
+                narrativeQuestion,
+
+              plan:
+                sameQueryPlan,
+
+              result:
+                sameQueryResult,
             });
 
           sameQueryAnswer =
-            oneToManyAnswer ||
+            semanticContinuityAnswer ||
             buildVerifiedListAnswer({
               result:
                 sameQueryResult,
@@ -6856,6 +7557,7 @@ async function answerQuestion(
 
   let groqPlan = null;
   let groqPlanningError = null;
+  let groqReferentialRecovery = false;
 
   /**
    * IMPORTANT:
@@ -6885,6 +7587,71 @@ async function answerQuestion(
       "Groq planning failed; local fallback will be used:",
       error
     );
+  }
+
+
+  /**
+   * ========================================================
+   * REFERENTIAL PARAPHRASE SEMANTIC RECOVERY
+   * ========================================================
+   *
+   * A follow-up may omit the actual schema field:
+   *
+   *   "Tell me what they produce."
+   *   "Show what they provide."
+   *   "Which things are they using?"
+   *
+   * The deterministic explicit-field resolver cannot select a column when the
+   * field name itself is absent. If the normal Groq planner also fails to
+   * return valid JSON, do ONE constrained semantic re-plan before falling back
+   * to the generic local parser.
+   *
+   * This does not hardcode a worksheet, field, domain noun, or data value.
+   * Groq still chooses only from the live schema, while conversation memory
+   * supplies the verified referent/scope.
+   */
+  if (
+    !groqPlan &&
+    conversationContext?.isFollowUp === true &&
+    normalizeSemanticReferentialQuestion(
+      cleanQuestion
+    )
+  ) {
+    try {
+      const recoveryQuestion =
+        [
+          "This is a referential follow-up data question.",
+          "Use the previous verified conversation subject and filters.",
+          "Resolve the live schema field whose meaning best answers the user's action.",
+          "Return a dataset lookup plan rather than a general explanation.",
+          `User question: ${cleanQuestion}`,
+        ].join(" ");
+
+      groqPlan =
+        await createSchemaAwarePlan({
+          question:
+            recoveryQuestion,
+          schema,
+          context:
+            conversationContext,
+          retrievalContext,
+        });
+
+      if (groqPlan) {
+        groqReferentialRecovery =
+          true;
+      }
+    } catch (recoveryError) {
+      if (
+        process.env.NODE_ENV !==
+          "production"
+      ) {
+        console.warn(
+          "Referential semantic recovery planner failed; continuing to local fallback:",
+          recoveryError
+        );
+      }
+    }
   }
 
   if (groqPlan) {
@@ -7086,7 +7853,9 @@ async function answerQuestion(
         oneToManyResolved,
 
         plannerSource:
-          "groq",
+          groqReferentialRecovery
+            ? "groq-referential-recovery"
+            : "groq",
       };
     } catch (groqExecutionError) {
       console.error(
@@ -7199,6 +7968,90 @@ async function answerQuestion(
         context: conversationContext,
       });
 
+    /**
+     * V7.33 STRONG LOCAL SEMANTIC RESOLVER
+     *
+     * When Groq is unavailable, independently scan every live worksheet and
+     * score the CURRENT question against live schema names, worksheet names,
+     * row structure, and explicit row-value filters.
+     *
+     * The current question wins. Previous conversation filters are inherited
+     * only for genuinely referential wording and only when those filter
+     * columns exist in the selected live worksheet.
+     */
+    const strongLocalSemanticPlan =
+      resolveStrongLocalSemanticPlan({
+        question:
+          cleanQuestion,
+        schema,
+        datasets,
+        context:
+          conversationContext,
+      });
+
+    if (
+      strongLocalSemanticPlan &&
+      (
+        localPlan?.route !==
+          "dataset" ||
+        !localPlan?.dataset ||
+        !localPlan?.column ||
+        Number(
+          strongLocalSemanticPlan.localSemanticConfidence ||
+          0
+        ) >=
+          Number(
+            localPlan.localConfidence ||
+            localPlan.confidence ||
+            0
+          )
+      )
+    ) {
+      localPlan =
+        strongLocalSemanticPlan;
+    }
+
+    /**
+     * V7.35 LOCAL/GROQ DATA-PLANNER PARITY
+     *
+     * Mirror Groq's executable DATASET/SCHEMA planning surface locally.
+     * This uses only the live schema and live row values and never calls
+     * an external model.
+     */
+    localPlan =
+      ensureLocalPlannerParity({
+        plan:
+          localPlan,
+        question:
+          cleanQuestion,
+        schema,
+        datasets,
+        context:
+          conversationContext,
+      });
+
+    /**
+     * If Groq is unavailable and the current turn is an elliptical
+     * referential follow-up, reuse the previous VERIFIED dataset/output field
+     * when it is still valid in the live schema.
+     *
+     * Example pattern:
+     *   explicit field turn -> "Tell me what they <action>."
+     *
+     * This allows the local fallback to remain useful during provider
+     * rate limits instead of routing the question back to a general LLM call.
+     */
+    localPlan =
+      recoverLocalReferentialPlanFromConversation({
+        plan:
+          localPlan,
+        question:
+          cleanQuestion,
+        context:
+          conversationContext,
+        schema,
+      });
+
     localPlan =
       repairMultiEntityFilters({
         datasets,
@@ -7275,6 +8128,73 @@ async function answerQuestion(
     let finalAnswer =
       result.answer;
 
+    const semanticLocalListAnswer =
+      String(
+        localPlan.operation ||
+        ""
+      )
+        .trim()
+        .toLowerCase() ===
+        "list"
+        ? buildSemanticVerifiedAnswer({
+            question:
+              cleanQuestion,
+            plan:
+              localPlan,
+            result,
+          })
+        : null;
+
+    if (
+      semanticLocalListAnswer
+    ) {
+      finalAnswer =
+        semanticLocalListAnswer;
+    }
+
+    /**
+     * Keep local-fallback response semantics consistent with the normal
+     * conversational path. Paired lookups should use the deterministic
+     * natural narrative rather than raw repeated "<label> - <value>" lines.
+     * No external language-model call is required here.
+     */
+    if (
+      String(
+        localPlan.operation ||
+        ""
+      )
+        .trim()
+        .toLowerCase() ===
+        "lookup" &&
+      localPlan.column &&
+      localPlan.labelColumn &&
+      normalizeText(
+        localPlan.column
+      ) !==
+      normalizeText(
+        localPlan.labelColumn
+      )
+    ) {
+      const semanticLocalAnswer =
+        buildSemanticVerifiedAnswer({
+          question:
+            normalizeSemanticReferentialQuestion(
+              cleanQuestion
+            ) ||
+            cleanQuestion,
+          plan:
+            localPlan,
+          result,
+        });
+
+      if (
+        semanticLocalAnswer
+      ) {
+        finalAnswer =
+          semanticLocalAnswer;
+      }
+    }
+
     let oneToManyResolved =
       undefined;
 
@@ -7283,6 +8203,7 @@ async function answerQuestion(
      * Groq availability does not change conversational output semantics.
      */
     if (
+      !semanticLocalListAnswer &&
       String(
         localPlan.operation ||
         ""
@@ -7381,8 +8302,20 @@ async function answerQuestion(
         null,
 
       answer:
-        localError.message ||
-        "The chatbot could not process the question.",
+        isExternalLanguageServiceError(
+          localError
+        )
+          ? (
+              normalizeSemanticReferentialQuestion(
+                cleanQuestion
+              )
+                ? "I couldn't resolve that follow-up locally from the available conversation context. Please mention the field you want, and I can answer it directly from the dataset."
+                : "The language service is temporarily unavailable, and this question could not be completed locally. Please try again shortly."
+            )
+          : (
+              localError.message ||
+              "The chatbot could not process the question."
+            ),
     };
   }
 

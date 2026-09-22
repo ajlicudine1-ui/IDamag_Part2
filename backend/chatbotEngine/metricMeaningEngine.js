@@ -166,7 +166,7 @@ function inferAssociatedUnitColumn({ schema = [], dataset = null } = {}) {
   const candidates = (datasetSchema.columns || [])
     .map((column) => column?.name)
     .filter(Boolean)
-    .filter((name) => /^(?:unit|uom|unit of measure|measurement unit)$/i.test(String(name).trim()));
+    .filter((name) => /^(?:unit|uom|unit of measure|unit of measurement|measurement unit)$/i.test(String(name).trim()));
   return candidates[0] || null;
 }
 
@@ -200,6 +200,16 @@ function inferMetricMeaning({ plan, question, datasets = {}, schema = [], report
   } else if (/\b(percent|percentage|rate)\b|%/.test(contextText)) {
     type = 'percentage';
     confidence = 0.82;
+  } else if (
+    /\b(?:quantity|qty|volume|weight)\b/.test(
+      normalizeText(column)
+    ) &&
+    /^(?:sum|average|minimum|maximum|median)$/i.test(
+      String(plan?.operation || '')
+    )
+  ) {
+    type = 'quantity';
+    confidence = 0.9;
   } else if (/\b(count|number|members|beneficiaries|employees|farmers|persons|respondents)\b/.test(contextText)) {
     type = 'count';
     confidence = 0.7;
@@ -224,6 +234,10 @@ function inferMetricMeaning({ plan, question, datasets = {}, schema = [], report
     displayUnit = numeratorUnit ? `${numeratorUnit}/${denominatorUnit}` : `per ${denominatorUnit}`;
   }
 
+  if (type === 'quantity' && denominatorUnit) {
+    displayUnit = denominatorUnit;
+  }
+
   return {
     type,
     displayUnit,
@@ -234,8 +248,77 @@ function inferMetricMeaning({ plan, question, datasets = {}, schema = [], report
   };
 }
 
+
+function shouldSkipMetricMeaningForPlan(plan) {
+  const operation =
+    normalizeText(
+      plan?.operation
+    );
+
+  if (
+    !plan?.column
+  ) {
+    return false;
+  }
+
+  /**
+   * A plain list is categorical/identity output, not a numeric metric.
+   * Do not attach percentage/currency/quantity semantics just because the
+   * worksheet contains another unit-bearing numeric column.
+   */
+  if (
+    operation ===
+      "list"
+  ) {
+    return true;
+  }
+
+  /**
+   * Plain lookups of obvious descriptive/identity fields are also not metrics.
+   * Numeric/measure-looking field names continue through normal inference.
+   */
+  if (
+    operation ===
+      "lookup" &&
+    !plan?.aggregation &&
+    !plan?.groupBy &&
+    !plan?.direction
+  ) {
+    const measureCue =
+      /\b(?:amount|cost|price|value|total|average|avg|mean|rate|percent|percentage|qty|quantity|count|number|area|yield|loss|salary|income|expense|weight|height|length|duration|time|age|volume|capacity|score|index)\b/i;
+
+    return !measureCue.test(
+      String(
+        plan.column || ""
+      )
+    );
+  }
+
+  return false;
+}
+
 function enrichPlanMetricMeaning({ plan, question, datasets, schema, reportContext } = {}) {
   if (!plan || plan.route !== 'dataset' || !plan.column) return plan;
+
+  if (
+    shouldSkipMetricMeaningForPlan(
+      plan
+    )
+  ) {
+    return {
+      ...plan,
+      metricMeaning: null,
+      metricSemantics: null,
+      metricSource: null,
+      displayUnit: null,
+      denominatorUnit: null,
+      unit: null,
+      unitColumn: null,
+      metricMeaningConfidence: 1,
+      metricMeaningSkipped: true,
+    };
+  }
+
   const meaning = inferMetricMeaning({ plan, question, datasets, schema, reportContext });
   return {
     ...plan,
@@ -249,6 +332,7 @@ function enrichPlanMetricMeaning({ plan, question, datasets, schema, reportConte
 }
 
 module.exports = {
+  shouldSkipMetricMeaningForPlan,
   exactColumnMention,
   hasExplicitCalculationCue,
   refineStoredMetricOperation,

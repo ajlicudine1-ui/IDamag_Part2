@@ -721,13 +721,18 @@ function parseRankingTargets(
 
   match =
     text.match(
-      /\b(?:which|what)\s+(.+?)\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\s+(.+?)(?:\s+\b(?:in|within|among|for)\b\s+.+)?$/
+      /\b(?:which|what)\s+(.+?)\s+(has|have|had|is|are|was|were|[a-z][a-z-]*(?:ed|ing|s)?)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\s+(.+?)(?:\s+\b(?:in|within|among|for)\b\s+.+)?$/
     );
 
   if (
     match?.[1] &&
-    match?.[2]
+    match?.[3]
   ) {
+    const relationVerb =
+      normalizeText(
+        match[2]
+      );
+
     return {
       asksWho: false,
       labelTarget:
@@ -736,8 +741,23 @@ function parseRankingTargets(
         ),
       metricTarget:
         normalizeText(
-          match[2]
+          match[3]
         ),
+      relationVerb,
+      relationType:
+        [
+          "has",
+          "have",
+          "had",
+          "is",
+          "are",
+          "was",
+          "were",
+        ].includes(
+          relationVerb
+        )
+          ? "copular"
+          : "action",
     };
   }
 
@@ -1442,6 +1462,34 @@ function repairRankingIdentityPlan({
       rows,
     });
 
+  /**
+   * Action-ranking questions may imply grouping even when the planner omits
+   * aggregation:
+   *
+   *   "Which <group> received the largest quantity?"
+   *   "Which <group> handled the greatest amount?"
+   *
+   * In that grammar, the requested answer is the GROUP, while the numeric
+   * field is an additive measure. Rank groups by SUM instead of attempting
+   * to rank the categorical label itself or a single raw row.
+   *
+   * This is schema- and domain-agnostic: the group/metric still come from
+   * the live schema, and the rule is based only on grammatical structure +
+   * additive metric wording.
+   */
+  const additiveMetricCue =
+    /\b(?:quantity|qty|amount|total|count|number|volume)\b/.test(
+      normalizeText(
+        targets.metricTarget
+      )
+    );
+
+  const impliedActionGroupSum =
+    !normalizedAggregation &&
+    targets.relationType ===
+      "action" &&
+    additiveMetricCue;
+
   const groupedAggregation =
     [
       "sum",
@@ -1455,12 +1503,17 @@ function repairRankingIdentityPlan({
       normalizedAggregation ===
         "count" &&
       !countActuallyMeansNumericValue
-    );
+    ) ||
+    impliedActionGroupSum;
 
   const effectiveAggregation =
     countActuallyMeansNumericValue
       ? null
-      : normalizedAggregation;
+      : (
+          impliedActionGroupSum
+            ? "sum"
+            : normalizedAggregation
+        );
 
   const finalOperation =
     groupedAggregation
