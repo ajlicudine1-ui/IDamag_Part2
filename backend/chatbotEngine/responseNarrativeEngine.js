@@ -560,6 +560,38 @@ function deriveFilteredListScopePhrase({
     return ` for ${displayValue}`;
   }
 
+  /**
+   * When the requested output field is different from the filter field,
+   * describe the filter as a relationship on the returned entities instead
+   * of incorrectly naming the filter field as the answer subject.
+   *
+   * Example (schema-driven):
+   *   output: Association
+   *   filter: Commodities contains sugarcane
+   *   -> "whose commodities include sugarcane"
+   *
+   * This formatter is shared by Groq-backed and local responses because the
+   * verified local answer is built before optional language polishing.
+   */
+  const filter = filters[0] || {};
+  const outputField = normalizeText(plan?.column);
+  const filterField = normalizeText(filter?.column);
+
+  if (
+    outputField &&
+    filterField &&
+    outputField !== filterField
+  ) {
+    const filterLabel = humanizeFieldLabel(filter?.column).toLowerCase();
+    const operator = normalizeText(filter?.operator);
+    const lastWord = filterLabel.split(/\s+/).filter(Boolean).pop() || "";
+    const looksPlural = /s$/i.test(lastWord) && !/ss$/i.test(lastWord);
+
+    if (["contains", "includes", "include"].includes(operator)) {
+      return ` whose ${filterLabel} ${looksPlural ? "include" : "includes"} ${displayValue}`;
+    }
+  }
+
   return ` for ${displayValue}`;
 }
 

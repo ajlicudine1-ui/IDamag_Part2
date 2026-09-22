@@ -6059,3 +6059,57 @@ test('problem2 deterministic ranking answer is preserved to prevent unsupported 
   });
   assert.equal(keep, true);
 });
+
+
+test('problem2 grounded list response names the output field, not the filter field', () => {
+  const { buildSemanticVerifiedAnswer } = require('./responseNarrativeEngine');
+  const answer = buildSemanticVerifiedAnswer({
+    question: 'List the associations whose commodities include sugarcane.',
+    plan: {
+      route: 'dataset',
+      dataset: 'Main',
+      operation: 'list',
+      column: 'Association',
+      labelColumn: 'Association',
+      filters: [
+        { column: 'Commodities', operator: 'contains', value: 'sugarcane' },
+      ],
+      selectColumns: ['Association'],
+      listProjectionGrounded: true,
+      showAll: true,
+    },
+    result: {
+      success: true,
+      operation: 'list',
+      column: 'Association',
+      count: 3,
+      results: ['Group A', 'Group B', 'Group C'],
+    },
+  });
+
+  assert.equal(
+    answer,
+    'The associations whose commodities include sugarcane are Group A, Group B, and Group C.'
+  );
+});
+
+test('problem2 grounded list response is preserved for Groq and local parity', () => {
+  const { shouldPreserveDeterministicSemanticAnswer } = require('./responseGenerator');
+  const keep = shouldPreserveDeterministicSemanticAnswer({
+    plan: {
+      route: 'dataset',
+      operation: 'list',
+      column: 'Association',
+      filters: [{ column: 'Commodities', operator: 'contains', value: 'sugarcane' }],
+      listProjectionGrounded: true,
+    },
+    result: {
+      success: true,
+      operation: 'list',
+      column: 'Association',
+      results: ['Group A', 'Group B'],
+    },
+    semanticAnswer: 'The associations whose commodities include sugarcane are Group A and Group B.',
+  });
+  assert.equal(keep, true);
+});
