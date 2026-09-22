@@ -120,6 +120,14 @@ function shouldPreserveDeterministicSemanticAnswer({
     ""
   ).trim().toLowerCase();
 
+  // Rankings are already rendered from verified row labels, metrics, and
+  // details by the deterministic formatter. Preserve that wording so an LLM
+  // cannot relabel a schema entity (for example, calling an association a
+  // project) merely because the user's noun was broader than the live schema.
+  if (["rank_rows", "rank_groups"].includes(operation)) {
+    return true;
+  }
+
   if (!["lookup", "list", "value"].includes(operation)) {
     return false;
   }

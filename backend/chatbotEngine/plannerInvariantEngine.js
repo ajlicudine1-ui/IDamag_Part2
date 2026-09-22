@@ -327,7 +327,7 @@ function questionExplicitlyNamesNumericRankingMetric({ datasets, schema, questio
   return false;
 }
 
-function repairAggregateIntent({ datasets, schema, plan, question }) {
+function repairAggregateIntent({ datasets, plan, question }) {
   if (!plan || plan.route !== 'dataset' || !plan.dataset) return plan;
 
   // Ranking words take precedence over aggregation words. This avoids
@@ -341,74 +341,11 @@ function repairAggregateIntent({ datasets, schema, plan, question }) {
   const rows = datasets?.[plan.dataset];
   if (!Array.isArray(rows) || !rows.length) return plan;
 
+  const column = plan.column ? (findColumn(rows, plan.column) || plan.column) : null;
+  if (!column || !isNumericColumn(rows, column)) return plan;
+
   const operation = aggregation === 'sum' ? 'sum' : 'average';
-  let column = plan.column ? (findColumn(rows, plan.column) || plan.column) : null;
-
-  // A planner can correctly understand the requested aggregation while
-  // accidentally putting the entity/label field in `column` and the real
-  // numeric metric in `selectColumns`. Repair that mismatch from the live
-  // worksheet instead of asking for clarification or summing a text field.
-  // This is schema/data driven: no dataset, header, or example value is
-  // hardcoded here.
-  if (!column || !isNumericColumn(rows, column)) {
-    const candidates = [];
-    const addCandidate = (name, sourceBoost = 0) => {
-      if (!name) return;
-      const resolved = findColumn(rows, name) || name;
-      if (!isNumericColumn(rows, resolved)) return;
-      if (candidates.some((item) => normalizeText(item.column) === normalizeText(resolved))) return;
-      candidates.push({
-        column: resolved,
-        score: scoreTargetToColumn(question, resolved) + sourceBoost,
-      });
-    };
-
-    // Columns the planner already selected are especially strong evidence.
-    for (const selected of Array.isArray(plan.selectColumns) ? plan.selectColumns : []) {
-      addCandidate(selected, 0.35);
-    }
-
-    // Also consider live-schema fields explicitly/semantically named by the
-    // question, which supports header changes such as "Total Land Area (ha)"
-    // -> "Land Area (ha)" while keeping "total" as the SUM intent.
-    for (const explicit of explicitColumnsForDataset(schema, question, plan.dataset)) {
-      addCandidate(explicit, 0.25);
-    }
-
-    // Last-resort live-column search, accepted only with a strong semantic
-    // lead so we do not guess between unrelated numeric measures.
-    for (const candidateName of Object.keys(rows[0] || {})) {
-      addCandidate(candidateName, 0);
-    }
-
-    candidates.sort((a, b) => b.score - a.score);
-    const best = candidates[0] || null;
-    const second = candidates[1] || null;
-    const hasStrongLead = best && (
-      best.score >= 0.9 ||
-      (!second || best.score - second.score >= 0.25)
-    );
-
-    if (!hasStrongLead) return plan;
-    column = best.column;
-  }
-
-  // If the operation is already correct, still repair the metric field when
-  // needed. This is the exact failure mode where `sum(Association)` survived
-  // because only the operation, not the aggregate field, was validated.
-  if (plan.operation === operation) {
-    if (normalizeText(plan.column) === normalizeText(column)) return plan;
-    return {
-      ...plan,
-      column,
-      groupBy: null,
-      aggregation: null,
-      labelColumn: null,
-      selectColumns: [column],
-      aggregateMetricFieldRepaired: true,
-      aggregateIntentParityApplied: true,
-    };
-  }
+  if (plan.operation === operation) return plan;
 
   // Only repair value-returning plans. Count/group/rank operations carry
   // distinct semantics and must not be silently converted.
@@ -418,13 +355,10 @@ function repairAggregateIntent({ datasets, schema, plan, question }) {
   return {
     ...plan,
     operation,
-    column,
     groupBy: null,
     aggregation: null,
     labelColumn: null,
     selectColumns: [column],
-    aggregateMetricFieldRepaired:
-      normalizeText(plan.column) !== normalizeText(column) || undefined,
     aggregateIntentParityApplied: true,
   };
 }
@@ -457,11 +391,81 @@ function applySimpleRowRankingInvariant({ datasets, schema, plan, question }) {
   };
 }
 
+
+function repairListProjectionIntent({ datasets, plan, question }) {
+  if (!plan || plan.route !== 'dataset' || String(plan.operation || '').toLowerCase() !== 'list' || !plan.dataset) return plan;
+  const rows = datasets?.[plan.dataset];
+  if (!Array.isArray(rows) || !rows.length) return plan;
+
+  const raw = String(question || '').trim();
+  const match = raw.match(/\b(?:list|show|display|give|name)\s+(?:me\s+)?(?:the\s+)?(.+?)(?=\s+(?:whose|that|which|who|with|where|having|containing|including)\b|[?.!,;]|$)/i);
+  if (!match?.[1]) return plan;
+
+  let target = match[1]
+    .replace(/^(?:all|every|each)\s+/i, '')
+    .replace(/\b(?:records?|rows?|entries?)$/i, '')
+    .trim();
+  if (!target) return plan;
+
+  const outputColumn = findBestColumnForTarget(rows, target, { numeric: false });
+  if (!outputColumn) return plan;
+
+  const currentColumn = plan.column ? (findColumn(rows, plan.column) || plan.column) : null;
+  const filterColumns = new Set((Array.isArray(plan.filters) ? plan.filters : [])
+    .map((filter) => filter?.column ? (findColumn(rows, filter.column) || filter.column) : null)
+    .filter(Boolean)
+    .map((column) => normalizeText(column)));
+
+  const currentIsFilterField = currentColumn && filterColumns.has(normalizeText(currentColumn));
+  const outputDiffers = !currentColumn || normalizeText(currentColumn) !== normalizeText(outputColumn);
+
+  // Only override when the planner is returning the field used to constrain
+  // the rows, while the question explicitly asks to list a different entity.
+  // This keeps filter semantics and projection semantics separate.
+  if (!outputDiffers || (!currentIsFilterField && currentColumn)) return plan;
+
+  return {
+    ...plan,
+    column: outputColumn,
+    labelColumn: plan.labelColumn || outputColumn,
+    selectColumns: [outputColumn],
+    outputRequested: true,
+    listProjectionGrounded: true,
+  };
+}
+
+function removeRedundantContainsEqualsFilters(plan) {
+  if (!plan || plan.route !== 'dataset' || !Array.isArray(plan.filters) || plan.filters.length < 2) return plan;
+
+  const containsKeys = new Set();
+  for (const filter of plan.filters) {
+    if (normalizeText(filter?.operator || '') !== 'contains') continue;
+    const values = Array.isArray(filter.value) ? filter.value : [filter.value];
+    for (const value of values) {
+      containsKeys.add(`${normalizeText(filter.column)}::${normalizeText(value)}`);
+    }
+  }
+
+  if (!containsKeys.size) return plan;
+  const filtered = plan.filters.filter((filter) => {
+    const op = normalizeText(filter?.operator || 'equals');
+    if (!['equals', 'equal', '='].includes(op)) return true;
+    const values = Array.isArray(filter.value) ? filter.value : [filter.value];
+    return !values.some((value) => containsKeys.has(`${normalizeText(filter.column)}::${normalizeText(value)}`));
+  });
+
+  return filtered.length === plan.filters.length
+    ? plan
+    : { ...plan, filters: filtered, redundantExactFilterRemoved: true };
+}
+
 function enforcePlannerInvariants({ datasets, schema, plan, question }) {
   let next = plan;
   next = normalizeSameColumnEqualityFilters(next);
+  next = repairListProjectionIntent({ datasets, plan: next, question });
+  next = removeRedundantContainsEqualsFilters(next);
   next = repairCategoricalCountIntent({ datasets, plan: next, question });
-  next = repairAggregateIntent({ datasets, schema, plan: next, question });
+  next = repairAggregateIntent({ datasets, plan: next, question });
   next = repairGroupedAggregatePlan({ datasets, schema, plan: next, question });
   next = applySimpleRowRankingInvariant({ datasets, schema, plan: next, question });
   next = removeProjectionFieldFilterArtifacts({ datasets, plan: next, question });
@@ -473,6 +477,8 @@ module.exports = {
   normalizeSameColumnEqualityFilters,
   dedupePlanFilters,
   removeProjectionFieldFilterArtifacts,
+  repairListProjectionIntent,
+  removeRedundantContainsEqualsFilters,
   repairGroupedAggregatePlan,
   repairCategoricalCountIntent,
   repairAggregateIntent,
