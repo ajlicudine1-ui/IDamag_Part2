@@ -6028,11 +6028,32 @@ async function answerQuestion(
          * list wording for both Groq and local fallback, so the two paths stay
          * aligned and the filter field cannot be mislabeled as the output.
          */
+        /**
+         * Final grounded-list answer guard.
+         *
+         * A list query can filter on one field while projecting another.
+         * Once listProjectionGrounded is true, the projected/output field is
+         * authoritative for the answer subject. Build that wording directly
+         * from the verified plan/result and do not allow a legacy response
+         * path (or optional LLM polish) to relabel the filter field as the
+         * returned entity. This runs for both Groq-created and local plans.
+         */
+        const groundedListAnswer =
+          isPrimitiveListResult &&
+          plan?.listProjectionGrounded === true
+            ? buildSemanticVerifiedAnswer({
+                question: cleanQuestion,
+                plan,
+                result,
+              })
+            : null;
+
         const naturalAnswer =
           isOrdinalAnalyticalResult &&
           result?.answer
             ? result.answer
             : (
+                groundedListAnswer ||
                 primitiveListAnswer ||
                 await generateNaturalResponse({
                   question:
