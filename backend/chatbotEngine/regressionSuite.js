@@ -5244,6 +5244,97 @@ test('how-many categorical target is counted rather than summed as a text metric
   assert.equal(result.value, 2);
 });
 
+
+test('problem3 short what-about scope switch preserves unrelated verified filters before Groq', async () => {
+  const sessionId = `problem3-scope-${Date.now()}`;
+  clearConversation(sessionId);
+
+  const input = {
+    Main: [
+      { Association: 'P3-A', Province: 'Pangasinan', Phase: 'Phase 3' },
+      { Association: 'LU-A', Province: 'La Union', Phase: 'Phase 3' },
+      { Association: 'LU-B', Province: 'La Union', Phase: 'Phase 2' },
+    ],
+  };
+
+  updateConversation(sessionId, {
+    question: 'How many are there?',
+    plan: {
+      route: 'dataset',
+      dataset: 'Main',
+      operation: 'row_count',
+      filters: [
+        { column: 'Phase', operator: 'equals', value: 'Phase 3' },
+      ],
+      selectColumns: [],
+      outputRequested: true,
+      limit: 1,
+      showAll: false,
+    },
+    result: {
+      success: true,
+      source: 'dataset',
+      dataset: 'Main',
+      operation: 'row_count',
+      value: 2,
+      filters: [
+        { column: 'Phase', operator: 'equals', value: 'Phase 3' },
+      ],
+      answer: 'There are 2 there.',
+    },
+  });
+
+  const result = await answerQuestion(
+    input,
+    'What about La Union?',
+    sessionId
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'row_count');
+  assert.equal(result.value, 1);
+  assert.equal(result.plannerSource, 'conversation');
+  assert.equal(result.earlyConversationalFilterSwitch, true);
+  assert.deepEqual(
+    result.debugPlan.filters.map((f) => [f.column, f.value]),
+    [
+      ['Phase', 'Phase 3'],
+      ['Province', 'La Union'],
+    ]
+  );
+});
+
+test('problem3 zero-row numeric aggregate is a grounded no-data result, not a clarification', () => {
+  const { executePlan } = require('./calculationEngine');
+  const result = executePlan({
+    datasets: {
+      Main: [
+        { Province: 'Pangasinan', Phase: 'Phase 3', 'Total Land Area (ha)': 10 },
+      ],
+    },
+    plan: {
+      route: 'dataset',
+      dataset: 'Main',
+      operation: 'sum',
+      column: 'Total Land Area (ha)',
+      filters: [
+        { column: 'Phase', operator: 'equals', value: 'Phase 3' },
+        { column: 'Province', operator: 'equals', value: 'La Union' },
+      ],
+    },
+    question: 'What is their total land area?',
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'sum');
+  assert.equal(result.noData, true);
+  assert.equal(result.emptyReason, 'no_matching_rows');
+  assert.equal(result.recordsUsed, 0);
+  assert.equal(result.value, null);
+  assert.doesNotMatch(result.answer, /rephrase|understood your question/i);
+  assert.match(result.answer, /No matching records/i);
+});
+
 async function run() {
   let passed = 0;
   const failures = [];

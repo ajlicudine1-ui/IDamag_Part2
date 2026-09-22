@@ -6334,7 +6334,156 @@ async function answerQuestion(
 
 
 
+  // ========================================================
+  // PROBLEM #3 — EARLY SINGLE-QUERY SCOPE SWITCH CONTINUITY
+  // ========================================================
+  //
+  // Resolve short scope-changing follow-ups BEFORE Groq planning.
+  // This protects verified conversational state from being replaced by an
+  // unnecessary clarification when the user says things such as:
+  //
+  //   "How many are there?" -> "What about <another live value>?"
+  //
+  // The rule is fully schema/data driven:
+  //   - the new value must exist in the current live worksheet,
+  //   - the previous verified operation is preserved,
+  //   - only filters on explicitly replaced columns are replaced,
+  //   - unrelated prior filters remain active.
+  //
+  // Analytical metric changes ("what about the average?", "what about
+  // total cost?", etc.) are intentionally left to the analytical follow-up
+  // handlers later in the pipeline.
+  const earlySingleFollowUpText =
+    normalizeFollowUpPhrase(cleanQuestion);
 
+  const earlySingleFilterPrefix =
+    /^(?:what|how)\s+about\b|^and\b|^for\b/i.test(
+      earlySingleFollowUpText
+    );
+
+  const earlySingleExplicitOperationChange =
+    /\b(?:list|show|display|name|count|how many|number of|sum|total|average|avg|mean|minimum|maximum|highest|lowest|top|bottom|rank|compare|difference|median|ratio|range|spread)\b/i.test(
+      String(cleanQuestion || "")
+    );
+
+  if (
+    conversationContext?.isFollowUp === true &&
+    earlySingleFilterPrefix &&
+    !earlySingleExplicitOperationChange &&
+    conversationContext?.lastDataset &&
+    conversationContext?.lastPlan?.route === "dataset"
+  ) {
+    const previousDataset =
+      conversationContext.lastDataset;
+
+    const previousRows =
+      Array.isArray(datasets?.[previousDataset])
+        ? datasets[previousDataset]
+        : [];
+
+    if (previousRows.length) {
+      let newFilters =
+        inferCoherentFilters(
+          previousRows,
+          cleanQuestion
+        );
+
+      if (
+        !Array.isArray(newFilters) ||
+        !newFilters.length
+      ) {
+        const preferredColumns =
+          new Set(
+            (Array.isArray(conversationContext.lastFilters)
+              ? conversationContext.lastFilters
+              : []
+            )
+              .map((filter) => filter?.column)
+              .filter(Boolean)
+          );
+
+        newFilters =
+          inferApproximateFollowUpFilter({
+            rows: previousRows,
+            question: cleanQuestion,
+            preferredColumns,
+          });
+      }
+
+      if (
+        Array.isArray(newFilters) &&
+        newFilters.length
+      ) {
+        const replacementColumns =
+          new Set(
+            newFilters
+              .map((filter) => filter?.column)
+              .filter(Boolean)
+          );
+
+        const inheritedFilters =
+          (Array.isArray(conversationContext.lastFilters)
+            ? conversationContext.lastFilters
+            : []
+          )
+            .filter(
+              (filter) =>
+                filter?.column &&
+                !replacementColumns.has(filter.column)
+            )
+            .map((filter) => ({
+              ...filter,
+              value: Array.isArray(filter?.value)
+                ? [...filter.value]
+                : filter?.value,
+            }));
+
+        const finalFilters = [
+          ...inheritedFilters,
+          ...newFilters.map((filter) => ({
+            ...filter,
+            value: Array.isArray(filter?.value)
+              ? [...filter.value]
+              : filter?.value,
+          })),
+        ];
+
+        const continuedPlan = {
+          ...conversationContext.lastPlan,
+          route: "dataset",
+          dataset: previousDataset,
+          filters: finalFilters,
+          filterGroups: [],
+          filterGroupLogic: null,
+          outputRequested: true,
+          conversationalFilterSwitch: true,
+          earlyConversationalFilterSwitch: true,
+        };
+
+        const continuedResult =
+          await executeResolvedPlan(
+            continuedPlan
+          );
+
+        updateConversation(
+          sessionId,
+          {
+            question: cleanQuestion,
+            plan:
+              continuedResult?.debugPlan ||
+              continuedPlan,
+            result: continuedResult,
+          }
+        );
+
+        return {
+          ...continuedResult,
+          plannerSource: "conversation",
+          earlyConversationalFilterSwitch: true,
+        };
+      }
+    }
+  }
 
 
   // ========================================================

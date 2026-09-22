@@ -2169,16 +2169,32 @@ function executePlan({
     .filter((item) => item.value !== null);
 
   if (!numericRows.length) {
+    /**
+     * Problem #3: a valid analytical request that happens to match zero
+     * rows (or rows with no numeric values) is a DATA outcome, not an
+     * ambiguity outcome. Do not ask the user to rephrase a question that
+     * was already understood and grounded to a live numeric column.
+     */
+    const hasMatchingRows =
+      Array.isArray(filteredRows) &&
+      filteredRows.length > 0;
+
     return {
-      success: false,
-      source: "router",
-      operation: "clarify",
+      success: true,
+      source: "dataset",
       dataset: datasetName,
+      operation,
       column: numericColumn,
+      value: null,
+      recordsUsed: 0,
       filters,
-      answer:
-        "I’m not sure I understood your question correctly. " +
-        "Could you please rephrase it or make it a little clearer?",
+      noData: true,
+      emptyReason: hasMatchingRows
+        ? "no_numeric_values"
+        : "no_matching_rows",
+      answer: hasMatchingRows
+        ? `Matching records were found, but "${numericColumn}" has no numeric values available for this calculation.`
+        : `No matching records were found, so there is no ${numericColumn} to calculate.`,
     };
   }
 
