@@ -10225,18 +10225,14 @@ async function answerQuestion(
         result.answer;
 
       /**
-       * Preserve the verified semantic subject for projected list queries.
+       * Grounded list projection answer.
        *
-       * executeResolvedPlan already knows the authoritative output field
-       * (plan.column) and the filter field(s). Rebuild the list narrative here
-       * before any row-aware fallback is considered so the outer Groq path
-       * cannot overwrite:
+       * When a list filters one field but returns another, the projected
+       * field is the semantic subject of the response. Build that wording
+       * directly from the verified plan/result before any legacy row-aware
+       * rendering can relabel the filter field as the answer subject.
        *
-       *   output: Association
-       *   filter: Commodities contains X
-       *
-       * with wording that incorrectly names Commodities as the returned
-       * entity. This is schema-driven and applies to any output/filter pair.
+       * This is schema-driven and applies to every dataset.
        */
       const semanticGroqListAnswer =
         String(
@@ -10245,7 +10241,8 @@ async function answerQuestion(
         )
           .trim()
           .toLowerCase() ===
-          "list"
+          "list" &&
+        groqPlan?.listProjectionGrounded === true
           ? buildSemanticVerifiedAnswer({
               question:
                 cleanQuestion,
