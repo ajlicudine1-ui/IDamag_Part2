@@ -5989,7 +5989,8 @@ async function answerQuestion(
           );
 
         const primitiveListAnswer =
-          isPrimitiveListResult
+          isPrimitiveListResult &&
+          plan?.listProjectionGrounded !== true
             ? result.results
                 .filter(
                   (item) =>
@@ -6012,6 +6013,21 @@ async function answerQuestion(
                 )
             : null;
 
+        /**
+         * A grounded list projection carries semantic information that a raw
+         * numbered primitive list cannot express: the output field is the
+         * answer subject while the filter field is only the condition.
+         *
+         * Example, schema-driven (not dataset-specific):
+         *   output column: Association
+         *   filter column: Commodities contains X
+         *   -> "The associations whose commodities include X are ..."
+         *
+         * Route these plans through the shared deterministic response
+         * generator. generateNaturalResponse preserves the verified semantic
+         * list wording for both Groq and local fallback, so the two paths stay
+         * aligned and the filter field cannot be mislabeled as the output.
+         */
         const naturalAnswer =
           isOrdinalAnalyticalResult &&
           result?.answer
