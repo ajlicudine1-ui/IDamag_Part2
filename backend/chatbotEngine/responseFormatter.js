@@ -842,28 +842,10 @@ function formatAggregateAnswer({
   dataset,
   subject = "",
 }) {
-  const rawLabel =
+  const label =
     lowerLabel(
       column
     );
-
-  const normalizedOperation = String(operation || "").trim().toLowerCase();
-  const label = (() => {
-    if (!rawLabel) return rawLabel;
-    if (normalizedOperation === "sum") {
-      return rawLabel.replace(/^(?:total|sum of|sum)\s+/i, "").trim() || rawLabel;
-    }
-    if (["average", "avg", "mean"].includes(normalizedOperation)) {
-      return rawLabel.replace(/^(?:average|avg|mean)\s+/i, "").trim() || rawLabel;
-    }
-    if (["minimum", "min"].includes(normalizedOperation)) {
-      return rawLabel.replace(/^(?:minimum|min|lowest)\s+/i, "").trim() || rawLabel;
-    }
-    if (["maximum", "max"].includes(normalizedOperation)) {
-      return rawLabel.replace(/^(?:maximum|max|highest)\s+/i, "").trim() || rawLabel;
-    }
-    return rawLabel;
-  })();
 
   const formatted =
     formatVerifiedValue(
@@ -1116,7 +1098,6 @@ function formatRankingAnswer({
   labelColumn,
   aggregation,
   direction,
-  selectColumns = [],
   results = [],
 }) {
   if (!results.length) {
@@ -1157,25 +1138,13 @@ function formatRankingAnswer({
         ? `${aggregation} ${metric}`
         : metric;
 
-    const detailColumns = (Array.isArray(selectColumns) ? selectColumns : [])
-      .filter((name) =>
-        name &&
-        name !== labelColumn &&
-        name !== column &&
-        item?.row &&
-        nonEmpty(item.row?.[name])
-      );
-
-    const detailText = detailColumns.length
-      ? ` ${detailColumns.map((name) => `${humanizeLabel(name)}: ${formatVerifiedValue(item.row?.[name])}`).join('; ')}.`
-      : '';
-
-    const base =
+    return (
       `${item.label} has the ${rankWord} ` +
       `${aggregatePhrase} at ` +
-      `${formatVerifiedValue(item.value)}.`;
-
-    return detailText ? `${base}${detailText}` : base;
+      `${formatVerifiedValue(
+        item.value
+      )}.`
+    );
   }
 
   const heading =
@@ -1657,8 +1626,6 @@ function formatVerifiedResultAnswer({
       direction:
         result?.direction ||
         plan?.direction,
-      selectColumns:
-        Array.isArray(plan?.selectColumns) ? plan.selectColumns : [],
       results:
         rows,
     });

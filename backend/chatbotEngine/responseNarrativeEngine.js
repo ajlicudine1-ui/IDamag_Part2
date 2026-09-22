@@ -103,24 +103,6 @@ function joinNaturalList(values) {
   return `${unique.slice(0, -1).join(', ')}, and ${unique[unique.length - 1]}`;
 }
 
-
-function uniqueDisplayValues(values) {
-  const seen = new Set();
-  const output = [];
-
-  for (const value of values || []) {
-    const display = String(value ?? '').trim();
-    const key = normalizeText(display);
-
-    if (!display || !key || seen.has(key)) continue;
-
-    seen.add(key);
-    output.push(display);
-  }
-
-  return output;
-}
-
 function thirdPersonSingularVerb(baseVerb) {
   const verb = normalizeText(baseVerb);
   if (!verb) return 'has';
@@ -293,7 +275,7 @@ function buildLookupPairNarrative({ question, plan, result } = {}) {
   // associations, projects, offices, etc.
   const allValues = [];
   for (const values of grouped.values()) allValues.push(...values);
-  const distinctValues = uniqueDisplayValues(allValues);
+  const distinctValues = [...new Set(allValues.map((v) => String(v).trim()).filter(Boolean))];
 
   if (!distinctValues.length) return null;
 
@@ -308,7 +290,7 @@ function buildLookupPairNarrative({ question, plan, result } = {}) {
   // Merge labels that share the same value set so the explanation is concise.
   const clusters = new Map();
   for (const [label, values] of grouped.entries()) {
-    const uniqueValues = uniqueDisplayValues(values);
+    const uniqueValues = [...new Set(values.map((v) => String(v).trim()).filter(Boolean))];
     const key = canonicalValueSet(uniqueValues);
     if (!clusters.has(key)) clusters.set(key, { labels: [], values: uniqueValues });
     clusters.get(key).labels.push(label);
@@ -332,7 +314,7 @@ function buildLookupPairNarrative({ question, plan, result } = {}) {
   } else if (clauses.length === 2) {
     detailSentence = `${clauses[0]}, while ${clauses[1]}.`;
   } else {
-    detailSentence = `${clauses.slice(0, -1).join(', ')}, and ${clauses[clauses.length - 1]}.`;
+    detailSentence = `${clauses.slice(0, -1).join('; ')}, while ${clauses[clauses.length - 1]}.`;
   }
 
   return `${firstSentence} ${detailSentence}`;
@@ -473,21 +455,6 @@ function pluralizeDisplayLabel(value) {
   );
 }
 
-function formatScopeFilterValue(value) {
-  if (Array.isArray(value)) {
-    const items = value
-      .map((item) => String(item ?? "").trim())
-      .filter(Boolean);
-
-    if (!items.length) return "";
-    if (items.length === 1) return items[0];
-    if (items.length === 2) return `${items[0]} and ${items[1]}`;
-    return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
-  }
-
-  return String(value ?? "").trim();
-}
-
 function deriveFilteredListScopePhrase({
   question,
   plan,
@@ -526,7 +493,9 @@ function deriveFilteredListScopePhrase({
     );
 
   const displayValue =
-    formatScopeFilterValue(value);
+    String(
+      value
+    ).trim();
 
   if (
     /\bunder\b/.test(
@@ -558,38 +527,6 @@ function deriveFilteredListScopePhrase({
     )
   ) {
     return ` for ${displayValue}`;
-  }
-
-  /**
-   * When the requested output field is different from the filter field,
-   * describe the filter as a relationship on the returned entities instead
-   * of incorrectly naming the filter field as the answer subject.
-   *
-   * Example (schema-driven):
-   *   output: Association
-   *   filter: Commodities contains sugarcane
-   *   -> "whose commodities include sugarcane"
-   *
-   * This formatter is shared by Groq-backed and local responses because the
-   * verified local answer is built before optional language polishing.
-   */
-  const filter = filters[0] || {};
-  const outputField = normalizeText(plan?.column);
-  const filterField = normalizeText(filter?.column);
-
-  if (
-    outputField &&
-    filterField &&
-    outputField !== filterField
-  ) {
-    const filterLabel = humanizeFieldLabel(filter?.column).toLowerCase();
-    const operator = normalizeText(filter?.operator);
-    const lastWord = filterLabel.split(/\s+/).filter(Boolean).pop() || "";
-    const looksPlural = /s$/i.test(lastWord) && !/ss$/i.test(lastWord);
-
-    if (["contains", "includes", "include"].includes(operator)) {
-      return ` whose ${filterLabel} ${looksPlural ? "include" : "includes"} ${displayValue}`;
-    }
   }
 
   return ` for ${displayValue}`;
@@ -664,7 +601,7 @@ function deriveContinuationScopePhrase(plan) {
     );
 
   const displayValue =
-    formatScopeFilterValue(value);
+    String(value).trim();
 
   if (
     /\b(?:phase|province|region|municipality|city|barangay|department|division|office|category|type|status|year|month|quarter|sex|gender|level|group)\b/.test(
@@ -919,28 +856,6 @@ function buildSemanticVerifiedAnswer({ question, plan, result } = {}) {
   if (op === 'lookup' && results.length) {
     const pairNarrative = buildLookupPairNarrative({ question, plan, result });
     if (pairNarrative) return pairNarrative;
-  }
-
-  if (op === 'row_count' && result?.value !== undefined && result?.value !== null) {
-    const rawQuestion = String(question || '').replace(/[?!.]+$/g, '').trim();
-    const howMany = rawQuestion.match(/^how\s+many\s+(.+)$/i);
-    if (howMany?.[1]) {
-      const subject = howMany[1]
-        .replace(/^\s*(?:is|are|was|were)\s+/i, '')
-        .replace(/\s+\b(?:is|are|was|were)\b\s+/i, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-      if (subject) {
-        return `There are ${formatValue(result.value, null)} ${subject}.`;
-      }
-    }
-
-    const countOf = rawQuestion.match(/\b(?:count|number)\s+of\s+(.+)$/i);
-    if (countOf?.[1]) {
-      return `There are ${formatValue(result.value, null)} ${countOf[1].trim()}.`;
-    }
-
-    return `${formatValue(result.value, null)} matching records were found.`;
   }
 
   if (result?.value !== undefined && result?.value !== null && (op === 'lookup' || op === 'average' || op === 'sum' || op === 'minimum' || op === 'maximum' || op === 'median')) {

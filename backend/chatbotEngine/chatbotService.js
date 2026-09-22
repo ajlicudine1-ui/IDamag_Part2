@@ -18,7 +18,6 @@ const {
 const {
   answerGeneralQuestion,
   createSchemaAwarePlan,
-  classifyGroqError,
 } = require("./groqService");
 
 const {
@@ -33,7 +32,6 @@ const {
   updateConversation,
   getRecentResults,
   applyConversationCorrection,
-  saveCompoundContext,
 } = require("./conversationManager");
 
 const {
@@ -42,7 +40,6 @@ const {
 
 const {
   validateQueryPlan,
-  validateResolvedFilterValues,
 } = require("./queryValidator");
 
 const {
@@ -104,7 +101,6 @@ const {
 
 const {
   attachLocalConfidence,
-  evaluateLocalPlanConfidence,
 } = require("./planConfidenceEngine");
 
 const {
@@ -147,7 +143,6 @@ const {
   normalizePlannerPlan,
   singularizeSchemaToken,
   normalizeSchemaPhraseMorphology,
-  findStrongMorphologicalQuestionColumn,
   findExplicitSchemaColumn,
   operationUsesMetricColumn,
   enforceExplicitQuestionColumn,
@@ -222,28 +217,6 @@ const {
   ensureLocalPlannerParity,
 } = require("./localPlannerParityEngine");
 
-const {
-  resolveComplexFilterPlan,
-} = require("./complexFilterParityEngine");
-
-const {
-  decomposeComplexQuestion,
-} = require("./complexQuestionParityEngine");
-
-const {
-  enforceUniversalGrounding,
-} = require("./universalGroundingEngine");
-
-const {
-  buildCompoundParityQuestion,
-  hasAllInheritedScopeColumns,
-  mergeInheritedScopeIntoPlan,
-} = require("./compoundContextParityEngine");
-
-const {
-  enforcePlannerInvariants,
-  buildRankingDetailRescuePlan,
-} = require("./plannerInvariantEngine");
 
 
 
@@ -1333,575 +1306,9 @@ function buildVerifiedListAnswer({
 }
 
 
-function splitDistinctCellValues(
-  value
-) {
-  const raw =
-    String(
-      value ?? ""
-    ).trim();
-
-  if (!raw) {
-    return [];
-  }
-
-  if (/[;|\r\n]/.test(raw)) {
-    return raw
-      .split(
-        /\s*(?:;|\||\r?\n)\s*/
-      )
-      .map(
-        (part) =>
-          part.trim()
-      )
-      .filter(Boolean);
-  }
-
-  if (
-    raw.includes(",")
-  ) {
-    const parts =
-      raw
-        .split(",")
-        .map(
-          (part) =>
-            part.trim()
-        )
-        .filter(Boolean);
-
-    const compactCategoryList =
-      parts.length >= 2 &&
-      parts.length <= 20 &&
-      parts.every(
-        (part) =>
-          part
-            .split(/\s+/)
-            .filter(Boolean)
-            .length <= 6
-      );
-
-    if (
-      compactCategoryList
-    ) {
-      return parts;
-    }
-  }
-
-  return [
-    raw,
-  ];
-}
-
-
-function normalizeLooseMetricPhrase(
-  value
-) {
-  return normalizeText(
-    value || ""
-  )
-    .replace(
-      /^(?:the\s+)?(?:total\s+)?(?:no|num|number|count)\s*(?:of\s+)?/,
-      ""
-    )
-    .replace(
-      /^(?:total|overall|combined)\s+/,
-      ""
-    )
-    .replace(
-      /\b(?:the|all)\b/g,
-      " "
-    )
-    .replace(
-      /\s+/g,
-      " "
-    )
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map(
-      (token) => {
-        if (
-          token.endsWith("ies") &&
-          token.length > 3
-        ) {
-          return (
-            token.slice(
-              0,
-              -3
-            ) + "y"
-          );
-        }
-
-        if (
-          token.endsWith("s") &&
-          !token.endsWith("ss") &&
-          token.length > 3
-        ) {
-          return token.slice(
-            0,
-            -1
-          );
-        }
-
-        return token;
-      }
-    )
-    .join(" ");
-}
-
-
-function resolveExplicitNumericMetricPlan({
-  plan,
-  question,
-  schema,
-  datasets,
-  context = null,
-}) {
-  const text =
-    normalizeText(
-      question || ""
-    );
-
-  if (!text) {
-    return {
-      plan,
-      repaired: false,
-      reasons: [],
-    };
-  }
-
-  let operation =
-    null;
-
-  if (
-    /\b(?:sum|total|overall|combined|altogether)\b/.test(
-      text
-    )
-  ) {
-    operation =
-      "sum";
-  } else if (
-    /\b(?:average|avg|mean)\b/.test(
-      text
-    )
-  ) {
-    operation =
-      "average";
-  } else if (
-    /\bmedian\b/.test(
-      text
-    )
-  ) {
-    operation =
-      "median";
-  } else if (
-    /\b(?:minimum|min|lowest|smallest)\b/.test(
-      text
-    )
-  ) {
-    operation =
-      "minimum";
-  } else if (
-    /\b(?:maximum|max|highest|largest)\b/.test(
-      text
-    )
-  ) {
-    operation =
-      "maximum";
-  }
-
-  if (!operation) {
-    return {
-      plan,
-      repaired: false,
-      reasons: [],
-    };
-  }
-
-  const numberOfMatch =
-    text.match(
-      /\bnumber\s+of\s+(.+?)(?=\s+(?:in|from|within|at|under)\b|[?.!]|$)/
-    );
-
-  if (!numberOfMatch?.[1]) {
-    return {
-      plan,
-      repaired: false,
-      reasons: [],
-    };
-  }
-
-  const targetPhrase =
-    normalizeLooseMetricPhrase(
-      numberOfMatch[1]
-    );
-
-  if (!targetPhrase) {
-    return {
-      plan,
-      repaired: false,
-      reasons: [],
-    };
-  }
-
-  const preferredDatasets =
-    new Set(
-      [
-        plan?.dataset,
-        context?.lastDataset,
-      ]
-        .filter(Boolean)
-        .map(
-          (value) =>
-            normalizeText(
-              value
-            )
-        )
-    );
-
-  const candidates = [];
-
-  for (
-    const datasetSchema
-    of schema || []
-  ) {
-    const datasetName =
-      datasetSchema?.name;
-
-    const rows =
-      datasets?.[
-        datasetName
-      ];
-
-    if (
-      !datasetName ||
-      !Array.isArray(rows) ||
-      !rows.length
-    ) {
-      continue;
-    }
-
-    for (
-      const column
-      of datasetSchema?.columns || []
-    ) {
-      const columnName =
-        typeof column ===
-          "string"
-          ? column
-          : column?.name;
-
-      if (!columnName) {
-        continue;
-      }
-
-      const columnSchema =
-        typeof column ===
-          "string"
-          ? {
-              name:
-                columnName,
-            }
-          : column;
-
-      if (
-        !isNumericLikeColumn({
-          column:
-            columnSchema,
-          rows,
-        })
-      ) {
-        continue;
-      }
-
-      const fieldPhrase =
-        normalizeLooseMetricPhrase(
-          columnName
-        );
-
-      if (!fieldPhrase) {
-        continue;
-      }
-
-      const targetTokens =
-        new Set(
-          targetPhrase
-            .split(/\s+/)
-            .filter(Boolean)
-        );
-
-      const fieldTokens =
-        new Set(
-          fieldPhrase
-            .split(/\s+/)
-            .filter(Boolean)
-        );
-
-      const shared =
-        [
-          ...targetTokens,
-        ].filter(
-          (token) =>
-            fieldTokens.has(
-              token
-            )
-        ).length;
-
-      const coverage =
-        targetTokens.size
-          ? shared /
-            targetTokens.size
-          : 0;
-
-      const reverseCoverage =
-        fieldTokens.size
-          ? shared /
-            fieldTokens.size
-          : 0;
-
-      let score =
-        0;
-
-      if (
-        fieldPhrase ===
-        targetPhrase
-      ) {
-        score = 1;
-      } else if (
-        coverage === 1 &&
-        reverseCoverage >= 0.75
-      ) {
-        score = 0.96;
-      } else {
-        score =
-          Math.max(
-            similarity(
-              targetPhrase,
-              fieldPhrase
-            ),
-            (
-              coverage *
-              0.65
-            ) +
-            (
-              reverseCoverage *
-              0.35
-            )
-          );
-      }
-
-      if (
-        preferredDatasets.has(
-          normalizeText(
-            datasetName
-          )
-        )
-      ) {
-        score += 0.025;
-      }
-
-      candidates.push({
-        dataset:
-          datasetName,
-        column:
-          columnName,
-        score:
-          Math.min(
-            1,
-            score
-          ),
-      });
-    }
-  }
-
-  candidates.sort(
-    (a, b) =>
-      b.score -
-      a.score
-  );
-
-  const best =
-    candidates[0] ||
-    null;
-
-  const second =
-    candidates[1] ||
-    null;
-
-  if (
-    !best ||
-    best.score < 0.82 ||
-    (
-      second &&
-      second.dataset !==
-        best.dataset &&
-      Math.abs(
-        best.score -
-        second.score
-      ) < 0.03
-    )
-  ) {
-    return {
-      plan,
-      repaired: false,
-      reasons: [],
-    };
-  }
-
-  const rows =
-    datasets?.[
-      best.dataset
-    ] || [];
-
-  /**
-   * Infer filters only from an explicit trailing scope phrase.
-   * This prevents "number" in "number of X" from being interpreted
-   * as a categorical filter value such as Unit = "number".
-   */
-  const scopeMatch =
-    text.match(
-      /\b(?:in|from|within|at|under)\s+(.+?)(?:[?.!]|$)/
-    );
-
-  const scopeText =
-    scopeMatch?.[1]
-      ? String(
-          scopeMatch[1]
-        ).trim()
-      : "";
-
-  const filters =
-    scopeText
-      ? inferCoherentFilters(
-          rows,
-          scopeText
-        )
-      : [];
-
-  const repairedPlan = {
-    ...(plan &&
-    typeof plan ===
-      "object"
-      ? plan
-      : {}),
-
-    route:
-      "dataset",
-
-    dataset:
-      best.dataset,
-
-    operation,
-
-    column:
-      best.column,
-
-    labelColumn:
-      null,
-
-    groupBy:
-      null,
-
-    aggregation:
-      null,
-
-    direction:
-      null,
-
-    filters:
-      Array.isArray(filters)
-        ? filters
-        : [],
-
-    filterGroups:
-      [],
-
-    filterGroupLogic:
-      null,
-
-    selectColumns: [
-      best.column,
-    ],
-
-    outputRequested:
-      true,
-
-    transform:
-      null,
-
-    showAll:
-      false,
-
-    limit:
-      10,
-
-    explicitNumericMetricResolved:
-      true,
-
-    explicitNumericMetricTarget:
-      targetPhrase,
-
-    explicitNumericMetricConfidence:
-      Number(
-        best.score.toFixed(
-          4
-        )
-      ),
-  };
-
-  const changed =
-    normalizeText(
-      plan?.route
-    ) !==
-      "dataset" ||
-    normalizeText(
-      plan?.dataset
-    ) !==
-      normalizeText(
-        repairedPlan.dataset
-      ) ||
-    normalizeText(
-      plan?.column
-    ) !==
-      normalizeText(
-        repairedPlan.column
-      ) ||
-    normalizeText(
-      plan?.operation
-    ) !==
-      normalizeText(
-        repairedPlan.operation
-      ) ||
-    JSON.stringify(
-      plan?.filters ||
-      []
-    ) !==
-      JSON.stringify(
-        repairedPlan.filters
-      );
-
-  return {
-    plan:
-      repairedPlan,
-
-    repaired:
-      changed,
-
-    reasons:
-      changed
-        ? [
-            "explicit-live-numeric-metric-restored",
-          ]
-        : [],
-  };
-}
-
-
-
 function normalizeDirectSingleFieldResult({
   plan,
   result,
-  question = "",
 }) {
   if (
     !plan ||
@@ -1944,16 +1351,6 @@ function normalizeDirectSingleFieldResult({
   const distinctMap =
     new Map();
 
-  const wantsDistinctValues =
-    /\b(?:distinct|unique|different)\b/i.test(
-      String(
-        question || ""
-      )
-    );
-
-  let multiValueNormalized =
-    false;
-
   for (
     const item of
     result.results
@@ -1978,48 +1375,21 @@ function normalizeDirectSingleFieldResult({
       continue;
     }
 
-    const displayValues =
-      wantsDistinctValues
-        ? splitDistinctCellValues(
-            value
-          )
-        : [
-            String(
-              value
-            ).trim(),
-          ];
+    const displayValue =
+      String(
+        value
+      ).trim();
+
+    const key =
+      normalizeText(
+        displayValue
+      );
 
     if (
-      displayValues.length >
-      1
+      !distinctMap.has(
+        key
+      )
     ) {
-      multiValueNormalized =
-        true;
-    }
-
-    for (
-      const displayValueRaw of
-      displayValues
-    ) {
-      const displayValue =
-        String(
-          displayValueRaw
-        ).trim();
-
-      const key =
-        normalizeText(
-          displayValue
-        );
-
-      if (
-        !key ||
-        distinctMap.has(
-          key
-        )
-      ) {
-        continue;
-      }
-
       distinctMap.set(
         key,
         typeof item ===
@@ -2043,7 +1413,6 @@ function normalizeDirectSingleFieldResult({
     ];
 
   if (
-    !multiValueNormalized &&
     distinctResults.length ===
       result.results.length
   ) {
@@ -2059,12 +1428,8 @@ function normalizeDirectSingleFieldResult({
     distinctResultCount:
       distinctResults.length,
     duplicateRowsRemoved:
-      Math.max(
-        0,
-        result.results.length -
-          distinctResults.length
-      ),
-    multiValueNormalized,
+      result.results.length -
+      distinctResults.length,
   };
 }
 
@@ -2908,18 +2273,115 @@ function applyConversationContext(
 function splitCompoundQuestions(
   question
 ) {
-  /**
-   * Complex-question decomposition is intentionally shared before
-   * Groq/local routing. This guarantees planner parity: Groq and
-   * the local fallback receive the same subquestions and therefore
-   * neither path gains a complex-query feature the other lacks.
-   */
-  const decomposition =
-    decomposeComplexQuestion(
-      question
+  const original =
+    String(
+      question || ""
+    )
+      .replace(/\s+/g, " ")
+      .trim();
+
+  if (
+    !original
+  ) {
+    return [];
+  }
+
+  let pieces =
+    original
+      .split(
+        /\?\s*(?=[A-Za-z0-9])/g
+      )
+      .map(
+        (part) =>
+          String(
+            part || ""
+          )
+            .trim()
+            .replace(
+              /^[,;:\-\s]+/,
+              ""
+            )
+      )
+      .filter(Boolean);
+
+  if (
+    pieces.length === 1
+  ) {
+    pieces =
+      original
+        .split(
+          /\s*(?:,|;)?\s+\b(?:and|also|plus)\b\s+(?=(?:what|which|who|where|when|how\s+many|how\s+much|how|calculate|compute|find|give|show|tell)\b|(?:the\s+)?(?:total|sum|average|avg|mean|median|minimum|maximum|max|min|count|number\s+of)\b)/i
+        )
+        .map(
+          (part) =>
+            String(
+              part || ""
+            )
+              .trim()
+              .replace(
+                /^[,;:\-\s]+/,
+                ""
+              )
+        )
+        .filter(Boolean);
+  }
+
+  if (
+    pieces.length === 1 &&
+    original.includes(";")
+  ) {
+    const semicolonParts =
+      original
+        .split(/\s*;\s*/)
+        .map(
+          (part) =>
+            part.trim()
+        )
+        .filter(Boolean);
+
+    const analyticalCue =
+      /\b(?:what|which|who|where|when|how|calculate|compute|find|give|show|tell|total|sum|average|avg|mean|median|minimum|maximum|max|min|count|number)\b/i;
+
+    if (
+      semicolonParts.length > 1 &&
+      semicolonParts.every(
+        (part) =>
+          analyticalCue.test(
+            part
+          )
+      )
+    ) {
+      pieces =
+        semicolonParts;
+    }
+  }
+
+  if (
+    pieces.length < 2
+  ) {
+    return [
+      original,
+    ];
+  }
+
+  const meaningful =
+    pieces.filter(
+      (part) =>
+        normalizeText(
+          part
+        )
+          .split(/\s+/)
+          .filter(Boolean)
+          .length >= 2
     );
 
-  return decomposition.clauses;
+  return (
+    meaningful.length >= 2
+      ? meaningful
+      : [
+          original,
+        ]
+  );
 }
 
 
@@ -2998,26 +2460,23 @@ function normalizeSemanticReferentialQuestion(question) {
     );
 
   /**
-   * Copular/prepositional relationships should keep their original wording.
+   * Copular/prepositional relations are intentionally NOT rewritten.
    *
    * Examples:
-   *   "What AMIA villages are they from?"
+   *   "What municipalities are they from?"
    *   "Which office are they under?"
    *   "What category are they in?"
    *
-   * responseNarrativeEngine understands these relationships directly and can
-   * safely produce human-like paired answers such as:
-   *   "They are from Sison, Binalonan, Anda, and Mabini..."
-   *
-   * Returning the original question here enables the semantic narrative while
-   * preserving the exact verified dataset plan/result.
+   * These are relationships, but "from", "under", and "in" are not action
+   * verbs. Keeping them on the verified pair formatter avoids bad grammar
+   * such as "They from ..." or "froms ...".
    */
   if (
     /\b(?:are|were|is|was)\s+(?:they|these|those|them|it|he|she)\s+(?:from|in|at|under|within|inside|on|of|for|with|without|near|around|through|across|over|below|above|between|among|into|onto|to)\b/i.test(
       original
     )
   ) {
-    return original;
+    return null;
   }
 
   /**
@@ -3175,13 +2634,16 @@ function recoverLocalReferentialPlanFromConversation({
     return plan;
   }
 
-  /**
-   * A valid local dataset plan may still be incomplete for a referential
-   * relationship question. Do not return early just because dataset+column
-   * exist; enrich the CURRENT field with the PREVIOUS verified pair column.
-   */
+  // A valid local dataset plan already has enough information.
+  if (
+    plan.route === "dataset" &&
+    plan.dataset &&
+    plan.column
+  ) {
+    return plan;
+  }
+
   const datasetName =
-    plan.dataset ||
     context.lastDataset ||
     context.semanticPlan?.dataset ||
     null;
@@ -3237,14 +2699,9 @@ function recoverLocalReferentialPlanFromConversation({
       ) || null;
     };
 
-  /**
-   * The current question's locally resolved live field wins.
-   * Previous conversation fields are only fallbacks.
-   */
+  // Prefer the immediately previous verified output/metric field.
+  // This is conversation-derived, not domain hardcoding.
   const valueColumn =
-    findLiveColumn(
-      plan.column
-    ) ||
     findLiveColumn(
       context.lastMetric
     ) ||
@@ -3299,38 +2756,24 @@ function recoverLocalReferentialPlanFromConversation({
     }
   }
 
-  /**
-   * Prefer the current local plan's grounded filters. If it has no scope,
-   * inherit the previous VERIFIED conversation filters.
-   */
-  const sourceFilters =
-    Array.isArray(
-      plan.filters
-    ) &&
-    plan.filters.length
-      ? plan.filters
-      : (
-          Array.isArray(
-            context.lastFilters
-          )
-            ? context.lastFilters
-            : []
-        );
-
   const filters =
-    sourceFilters.map(
-      (filter) => ({
-        ...filter,
-        value:
-          Array.isArray(
-            filter?.value
-          )
-            ? [
-                ...filter.value,
-              ]
-            : filter?.value,
-      })
-    );
+    Array.isArray(
+      context.lastFilters
+    )
+      ? context.lastFilters.map(
+          (filter) => ({
+            ...filter,
+            value:
+              Array.isArray(
+                filter?.value
+              )
+                ? [
+                    ...filter.value,
+                  ]
+                : filter?.value,
+          })
+        )
+      : [];
 
   const selectColumns =
     [
@@ -3351,22 +2794,6 @@ function recoverLocalReferentialPlanFromConversation({
           ) === index
       );
 
-  /**
-   * Upgrade to a relationship lookup only when a distinct verified pair
-   * column exists. Otherwise keep the original local plan unchanged.
-   */
-  if (
-    !pairColumn ||
-    normalizeText(
-      pairColumn
-    ) ===
-    normalizeText(
-      valueColumn
-    )
-  ) {
-    return plan;
-  }
-
   return {
     ...plan,
     route:
@@ -3378,7 +2805,8 @@ function recoverLocalReferentialPlanFromConversation({
     column:
       valueColumn,
     labelColumn:
-      pairColumn,
+      pairColumn ||
+      valueColumn,
     groupBy:
       null,
     aggregation:
@@ -4258,12 +3686,6 @@ function buildExplicitReferentialFieldPlan({
   }
 
   const requested =
-    findStrongMorphologicalQuestionColumn({
-      schema,
-      question,
-      preferredDataset:
-        context.lastDataset,
-    }) ||
     findExplicitSchemaColumn({
       schema,
       question,
@@ -4468,16 +3890,6 @@ async function answerQuestion(
     ) {
       const subResults = [];
 
-      /**
-       * Use ONE isolated session for all clauses in this compound
-       * request. Later clauses such as "what about their total?"
-       * may safely inherit VERIFIED scope from the immediately
-       * preceding clause, while the compound namespace prevents
-       * leakage into/out of the user's normal conversation.
-       */
-      const compoundSessionId =
-        `${sessionId}::compound::${Date.now()}`;
-
       for (
         let index = 0;
         index <
@@ -4488,6 +3900,9 @@ async function answerQuestion(
           compoundQuestions[
             index
           ];
+
+        const compoundSessionId =
+          `${sessionId}::compound::${Date.now()}::${index}`;
 
         let subResult;
 
@@ -4502,61 +3917,6 @@ async function answerQuestion(
                   true,
               }
             );
-
-          /**
-           * SHARED COMPOUND-SCOPE PARITY
-           *
-           * Do NOT ask either planner to rediscover scope that was already
-           * verified by the preceding clause. Merge the missing scope into
-           * the executable plan itself, then execute that exact plan through
-           * the same validation/grounding pipeline. This keeps Groq and the
-           * local planner behavior identical and prevents planner retries from
-           * changing the metric/operation while trying to restore scope.
-           */
-          if (
-            index > 0 &&
-            internalOptions?.compoundParityRetry !== true
-          ) {
-            const previousVerified =
-              [...subResults]
-                .reverse()
-                .find((item) =>
-                  item?.result?.success !== false &&
-                  item?.result?.debugPlan?.route === "dataset"
-                );
-
-            const previousPlan = previousVerified?.result?.debugPlan || null;
-            const currentPlan = subResult?.debugPlan || null;
-            const mergedScope = mergeInheritedScopeIntoPlan({
-              previousPlan,
-              currentPlan,
-              question: subQuestion,
-            });
-
-            if (mergedScope.changed && mergedScope.plan) {
-              const parityResult = await answerQuestion(
-                input,
-                subQuestion,
-                compoundSessionId,
-                {
-                  disableCompound: true,
-                  compoundParityRetry: true,
-                  forcedPlan: mergedScope.plan,
-                }
-              );
-
-              if (
-                parityResult?.success !== false &&
-                hasAllInheritedScopeColumns({
-                  previousPlan,
-                  currentPlan: parityResult?.debugPlan,
-                  question: subQuestion,
-                })
-              ) {
-                subResult = parityResult;
-              }
-            }
-          }
         } catch (error) {
           subResult = {
             success:
@@ -4578,21 +3938,6 @@ async function answerQuestion(
             subResult,
         });
       }
-
-      /**
-       * Persist the COMPLETE verified compound intent to the user's real
-       * session. This is what allows the next short turn, e.g.
-       * "what about Phase 2?", to preserve every previous operation rather
-       * than inheriting only the final clause.
-       */
-      saveCompoundContext(sessionId, {
-        question: cleanQuestion,
-        clauses: subResults.map((item) => ({
-          question: item.question,
-          plan: item.result?.debugPlan || null,
-          result: item.result || null,
-        })),
-      });
 
       return {
         success:
@@ -4661,8 +4006,6 @@ async function answerQuestion(
             "compound",
           questions:
             compoundQuestions,
-          sharedCompoundContext:
-            true,
         },
       };
     }
@@ -4791,9 +4134,6 @@ async function answerQuestion(
 
   if (
     startsFreshAnalyticalScope &&
-    !looksLikeContinuousFollowUp(
-      cleanQuestion
-    ) &&
     conversationContext &&
     typeof conversationContext ===
       "object"
@@ -5098,7 +4438,6 @@ async function answerQuestion(
             schema,
             plan:
               childPlan,
-            question: cleanQuestion,
           });
 
         if (
@@ -5151,7 +4490,6 @@ async function answerQuestion(
               childPlan,
             result:
               rawResult,
-            datasets,
           });
 
         if (
@@ -5279,154 +4617,6 @@ async function answerQuestion(
         );
       }
 
-      // Some shared semantic-rescue plans are already fully grounded from
-      // the live schema. Preserve their structural intent across later
-      // generic repair passes (which may otherwise reinterpret phrases like
-      // "number of members" as a grouped count).
-      const protectedSemanticStructure = plan?.universalSemanticRescue
-        ? {
-            operation: plan.operation,
-            column: plan.column,
-            labelColumn: plan.labelColumn,
-            groupBy: plan.groupBy,
-            aggregation: plan.aggregation,
-            direction: plan.direction,
-            selectColumns: Array.isArray(plan.selectColumns) ? [...plan.selectColumns] : [],
-            limit: plan.limit,
-            showAll: plan.showAll,
-            referentialDetailEnrichment: plan.referentialDetailEnrichment,
-            universalSemanticRescue: true,
-          }
-        : null;
-
-      /**
-       * ==================================================
-       * V7.36 COMMON PARITY GUARDS
-       * ==================================================
-       *
-       * These run for Groq, local fallback, conversation,
-       * conversation-local, and deterministic/general plans.
-       *
-       * 1) Reconstruct grounded AND/OR boolean filter logic.
-       * 2) Enforce universal live-data grounding.
-       */
-      if (
-        plan.route ===
-          "dataset" &&
-        plan.dataset &&
-        Array.isArray(
-          datasets?.[
-            plan.dataset
-          ]
-        )
-      ) {
-        /**
-         * Final shared planner normalization. Groq, local fallback,
-         * conversation continuations, and deterministic plans all pass
-         * through the same schema-driven ranking/output repair immediately
-         * before execution. This prevents later local-parity repairs from
-         * accidentally undoing an earlier correct ranking interpretation.
-         */
-        plan =
-          normalizePlannerPlan({
-            datasets,
-            schema,
-            plan,
-            question: cleanQuestion,
-          });
-
-        plan = enforcePlannerInvariants({
-          datasets,
-          schema,
-          plan,
-          question: cleanQuestion,
-        });
-
-        const parityRows =
-          datasets[
-            plan.dataset
-          ];
-
-        if (!plan?.referentialDetailEnrichment) {
-          plan =
-            resolveComplexFilterPlan({
-              plan,
-              question:
-                cleanQuestion,
-              rows:
-                parityRows,
-            });
-        }
-
-        // Boolean/filter reconstruction can introduce two equality filters
-        // on the same categorical column (e.g. Province=A and Province=B).
-        // Re-apply shared invariants after that reconstruction so such
-        // mutually exclusive equalities become an IN/OR scope before
-        // grounding and execution.
-        plan = enforcePlannerInvariants({
-          datasets,
-          schema,
-          plan,
-          question: cleanQuestion,
-        });
-
-        if (
-          plan?.complexFilterGroundingFailed ===
-            true
-        ) {
-          plan = {
-            route:
-              "clarify",
-            question:
-              `I could not safely ground every condition in this AND/OR request: ${plan.complexFilterUngroundedClauses.join(", ")}. Please use values that exist in the current report.`,
-            universalGroundingFailed:
-              true,
-            complexFilterGroundingFailed:
-              true,
-          };
-        } else {
-          const datasetSchema =
-            schema.find(
-              (item) =>
-                String(
-                  item?.name ||
-                  ""
-                ) ===
-                String(
-                  plan.dataset ||
-                  ""
-                )
-            );
-
-          const columns =
-            (
-              datasetSchema?.columns ||
-              []
-            )
-              .map(
-                (column) =>
-                  typeof column ===
-                    "string"
-                    ? column
-                    : column?.name
-              )
-              .filter(Boolean);
-
-          const grounding =
-            enforceUniversalGrounding({
-              plan,
-              question:
-                cleanQuestion,
-              rows:
-                parityRows,
-              columns,
-            });
-
-          plan =
-            grounding.plan;
-        }
-      }
-
       if (
         plan.route ===
           "dataset" &&
@@ -5482,27 +4672,6 @@ async function answerQuestion(
       // ====================================================
       // SEMANTIC PLAN GUARDS
       // ====================================================
-
-      /**
-       * V7.36.5g — planner-source parity for explicit numeric metrics.
-       * Strong live numeric fields outrank generic "number" unit/value
-       * interpretations for Groq, local, conversation, and deterministic
-       * plans alike.
-       */
-      const explicitNumericMetricRepair =
-        resolveExplicitNumericMetricPlan({
-          plan,
-          question:
-            cleanQuestion,
-          schema,
-          datasets,
-          context:
-            conversationContext,
-        });
-
-      plan =
-        explicitNumericMetricRepair.plan;
-
       // 1) Align explicit aggregate wording with a verified numeric field.
       // 2) Suppress weak/report-context substring filters.
       // These run for Groq, local fallback, and conversational plans.
@@ -5534,29 +4703,10 @@ async function answerQuestion(
             null,
         });
 
-      // Re-assert cross-planner invariants after all semantic aggregate
-      // repairs. This is important for grouped wording such as "for each
-      // province", because some generic metric guards intentionally collapse
-      // grouped operations back to scalar operations.
-      plan = enforcePlannerInvariants({
-        datasets,
-        schema,
-        plan,
-        question: cleanQuestion,
-      });
-
-      if (protectedSemanticStructure && plan?.route === "dataset") {
-        plan = {
-          ...plan,
-          ...protectedSemanticStructure,
-        };
-      }
-
       plan = detectColumnAmbiguity({
         plan,
         datasets,
         question: cleanQuestion,
-        context: conversationContext,
       });
 
       if (plan?.route === "dataset" && plan?.column) {
@@ -5593,7 +4743,6 @@ async function answerQuestion(
           datasets,
           schema,
           plan,
-          question: cleanQuestion,
         });
 
       if (
@@ -5619,22 +4768,6 @@ async function answerQuestion(
 
       plan =
         entityResolution.plan;
-
-      // Problem #2 safeguard: after fuzzy/entity resolution, every
-      // categorical filter must still be supported by the selected live
-      // worksheet/field. A typo or cross-field fuzzy match must not silently
-      // execute as a confident answer.
-      const groundedValueValidation = validateResolvedFilterValues({
-        datasets,
-        plan,
-        question: cleanQuestion,
-      });
-
-      if (!groundedValueValidation.valid) {
-        throw new Error(groundedValueValidation.message);
-      }
-
-      plan = groundedValueValidation.plan;
 
       if (
         process.env.NODE_ENV !==
@@ -5753,7 +4886,6 @@ async function answerQuestion(
         validateResult({
           plan,
           result,
-          datasets,
         });
 
       if (
@@ -5783,32 +4915,6 @@ async function answerQuestion(
 
       result =
         resultValidation.result;
-
-      /**
-       * V7.36.5g — DISTINCT MULTI-VALUE PARITY
-       *
-       * Apply the same distinct/unique/different multi-value cell
-       * normalization after execution for every planner source.
-       */
-      if (
-        plan?.route ===
-          "dataset" &&
-        String(
-          plan?.operation ||
-          ""
-        )
-          .trim()
-          .toLowerCase() ===
-          "list"
-      ) {
-        result =
-          normalizeDirectSingleFieldResult({
-            plan,
-            result,
-            question:
-              cleanQuestion,
-          });
-      }
 
       if (plan?.route === "dataset") {
         const dataQuality = buildDataQualitySummary({ datasets, plan });
@@ -5990,8 +5096,7 @@ async function answerQuestion(
           );
 
         const primitiveListAnswer =
-          isPrimitiveListResult &&
-          plan?.listProjectionGrounded !== true
+          isPrimitiveListResult
             ? result.results
                 .filter(
                   (item) =>
@@ -6014,47 +5119,11 @@ async function answerQuestion(
                 )
             : null;
 
-        /**
-         * A grounded list projection carries semantic information that a raw
-         * numbered primitive list cannot express: the output field is the
-         * answer subject while the filter field is only the condition.
-         *
-         * Example, schema-driven (not dataset-specific):
-         *   output column: Association
-         *   filter column: Commodities contains X
-         *   -> "The associations whose commodities include X are ..."
-         *
-         * Route these plans through the shared deterministic response
-         * generator. generateNaturalResponse preserves the verified semantic
-         * list wording for both Groq and local fallback, so the two paths stay
-         * aligned and the filter field cannot be mislabeled as the output.
-         */
-        /**
-         * Final grounded-list answer guard.
-         *
-         * A list query can filter on one field while projecting another.
-         * Once listProjectionGrounded is true, the projected/output field is
-         * authoritative for the answer subject. Build that wording directly
-         * from the verified plan/result and do not allow a legacy response
-         * path (or optional LLM polish) to relabel the filter field as the
-         * returned entity. This runs for both Groq-created and local plans.
-         */
-        const groundedListAnswer =
-          isPrimitiveListResult &&
-          plan?.listProjectionGrounded === true
-            ? buildSemanticVerifiedAnswer({
-                question: cleanQuestion,
-                plan,
-                result,
-              })
-            : null;
-
         const naturalAnswer =
           isOrdinalAnalyticalResult &&
           result?.answer
             ? result.answer
             : (
-                groundedListAnswer ||
                 primitiveListAnswer ||
                 await generateNaturalResponse({
                   question:
@@ -6111,1499 +5180,8 @@ async function answerQuestion(
     };
 
 
-  // ========================================================
-  // SHARED FORCED-PLAN EXECUTION
-  // ========================================================
-  // Internal only. Compound parity uses this to execute an already verified
-  // plan after adding inherited scope, without asking Groq or the local
-  // planner to reinterpret the clause. All normal validation, grounding,
-  // entity resolution and result verification still run inside
-  // executeResolvedPlan().
-  if (internalOptions?.forcedPlan) {
-    const forcedPlan = enforcePlannerInvariants({
-      datasets,
-      schema,
-      plan: internalOptions.forcedPlan,
-      question: cleanQuestion,
-    });
-    return executeResolvedPlan(forcedPlan);
-  }
 
 
-  // ========================================================
-  // V7.36.5p — EARLY CONTINUOUS COMPOUND FOLLOW-UP
-  // ========================================================
-  //
-  // This MUST run before Groq/local primary planning. Otherwise a short
-  // follow-up such as "what about Phase 2?" can be interpreted as a new
-  // single-field list request before the stored compound intent gets a
-  // chance to continue.
-  //
-  // The current question still wins: this path only activates for an
-  // elliptical follow-up that does not explicitly request a new operation.
-  // It is fully schema/data driven; no dataset, field, or business value is
-  // hardcoded.
-  const earlyPreviousCompoundContext =
-    conversationContext?.compoundContext;
-
-  const earlyCompoundFollowUpPrefix =
-    /^(?:what|how)\s+about\b|^and\b|^for\b|^also\b|^then\b/i.test(
-      String(cleanQuestion || "").trim()
-    );
-
-  const earlyExplicitOperationChange =
-    /\b(?:list|show|display|name|count|how many|number of|sum|total|average|avg|mean|minimum|maximum|highest|lowest|top|bottom|rank|compare|difference|median)\b/i.test(
-      String(cleanQuestion || "")
-    );
-
-  if (
-    conversationContext?.isFollowUp === true &&
-    earlyCompoundFollowUpPrefix &&
-    !earlyExplicitOperationChange &&
-    earlyPreviousCompoundContext &&
-    Array.isArray(earlyPreviousCompoundContext.clauses) &&
-    earlyPreviousCompoundContext.clauses.length > 1
-  ) {
-    const continuedClauses = [];
-    let foundExplicitScope = false;
-
-    for (const previousClause of earlyPreviousCompoundContext.clauses) {
-      const previousPlan = previousClause?.plan || {};
-      const previousDataset = previousPlan?.dataset;
-      const rows =
-        previousDataset && Array.isArray(datasets?.[previousDataset])
-          ? datasets[previousDataset]
-          : [];
-
-      if (!rows.length || previousPlan.route !== "dataset") {
-        continue;
-      }
-
-      let newFilters = inferCoherentFilters(rows, cleanQuestion);
-
-      if (!Array.isArray(newFilters) || !newFilters.length) {
-        const preferredColumns = new Set(
-          (Array.isArray(previousPlan.filters) ? previousPlan.filters : [])
-            .map((filter) => filter?.column)
-            .filter(Boolean)
-        );
-
-        newFilters = inferApproximateFollowUpFilter({
-          rows,
-          question: cleanQuestion,
-          preferredColumns,
-        });
-      }
-
-      if (!Array.isArray(newFilters) || !newFilters.length) {
-        continue;
-      }
-
-      foundExplicitScope = true;
-
-      const replacementColumns = new Set(
-        newFilters
-          .map((filter) => filter?.column)
-          .filter(Boolean)
-      );
-
-      /**
-       * Re-ground the PREVIOUS clause from its original wording before
-       * inheriting its scope. This prevents a planner-normalized value from
-       * becoming overly specific across follow-ups (for example preserving
-       * a whole multi-value cell instead of the explicitly asked token).
-       * The original user wording is the stable semantic source; the live
-       * worksheet still validates every reconstructed filter.
-       */
-      const previousExplicitFilters =
-        inferCoherentFilters(
-          rows,
-          earlyPreviousCompoundContext?.question ||
-            previousClause?.question ||
-            ""
-        );
-
-      const previousExplicitByColumn =
-        new Map(
-          (Array.isArray(previousExplicitFilters)
-            ? previousExplicitFilters
-            : [])
-            .filter((filter) => filter?.column)
-            .map((filter) => [filter.column, filter])
-        );
-
-      const inheritedFilters =
-        (Array.isArray(previousPlan.filters) ? previousPlan.filters : [])
-          .filter((filter) =>
-            filter?.column && !replacementColumns.has(filter.column)
-          )
-          .map((filter) => {
-            const explicit = previousExplicitByColumn.get(filter.column);
-            const source = explicit || filter;
-
-            return {
-              ...source,
-              value: Array.isArray(source?.value)
-                ? [...source.value]
-                : source?.value,
-            };
-          });
-
-      const finalFilters = [
-        ...inheritedFilters,
-        ...newFilters.map((filter) => ({
-          ...filter,
-          value: Array.isArray(filter?.value)
-            ? [...filter.value]
-            : filter?.value,
-        })),
-      ];
-
-      const continuedPlan = {
-        ...previousPlan,
-        route: "dataset",
-        dataset: previousDataset,
-        filters: finalFilters,
-        filterGroups: [],
-        filterGroupLogic: null,
-        outputRequested: true,
-        conversationalCompoundContinuation: true,
-      };
-
-      const continuedResult = await executeResolvedPlan(continuedPlan);
-
-      continuedClauses.push({
-        question: previousClause.question || cleanQuestion,
-        plan: continuedResult?.debugPlan || continuedPlan,
-        result: continuedResult,
-      });
-    }
-
-    if (
-      foundExplicitScope &&
-      continuedClauses.length === earlyPreviousCompoundContext.clauses.length
-    ) {
-      saveCompoundContext(sessionId, {
-        // Preserve the original compound semantic request across multiple
-        // elliptical follow-ups. The short follow-up changes scope, but it
-        // does not replace the subject/operations that define the compound.
-        question:
-          earlyPreviousCompoundContext.question ||
-          cleanQuestion,
-        clauses: continuedClauses,
-      });
-
-      const subResults = continuedClauses.map((item) => ({
-        question: item.question,
-        result: item.result,
-      }));
-
-      return {
-        success: continuedClauses.every(
-          (item) => item.result?.success !== false
-        ),
-        source: "dataset",
-        operation: "compound",
-        questionCount: continuedClauses.length,
-        questions: continuedClauses.map((item) => item.question),
-        results: continuedClauses.map((item) => ({
-          question: item.question,
-          success: item.result?.success,
-          dataset: item.result?.dataset || null,
-          operation: item.result?.operation || null,
-          value: item.result?.value,
-          categories: item.result?.categories,
-          answer: item.result?.answer,
-          plannerSource: "conversation",
-          debugPlan: item.result?.debugPlan || item.plan,
-        })),
-        answer: improveCompoundAnswerWording(subResults),
-        responseStyle: "natural",
-        plannerSource: "conversation-compound",
-        debugPlan: {
-          route: "compound",
-          operation: "compound",
-          conversationalCompoundContinuation: true,
-          inheritedOperationCount: continuedClauses.length,
-          previousCompoundQuestion:
-            earlyPreviousCompoundContext.question || null,
-        },
-      };
-    }
-  }
-
-
-
-  // ========================================================
-  // PROBLEM #3 — EARLY SINGLE-QUERY SCOPE SWITCH CONTINUITY
-  // ========================================================
-  //
-  // Resolve short scope-changing follow-ups BEFORE Groq planning.
-  // This protects verified conversational state from being replaced by an
-  // unnecessary clarification when the user says things such as:
-  //
-  //   "How many are there?" -> "What about <another live value>?"
-  //
-  // The rule is fully schema/data driven:
-  //   - the new value must exist in the current live worksheet,
-  //   - the previous verified operation is preserved,
-  //   - only filters on explicitly replaced columns are replaced,
-  //   - unrelated prior filters remain active.
-  //
-  // Analytical metric changes ("what about the average?", "what about
-  // total cost?", etc.) are intentionally left to the analytical follow-up
-  // handlers later in the pipeline.
-  const earlySingleFollowUpText =
-    normalizeFollowUpPhrase(cleanQuestion);
-
-  const earlySingleFilterPrefix =
-    /^(?:what|how)\s+about\b|^and\b|^for\b/i.test(
-      earlySingleFollowUpText
-    );
-
-  const earlySingleExplicitOperationChange =
-    /\b(?:list|show|display|name|count|how many|number of|sum|total|average|avg|mean|minimum|maximum|highest|lowest|top|bottom|rank|compare|difference|median|ratio|range|spread)\b/i.test(
-      String(cleanQuestion || "")
-    );
-
-  if (
-    conversationContext?.isFollowUp === true &&
-    earlySingleFilterPrefix &&
-    !earlySingleExplicitOperationChange &&
-    conversationContext?.lastDataset &&
-    conversationContext?.lastPlan?.route === "dataset"
-  ) {
-    const previousDataset =
-      conversationContext.lastDataset;
-
-    const previousRows =
-      Array.isArray(datasets?.[previousDataset])
-        ? datasets[previousDataset]
-        : [];
-
-    if (previousRows.length) {
-      let newFilters =
-        inferCoherentFilters(
-          previousRows,
-          cleanQuestion
-        );
-
-      if (
-        !Array.isArray(newFilters) ||
-        !newFilters.length
-      ) {
-        const preferredColumns =
-          new Set(
-            (Array.isArray(conversationContext.lastFilters)
-              ? conversationContext.lastFilters
-              : []
-            )
-              .map((filter) => filter?.column)
-              .filter(Boolean)
-          );
-
-        newFilters =
-          inferApproximateFollowUpFilter({
-            rows: previousRows,
-            question: cleanQuestion,
-            preferredColumns,
-          });
-      }
-
-      if (
-        Array.isArray(newFilters) &&
-        newFilters.length
-      ) {
-        const replacementColumns =
-          new Set(
-            newFilters
-              .map((filter) => filter?.column)
-              .filter(Boolean)
-          );
-
-        const inheritedFilters =
-          (Array.isArray(conversationContext.lastFilters)
-            ? conversationContext.lastFilters
-            : []
-          )
-            .filter(
-              (filter) =>
-                filter?.column &&
-                !replacementColumns.has(filter.column)
-            )
-            .map((filter) => ({
-              ...filter,
-              value: Array.isArray(filter?.value)
-                ? [...filter.value]
-                : filter?.value,
-            }));
-
-        const finalFilters = [
-          ...inheritedFilters,
-          ...newFilters.map((filter) => ({
-            ...filter,
-            value: Array.isArray(filter?.value)
-              ? [...filter.value]
-              : filter?.value,
-          })),
-        ];
-
-        const continuedPlan = {
-          ...conversationContext.lastPlan,
-          route: "dataset",
-          dataset: previousDataset,
-          filters: finalFilters,
-          filterGroups: [],
-          filterGroupLogic: null,
-          outputRequested: true,
-          conversationalFilterSwitch: true,
-          earlyConversationalFilterSwitch: true,
-        };
-
-        const continuedResult =
-          await executeResolvedPlan(
-            continuedPlan
-          );
-
-        updateConversation(
-          sessionId,
-          {
-            question: cleanQuestion,
-            plan:
-              continuedResult?.debugPlan ||
-              continuedPlan,
-            result: continuedResult,
-          }
-        );
-
-        return {
-          ...continuedResult,
-          plannerSource: "conversation",
-          earlyConversationalFilterSwitch: true,
-        };
-      }
-    }
-  }
-
-
-  // ========================================================
-  // V7.36.5 — GROQ-FIRST PRIMARY PLANNER
-  // ========================================================
-  //
-  // New planning policy:
-  //   1. Groq gets the first semantic planning attempt.
-  //   2. Its plan is checked against the live schema/data and conversation.
-  //   3. Only a high-confidence Groq plan is executed.
-  //   4. A weak/invalid Groq plan is handed to deterministic/local logic.
-  //
-  // Pure calculations over already verified prior results may still be
-  // resolved earlier because they do not require a new dataset plan.
-  //
-  let groqPlan = null;
-  let groqPlanningError = null;
-  let groqReferentialRecovery = false;
-  let groqPrimaryAttempted = false;
-  let groqPrimaryConfidence = null;
-  let groqPrimaryIssues = [];
-  let groqPlanRepaired = false;
-  let groqRepairReasons = [];
-  let groqDiagnostic = {
-    status: "not_attempted",
-    httpStatus: null,
-    code: null,
-    message: null,
-    jsonRetryUsed: false,
-    jsonRetryRecovered: false,
-  };
-
-  const sameSimpleFilters = (
-    left = [],
-    right = []
-  ) => {
-    const normalizeFilters =
-      (filters) =>
-        (Array.isArray(filters)
-          ? filters
-          : []
-        )
-          .map(
-            (filter) => ({
-              column:
-                normalizeText(
-                  filter?.column
-                ),
-              operator:
-                normalizeText(
-                  filter?.operator ||
-                  "equals"
-                ),
-              value:
-                Array.isArray(
-                  filter?.value
-                )
-                  ? filter.value
-                      .map(
-                        (value) =>
-                          normalizeText(
-                            value
-                          )
-                      )
-                      .sort()
-                      .join("|")
-                  : normalizeText(
-                      filter?.value
-                    ),
-            })
-          )
-          .sort(
-            (a, b) =>
-              JSON.stringify(a)
-                .localeCompare(
-                  JSON.stringify(b)
-                )
-          );
-
-    return (
-      JSON.stringify(
-        normalizeFilters(left)
-      ) ===
-      JSON.stringify(
-        normalizeFilters(right)
-      )
-    );
-  };
-
-
-  /**
-   * V7.36.5f — repair correct-but-incomplete Groq referential plans.
-   *
-   * If Groq correctly identifies the CURRENT target field and scope but
-   * omits a previously VERIFIED relationship label, restore only that
-   * missing relationship context before confidence evaluation.
-   *
-   * Wrong field, wrong dataset, or changed scope are NOT repaired here.
-   * Those still fall through to local validation/fallback.
-   */
-  const repairIncompleteGroqReferentialPlan =
-    (plan) => {
-      if (
-        !plan ||
-        conversationContext?.isFollowUp !==
-          true ||
-        !looksLikeContinuousFollowUp(
-          cleanQuestion
-        ) ||
-        !plan?.dataset ||
-        !plan?.column
-      ) {
-        return {
-          plan,
-          repaired: false,
-          reasons: [],
-        };
-      }
-
-      const operation =
-        normalizeText(
-          plan?.operation
-        );
-
-      if (
-        operation &&
-        ![
-          "list",
-          "lookup",
-        ].includes(
-          operation
-        )
-      ) {
-        return {
-          plan,
-          repaired: false,
-          reasons: [],
-        };
-      }
-
-      const datasetSchema =
-        (schema || []).find(
-          (item) =>
-            normalizeText(
-              item?.name
-            ) ===
-            normalizeText(
-              plan.dataset
-            )
-        );
-
-      const liveColumns =
-        (datasetSchema?.columns || [])
-          .map(
-            (item) =>
-              typeof item === "string"
-                ? item
-                : item?.name
-          )
-          .filter(Boolean);
-
-      const findLiveColumn =
-        (candidate) => {
-          const normalized =
-            normalizeText(
-              candidate
-            );
-
-          if (!normalized) {
-            return null;
-          }
-
-          return (
-            liveColumns.find(
-              (column) =>
-                normalizeText(
-                  column
-                ) ===
-                normalized
-            ) ||
-            null
-          );
-        };
-
-      const liveValueColumn =
-        findLiveColumn(
-          plan.column
-        );
-
-      if (!liveValueColumn) {
-        return {
-          plan,
-          repaired: false,
-          reasons: [],
-        };
-      }
-
-      const previousFilters =
-        Array.isArray(
-          conversationContext
-            ?.lastFilters
-        )
-          ? conversationContext
-              .lastFilters
-          : [];
-
-      /**
-       * Current explicit scope must win. Never graft stale verified
-       * relationship context across a changed scope.
-       */
-      if (
-        previousFilters.length &&
-        Array.isArray(
-          plan?.filters
-        ) &&
-        plan.filters.length &&
-        !sameSimpleFilters(
-          plan.filters,
-          previousFilters
-        )
-      ) {
-        return {
-          plan,
-          repaired: false,
-          reasons: [],
-        };
-      }
-
-      const explicitCandidate =
-        buildExplicitReferentialFieldPlan({
-          schema,
-          context:
-            conversationContext,
-          question:
-            cleanQuestion,
-        });
-
-      let pairColumn =
-        null;
-
-      if (
-        explicitCandidate &&
-        normalizeText(
-          explicitCandidate
-            ?.dataset
-        ) ===
-        normalizeText(
-          plan.dataset
-        ) &&
-        normalizeText(
-          explicitCandidate
-            ?.column
-        ) ===
-        normalizeText(
-          liveValueColumn
-        ) &&
-        (
-          !Array.isArray(
-            explicitCandidate
-              ?.filters
-          ) ||
-          !explicitCandidate
-            .filters.length ||
-          !Array.isArray(
-            plan?.filters
-          ) ||
-          !plan.filters.length ||
-          sameSimpleFilters(
-            plan.filters,
-            explicitCandidate
-              .filters
-          )
-        )
-      ) {
-        pairColumn =
-          findLiveColumn(
-            explicitCandidate
-              ?.labelColumn
-          );
-      }
-
-      if (!pairColumn) {
-        const priorPairCandidates = [
-          conversationContext
-            ?.lastPlan
-            ?.conversationalPairColumn,
-          conversationContext
-            ?.lastPlan
-            ?.labelColumn,
-          conversationContext
-            ?.semanticPlan
-            ?.labelColumn,
-          conversationContext
-            ?.semanticPlan
-            ?.groupBy,
-        ];
-
-        for (
-          const candidate
-          of priorPairCandidates
-        ) {
-          const live =
-            findLiveColumn(
-              candidate
-            );
-
-          if (
-            live &&
-            normalizeText(
-              live
-            ) !==
-            normalizeText(
-              liveValueColumn
-            )
-          ) {
-            pairColumn =
-              live;
-            break;
-          }
-        }
-      }
-
-      if (
-        !pairColumn ||
-        normalizeText(
-          pairColumn
-        ) ===
-        normalizeText(
-          liveValueColumn
-        )
-      ) {
-        return {
-          plan,
-          repaired: false,
-          reasons: [],
-        };
-      }
-
-      if (
-        normalizeText(
-          plan?.labelColumn
-        ) ===
-        normalizeText(
-          pairColumn
-        ) &&
-        normalizeText(
-          plan?.operation
-        ) ===
-        "lookup"
-      ) {
-        return {
-          plan,
-          repaired: false,
-          reasons: [],
-        };
-      }
-
-      const repairedFilters =
-        (
-          Array.isArray(
-            plan?.filters
-          ) &&
-          plan.filters.length
-            ? plan.filters
-            : previousFilters
-        )
-          .map(
-            (filter) => ({
-              ...filter,
-              value:
-                Array.isArray(
-                  filter?.value
-                )
-                  ? [
-                      ...filter.value,
-                    ]
-                  : filter?.value,
-            })
-          );
-
-      const selectColumns =
-        [
-          pairColumn,
-          liveValueColumn,
-        ]
-          .filter(Boolean)
-          .filter(
-            (column, index, all) =>
-              all.findIndex(
-                (item) =>
-                  normalizeText(
-                    item
-                  ) ===
-                  normalizeText(
-                    column
-                  )
-              ) === index
-          );
-
-      return {
-        plan: {
-          ...plan,
-          route:
-            "dataset",
-          dataset:
-            plan.dataset,
-          operation:
-            "lookup",
-          column:
-            liveValueColumn,
-          labelColumn:
-            pairColumn,
-          groupBy:
-            null,
-          aggregation:
-            null,
-          direction:
-            null,
-          filters:
-            repairedFilters,
-          selectColumns,
-          outputRequested:
-            true,
-          transform:
-            null,
-          showAll:
-            true,
-          limit:
-            Math.max(
-              Number(
-                plan?.limit
-              ) || 10,
-              100
-            ),
-          conversationalPairColumn:
-            pairColumn,
-          groqContextRepaired:
-            true,
-        },
-        repaired: true,
-        reasons: [
-          "verified-referential-label-restored",
-        ],
-      };
-    };
-
-
-  const evaluateGroqPrimaryConfidence =
-    (plan) => {
-      const base =
-        evaluateLocalPlanConfidence({
-          plan,
-          datasets,
-          schema,
-        });
-
-      let score =
-        Number(
-          base.score || 0
-        );
-
-      const issues = [
-        ...(base.issues || []),
-      ];
-
-      if (
-        base.critical
-      ) {
-        return {
-          score,
-          issues,
-          critical: true,
-        };
-      }
-
-      /**
-       * Current explicit field/value questions are used only as a
-       * deterministic cross-check. They do not answer before Groq anymore.
-       */
-      const directFieldCandidate =
-        resolveDirectFilteredFieldPlan({
-          question:
-            cleanQuestion,
-          schema,
-          datasets,
-        });
-
-      if (
-        directFieldCandidate
-      ) {
-        if (
-          normalizeText(
-            plan?.column
-          ) !==
-          normalizeText(
-            directFieldCandidate
-              ?.column
-          )
-        ) {
-          score =
-            Math.min(
-              score,
-              0.45
-            );
-          issues.push(
-            "explicit-field-mismatch"
-          );
-        }
-
-        if (
-          directFieldCandidate
-            ?.dataset &&
-          plan?.dataset &&
-          normalizeText(
-            plan.dataset
-          ) !==
-          normalizeText(
-            directFieldCandidate
-              .dataset
-          )
-        ) {
-          score =
-            Math.min(
-              score,
-              0.5
-            );
-          issues.push(
-            "dataset-mismatch"
-          );
-        }
-
-        if (
-          Array.isArray(
-            directFieldCandidate
-              ?.filters
-          ) &&
-          directFieldCandidate
-            .filters.length &&
-          !sameSimpleFilters(
-            plan?.filters,
-            directFieldCandidate
-              .filters
-          )
-        ) {
-          score =
-            Math.min(
-              score,
-              0.65
-            );
-          issues.push(
-            "scope-filter-mismatch"
-          );
-        }
-      }
-
-      const directAggregateCandidate =
-        resolveDirectFilteredAggregatePlan({
-          question:
-            cleanQuestion,
-          schema,
-          datasets,
-        });
-
-      if (
-        directAggregateCandidate
-      ) {
-        if (
-          normalizeText(
-            plan?.operation
-          ) !==
-          normalizeText(
-            directAggregateCandidate
-              ?.operation
-          ) ||
-          (
-            directAggregateCandidate
-              ?.column &&
-            normalizeText(
-              plan?.column
-            ) !==
-            normalizeText(
-              directAggregateCandidate
-                ?.column
-            )
-          )
-        ) {
-          score =
-            Math.min(
-              score,
-              0.5
-            );
-          issues.push(
-            "aggregate-intent-mismatch"
-          );
-        }
-      }
-
-      /**
-       * Referential questions are also cross-checked against verified
-       * conversation scope. If Groq drops the identity/label relationship,
-       * do not execute it merely because its column exists.
-       */
-      const referentialCandidate =
-        buildExplicitReferentialFieldPlan({
-          schema,
-          context:
-            conversationContext,
-          question:
-            cleanQuestion,
-        });
-
-      if (
-        referentialCandidate
-      ) {
-        if (
-          normalizeText(
-            plan?.column
-          ) !==
-          normalizeText(
-            referentialCandidate
-              ?.column
-          )
-        ) {
-          score =
-            Math.min(
-              score,
-              0.4
-            );
-          issues.push(
-            "referential-field-mismatch"
-          );
-        }
-
-        if (
-          referentialCandidate
-            ?.labelColumn &&
-          normalizeText(
-            plan?.labelColumn
-          ) !==
-          normalizeText(
-            referentialCandidate
-              .labelColumn
-          )
-        ) {
-          score =
-            Math.min(
-              score,
-              0.55
-            );
-          issues.push(
-            "referential-label-missing-or-mismatched"
-          );
-        }
-
-        if (
-          Array.isArray(
-            referentialCandidate
-              ?.filters
-          ) &&
-          referentialCandidate
-            .filters.length &&
-          !sameSimpleFilters(
-            plan?.filters,
-            referentialCandidate
-              .filters
-          )
-        ) {
-          score =
-            Math.min(
-              score,
-              0.65
-            );
-          issues.push(
-            "referential-scope-mismatch"
-          );
-        }
-      }
-
-      /**
-       * Safety net after repair: if a referential follow-up still drops a
-       * previously verified live pair column, lower confidence and let the
-       * local path verify/repair it.
-       */
-      if (
-        conversationContext?.isFollowUp ===
-          true &&
-        looksLikeContinuousFollowUp(
-          cleanQuestion
-        ) &&
-        plan?.dataset &&
-        plan?.column
-      ) {
-        const liveDatasetSchema =
-          (schema || []).find(
-            (datasetSchema) =>
-              normalizeText(
-                datasetSchema?.name
-              ) ===
-              normalizeText(
-                plan.dataset
-              )
-          );
-
-        const liveColumns =
-          new Set(
-            (
-              liveDatasetSchema
-                ?.columns ||
-              []
-            ).map(
-              (column) =>
-                normalizeText(
-                  typeof column ===
-                    "string"
-                    ? column
-                    : column?.name
-                )
-            )
-          );
-
-        const priorPairCandidates = [
-          conversationContext
-            ?.lastPlan
-            ?.conversationalPairColumn,
-          conversationContext
-            ?.lastPlan
-            ?.labelColumn,
-          conversationContext
-            ?.semanticPlan
-            ?.labelColumn,
-          conversationContext
-            ?.semanticPlan
-            ?.groupBy,
-        ];
-
-        const verifiedPriorPair =
-          priorPairCandidates.find(
-            (candidate) => {
-              const normalized =
-                normalizeText(
-                  candidate
-                );
-
-              return (
-                normalized &&
-                normalized !==
-                  normalizeText(
-                    plan.column
-                  ) &&
-                liveColumns.has(
-                  normalized
-                )
-              );
-            }
-          ) ||
-          null;
-
-        if (
-          verifiedPriorPair &&
-          normalizeText(
-            plan?.labelColumn
-          ) !==
-          normalizeText(
-            verifiedPriorPair
-          )
-        ) {
-          score =
-            Math.min(
-              score,
-              0.55
-            );
-
-          issues.push(
-            "referential-label-dropped-from-verified-context"
-          );
-        }
-      }
-
-      return {
-        score:
-          Number(
-            score.toFixed(4)
-          ),
-        issues:
-          [...new Set(issues)],
-        critical: false,
-      };
-    };
-
-  const GROQ_PRIMARY_THRESHOLD =
-    0.85;
-
-  try {
-    groqPrimaryAttempted =
-      true;
-
-    groqPlan =
-      await createSchemaAwarePlan({
-        question:
-          cleanQuestion,
-        schema,
-        context:
-          conversationContext,
-        retrievalContext,
-      });
-
-    const groqPlanDiagnostics =
-      groqPlan?.__groqDiagnostics ||
-      null;
-
-    groqDiagnostic = {
-      status:
-        groqPlanDiagnostics
-          ?.jsonRetryRecovered
-          ? "ok_after_json_retry"
-          : "ok",
-      httpStatus: 200,
-      code: null,
-      message: null,
-      jsonRetryUsed:
-        Boolean(
-          groqPlanDiagnostics
-            ?.jsonRetryUsed
-        ),
-      jsonRetryRecovered:
-        Boolean(
-          groqPlanDiagnostics
-            ?.jsonRetryRecovered
-        ),
-    };
-
-    groqPlan =
-      normalizePlannerPlan({
-        datasets,
-        schema,
-        plan:
-          groqPlan,
-        question:
-          cleanQuestion,
-      });
-
-    groqPlan =
-      reconcileExplicitDatasetMention({
-        plan:
-          groqPlan,
-        question:
-          cleanQuestion,
-        datasets,
-        schema,
-      });
-
-    groqPlan =
-      repairMultiEntityFilters({
-        datasets,
-        plan:
-          groqPlan,
-        question:
-          cleanQuestion,
-      });
-
-    groqPlan =
-      enforceExplicitQuestionColumn({
-        plan:
-          groqPlan,
-        schema,
-        question:
-          cleanQuestion,
-      });
-
-    const numericMetricRepair =
-      resolveExplicitNumericMetricPlan({
-        plan:
-          groqPlan,
-        question:
-          cleanQuestion,
-        schema,
-        datasets,
-        context:
-          conversationContext,
-      });
-
-    groqPlan =
-      numericMetricRepair.plan;
-
-    if (
-      numericMetricRepair.repaired
-    ) {
-      groqPlanRepaired =
-        true;
-
-      groqRepairReasons = [
-        ...new Set(
-          [
-            ...groqRepairReasons,
-            ...(
-              numericMetricRepair
-                .reasons ||
-              []
-            ),
-          ]
-        ),
-      ];
-    }
-
-    const groqRepair =
-      repairIncompleteGroqReferentialPlan(
-        groqPlan
-      );
-
-    groqPlan =
-      groqRepair.plan;
-
-    groqPlanRepaired =
-      groqPlanRepaired ||
-      Boolean(
-        groqRepair.repaired
-      );
-
-    groqRepairReasons = [
-      ...new Set(
-        [
-          ...groqRepairReasons,
-          ...(
-            groqRepair.reasons ||
-            []
-          ),
-        ]
-      ),
-    ];
-
-    const confidence =
-      evaluateGroqPrimaryConfidence(
-        groqPlan
-      );
-
-    groqPrimaryConfidence =
-      confidence.score;
-
-    groqPrimaryIssues =
-      confidence.issues;
-
-    if (
-      !confidence.critical &&
-      confidence.score >=
-        GROQ_PRIMARY_THRESHOLD
-    ) {
-      const result =
-        await executeResolvedPlan(
-          groqPlan
-        );
-
-      const semanticAnswer =
-        buildSemanticVerifiedAnswer({
-          question:
-            cleanQuestion,
-          plan:
-            groqPlan,
-          result,
-        });
-
-      updateConversation(
-        sessionId,
-        {
-          question:
-            cleanQuestion,
-          plan:
-            groqPlan,
-          result,
-        }
-      );
-
-      return {
-        ...result,
-
-        answer:
-          formatUserFacingAnswer(
-            semanticAnswer ||
-            result?.answer
-          ),
-
-        plannerSource:
-          groqPlanRepaired
-            ? "groq-repaired"
-            : (
-                groqDiagnostic
-                  .status ===
-                  "ok_after_json_retry"
-                  ? "groq-json-recovered"
-                  : "groq"
-              ),
-
-        groqPlanRepaired:
-          groqPlanRepaired,
-
-        groqRepairReasons:
-          groqRepairReasons,
-
-        groqStatus:
-          groqDiagnostic.status,
-
-        groqPlanConfidence:
-          groqPrimaryConfidence,
-
-        groqConfidenceIssues:
-          groqPrimaryIssues,
-
-        groqJsonRetryUsed:
-          Boolean(
-            groqDiagnostic
-              .jsonRetryUsed
-          ),
-
-        groqJsonRetryRecovered:
-          Boolean(
-            groqDiagnostic
-              .jsonRetryRecovered
-          ),
-      };
-    }
-
-    groqDiagnostic = {
-      ...groqDiagnostic,
-      status:
-        "low_confidence",
-      message:
-        `Groq plan confidence ${confidence.score} was below ${GROQ_PRIMARY_THRESHOLD}.`,
-    };
-
-    groqPlan =
-      null;
-  } catch (error) {
-    groqPlanningError =
-      error;
-
-    groqDiagnostic = {
-      ...classifyGroqError(
-        error
-      ),
-      jsonRetryUsed:
-        Boolean(
-          error
-            ?.groqJsonRetryUsed
-        ),
-      jsonRetryRecovered:
-        false,
-    };
-
-    groqPlan =
-      null;
-  }
-
-
-
-  const buildGroqHandoffDiagnostics =
-    () => ({
-      groqStatus:
-        groqDiagnostic.status,
-
-      groqPlanConfidence:
-        groqPrimaryConfidence,
-
-      groqConfidenceIssues:
-        groqPrimaryIssues,
-
-      groqHttpStatus:
-        groqDiagnostic.httpStatus,
-
-      groqErrorCode:
-        groqDiagnostic.code,
-
-      groqJsonRetryUsed:
-        Boolean(
-          groqDiagnostic
-            .jsonRetryUsed
-        ),
-
-      groqJsonRetryRecovered:
-        Boolean(
-          groqDiagnostic
-            .jsonRetryRecovered
-        ),
-
-      groqPlanningError:
-        groqPlanningError?.message ||
-        null,
-
-      groqPlanRepaired:
-        groqPlanRepaired,
-
-      groqRepairReasons:
-        groqRepairReasons,
-    });
-
-
-  // ========================================================
-  // UNIVERSAL RANKING + DETAIL RESCUE
-  // ========================================================
-  // Handles schema-driven requests such as:
-  //   "Which <entity> has the highest <metric>, and what <fields> ...?"
-  // This is not tied to any worksheet vocabulary. It only activates when
-  // live schema columns provide both a categorical label and numeric metric.
-  const rankingDetailRescuePlan = buildRankingDetailRescuePlan({
-    datasets,
-    schema,
-    question: cleanQuestion,
-  });
-
-  if (rankingDetailRescuePlan) {
-    const rankingDetailResult = await executeResolvedPlan(rankingDetailRescuePlan);
-    updateConversation(sessionId, {
-      question: cleanQuestion,
-      plan: rankingDetailRescuePlan,
-      result: rankingDetailResult,
-    });
-    return {
-      ...rankingDetailResult,
-      plannerSource: "shared-semantic-rescue",
-      ...buildGroqHandoffDiagnostics(),
-    };
-  }
 
   // ========================================================
   // DETERMINISTIC LINKED MULTI-FIELD LOOKUP
@@ -7737,8 +5315,6 @@ async function answerQuestion(
 
       plannerSource:
         "conversation-local",
-
-      ...buildGroqHandoffDiagnostics(),
     };
   }
 
@@ -7789,22 +5365,12 @@ async function answerQuestion(
      * Collapse duplicate rows before storing the conversational result and
      * before formatting the answer.
      */
-    // executeResolvedPlan may apply shared planner invariants (for example,
-    // collapsing Province=A + Province=B into Province IN [A,B]). Use the
-    // VERIFIED executed plan for all downstream formatting and memory so the
-    // response cannot fall back to the narrower pre-repair planner draft.
-    const executedDirectFilteredFieldPlan =
-      rawDirectFilteredFieldResult?.debugPlan ||
-      directFilteredFieldPlan;
-
     const directFilteredFieldResult =
       normalizeDirectSingleFieldResult({
         plan:
-          executedDirectFilteredFieldPlan,
+          directFilteredFieldPlan,
         result:
           rawDirectFilteredFieldResult,
-        question:
-          cleanQuestion,
       });
 
     updateConversation(
@@ -7813,7 +5379,7 @@ async function answerQuestion(
         question:
           cleanQuestion,
         plan:
-          executedDirectFilteredFieldPlan,
+          directFilteredFieldPlan,
         result:
           directFilteredFieldResult,
       }
@@ -7821,7 +5387,7 @@ async function answerQuestion(
 
     const directSingleFieldAnswer =
       (
-        executedDirectFilteredFieldPlan
+        directFilteredFieldPlan
           .operation ===
         "list"
       )
@@ -7830,7 +5396,7 @@ async function answerQuestion(
               question:
                 cleanQuestion,
               plan:
-                executedDirectFilteredFieldPlan,
+                directFilteredFieldPlan,
               result:
                 directFilteredFieldResult,
             }) ||
@@ -7838,7 +5404,7 @@ async function answerQuestion(
               result:
                 directFilteredFieldResult,
               subjectColumn:
-                executedDirectFilteredFieldPlan
+                directFilteredFieldPlan
                   .column,
             })
           )
@@ -7846,7 +5412,7 @@ async function answerQuestion(
             result:
               directFilteredFieldResult,
             subjectColumn:
-              executedDirectFilteredFieldPlan
+              directFilteredFieldPlan
                 .column,
           });
 
@@ -7858,8 +5424,6 @@ async function answerQuestion(
 
       plannerSource:
         "conversation-local",
-
-      ...buildGroqHandoffDiagnostics(),
     };
   }
 
@@ -7966,8 +5530,6 @@ async function answerQuestion(
         [],
       plannerSource:
         "conversation",
-
-      ...buildGroqHandoffDiagnostics(),
     };
   }
 
@@ -8065,181 +5627,6 @@ async function answerQuestion(
       preferExplicitValueFilter ||
       !sameQueryMetricColumn
     );
-
-  // ========================================================
-  // CONTINUOUS COMPOUND FOLLOW-UP
-  // ========================================================
-  //
-  // Example:
-  //   Q1: "How many <rows> are in X, and what is their total <metric>?"
-  //   Q2: "What about Y?"
-  //
-  // Preserve ALL verified operations from Q1 and replace only the scope
-  // explicitly mentioned in Q2. This runs before ordinary single-plan
-  // continuity so a compound question is never collapsed to its last clause.
-  //
-  const previousCompoundContext =
-    conversationContext?.compoundContext;
-
-  const compoundFollowUpPrefix =
-    /^(?:what|how)\s+about\b|^and\b|^for\b|^also\b|^then\b/i.test(
-      String(cleanQuestion || "").trim()
-    );
-
-  const explicitlyChangesOperation =
-    /\b(?:list|show|display|name|count|how many|number of|sum|total|average|avg|mean|minimum|maximum|highest|lowest|top|bottom|rank|compare|difference|median)\b/i.test(
-      String(cleanQuestion || "")
-    );
-
-  if (
-    conversationContext?.isFollowUp === true &&
-    compoundFollowUpPrefix &&
-    !explicitlyChangesOperation &&
-    previousCompoundContext &&
-    Array.isArray(previousCompoundContext.clauses) &&
-    previousCompoundContext.clauses.length > 1
-  ) {
-    const continuedClauses = [];
-    let foundExplicitScope = false;
-
-    for (const previousClause of previousCompoundContext.clauses) {
-      const previousPlan = previousClause?.plan || {};
-      const previousDataset = previousPlan?.dataset;
-      const rows =
-        previousDataset && Array.isArray(datasets?.[previousDataset])
-          ? datasets[previousDataset]
-          : [];
-
-      if (!rows.length || previousPlan.route !== "dataset") {
-        continue;
-      }
-
-      let newFilters = inferCoherentFilters(
-        rows,
-        cleanQuestion
-      );
-
-      if (!Array.isArray(newFilters) || !newFilters.length) {
-        const preferredColumns = new Set(
-          (Array.isArray(previousPlan.filters) ? previousPlan.filters : [])
-            .map((filter) => filter?.column)
-            .filter(Boolean)
-        );
-
-        newFilters = inferApproximateFollowUpFilter({
-          rows,
-          question: cleanQuestion,
-          preferredColumns,
-        });
-      }
-
-      if (!Array.isArray(newFilters) || !newFilters.length) {
-        continue;
-      }
-
-      foundExplicitScope = true;
-
-      const replacementColumns = new Set(
-        newFilters
-          .map((filter) => filter?.column)
-          .filter(Boolean)
-      );
-
-      const inheritedFilters =
-        (Array.isArray(previousPlan.filters) ? previousPlan.filters : [])
-          .filter((filter) =>
-            filter?.column &&
-            !replacementColumns.has(filter.column)
-          )
-          .map((filter) => ({
-            ...filter,
-            value: Array.isArray(filter?.value)
-              ? [...filter.value]
-              : filter?.value,
-          }));
-
-      const finalFilters = [
-        ...inheritedFilters,
-        ...newFilters.map((filter) => ({
-          ...filter,
-          value: Array.isArray(filter?.value)
-            ? [...filter.value]
-            : filter?.value,
-        })),
-      ];
-
-      const continuedPlan = {
-        ...previousPlan,
-        route: "dataset",
-        dataset: previousDataset,
-        filters: finalFilters,
-        filterGroups: [],
-        filterGroupLogic: null,
-        outputRequested: true,
-        conversationalCompoundContinuation: true,
-      };
-
-      const continuedResult =
-        await executeResolvedPlan(continuedPlan);
-
-      continuedClauses.push({
-        question: previousClause.question || cleanQuestion,
-        plan: continuedResult?.debugPlan || continuedPlan,
-        result: continuedResult,
-      });
-    }
-
-    if (
-      foundExplicitScope &&
-      continuedClauses.length === previousCompoundContext.clauses.length
-    ) {
-      saveCompoundContext(sessionId, {
-        // Preserve the original compound semantic request across multiple
-        // elliptical follow-ups. The short follow-up changes scope, but it
-        // does not replace the subject/operations that define the compound.
-        question:
-          earlyPreviousCompoundContext.question ||
-          cleanQuestion,
-        clauses: continuedClauses,
-      });
-
-      const subResults = continuedClauses.map((item) => ({
-        question: item.question,
-        result: item.result,
-      }));
-
-      return {
-        success: continuedClauses.every(
-          (item) => item.result?.success !== false
-        ),
-        source: "dataset",
-        operation: "compound",
-        questionCount: continuedClauses.length,
-        questions: continuedClauses.map((item) => item.question),
-        results: continuedClauses.map((item) => ({
-          question: item.question,
-          success: item.result?.success,
-          dataset: item.result?.dataset || null,
-          operation: item.result?.operation || null,
-          value: item.result?.value,
-          categories: item.result?.categories,
-          answer: item.result?.answer,
-          plannerSource: "conversation",
-          debugPlan: item.result?.debugPlan || item.plan,
-        })),
-        answer: improveCompoundAnswerWording(subResults),
-        responseStyle: "natural",
-        plannerSource: "conversation-compound",
-        debugPlan: {
-          route: "compound",
-          operation: "compound",
-          conversationalCompoundContinuation: true,
-          inheritedOperationCount: continuedClauses.length,
-          previousCompoundQuestion: previousCompoundContext.question || null,
-        },
-      };
-    }
-  }
 
   // ========================================================
   // EXPLICIT WORKSHEET SWITCH FOLLOW-UP
@@ -8459,8 +5846,6 @@ async function answerQuestion(
       return {
         ...worksheetSwitchResult,
         plannerSource: "conversation",
-
-      ...buildGroqHandoffDiagnostics(),
         conversationalWorksheetSwitch: true,
       };
     }
@@ -8833,8 +6218,6 @@ async function answerQuestion(
 
           plannerSource:
             "conversation",
-
-      ...buildGroqHandoffDiagnostics(),
         };
       }
     }
@@ -8883,8 +6266,6 @@ async function answerQuestion(
 
       plannerSource:
         "conversation",
-
-      ...buildGroqHandoffDiagnostics(),
     };
   }
 
@@ -9087,8 +6468,6 @@ async function answerQuestion(
 
         plannerSource:
           "conversation",
-
-      ...buildGroqHandoffDiagnostics(),
       };
     }
   }
@@ -9675,8 +7054,6 @@ async function answerQuestion(
 
         plannerSource:
           "conversation",
-
-      ...buildGroqHandoffDiagnostics(),
       };
     }
   }
@@ -9733,8 +7110,6 @@ async function answerQuestion(
         ...previousIdentityResult,
         plannerSource:
           "conversation",
-
-      ...buildGroqHandoffDiagnostics(),
       };
     }
   }
@@ -10041,8 +7416,6 @@ async function answerQuestion(
       ),
       debugPlan: distributedWorksheetFollowUp.plan,
       plannerSource: "conversation-multi-worksheet",
-
-      ...buildGroqHandoffDiagnostics(),
     };
   }
 
@@ -10182,16 +7555,37 @@ async function answerQuestion(
   // 1. GROQ FIRST
   // ========================================================
 
+  let groqPlan = null;
+  let groqPlanningError = null;
+  let groqReferentialRecovery = false;
+
   /**
-   * Groq already ran before deterministic/local semantic planning.
-   * A low-confidence/failed Groq plan intentionally reaches this point
-   * as null so the local fallback can take over without a second API call.
+   * IMPORTANT:
+   * Only GROQ PLANNING is inside this try/catch.
+   *
+   * If Groq successfully returns a plan, execution errors must
+   * not silently cause a second planner to choose another field.
    */
-  if (
-    !groqPrimaryAttempted
-  ) {
-    throw new Error(
-      "Groq primary planner was not initialized."
+  try {
+    groqPlan =
+      await createSchemaAwarePlan({
+        question:
+          cleanQuestion,
+
+        schema,
+
+        context:
+          conversationContext,
+
+        retrievalContext,
+      });
+  } catch (error) {
+    groqPlanningError =
+      error;
+
+    console.error(
+      "Groq planning failed; local fallback will be used:",
+      error
     );
   }
 
@@ -10217,7 +7611,6 @@ async function answerQuestion(
    * supplies the verified referent/scope.
    */
   if (
-    false &&
     !groqPlan &&
     conversationContext?.isFollowUp === true &&
     normalizeSemanticReferentialQuestion(
@@ -10882,33 +8275,6 @@ async function answerQuestion(
        * This tells us WHY Groq was unavailable without changing
        * the dataset answer.
        */
-      groqStatus:
-        groqDiagnostic.status,
-
-      groqPlanConfidence:
-        groqPrimaryConfidence,
-
-      groqConfidenceIssues:
-        groqPrimaryIssues,
-
-      groqHttpStatus:
-        groqDiagnostic.httpStatus,
-
-      groqErrorCode:
-        groqDiagnostic.code,
-
-      groqJsonRetryUsed:
-        Boolean(
-          groqDiagnostic
-            .jsonRetryUsed
-        ),
-
-      groqJsonRetryRecovered:
-        Boolean(
-          groqDiagnostic
-            .jsonRetryRecovered
-        ),
-
       groqPlanningError:
         groqPlanningError?.message ||
         null,
@@ -10930,33 +8296,6 @@ async function answerQuestion(
 
       plannerSource:
         "local-fallback",
-
-      groqStatus:
-        groqDiagnostic.status,
-
-      groqPlanConfidence:
-        groqPrimaryConfidence,
-
-      groqConfidenceIssues:
-        groqPrimaryIssues,
-
-      groqHttpStatus:
-        groqDiagnostic.httpStatus,
-
-      groqErrorCode:
-        groqDiagnostic.code,
-
-      groqJsonRetryUsed:
-        Boolean(
-          groqDiagnostic
-            .jsonRetryUsed
-        ),
-
-      groqJsonRetryRecovered:
-        Boolean(
-          groqDiagnostic
-            .jsonRetryRecovered
-        ),
 
       groqPlanningError:
         groqPlanningError?.message ||

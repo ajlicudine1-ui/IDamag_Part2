@@ -120,25 +120,6 @@ function shouldPreserveDeterministicSemanticAnswer({
     ""
   ).trim().toLowerCase();
 
-  // Rankings are already rendered from verified row labels, metrics, and
-  // details by the deterministic formatter. Preserve that wording so an LLM
-  // cannot relabel a schema entity (for example, calling an association a
-  // project) merely because the user's noun was broader than the live schema.
-  if (["rank_rows", "rank_groups"].includes(operation)) {
-    return true;
-  }
-
-  // A grounded list projection already knows both the requested output field
-  // and the verified filter scope. Preserve the deterministic local wording so
-  // Groq cannot accidentally describe the filter field as the returned entity.
-  // This also guarantees Groq/local response parity for these list answers.
-  if (
-    operation === "list" &&
-    (plan?.listProjectionGrounded === true || result?.listProjectionGrounded === true)
-  ) {
-    return true;
-  }
-
   if (!["lookup", "list", "value"].includes(operation)) {
     return false;
   }

@@ -15,23 +15,6 @@ function normalizeComparableValue(value) {
   return normalizeText(normalizeCellValue(value));
 }
 
-/**
- * A conservative secondary key for lexical variants that differ only by
- * separators/spacing inside the same token or phrase.
- *
- * Examples:
- *   "sugar cane" <-> "sugarcane"
- *   "high-value" <-> "high value"
- *
- * Keep this separate from normal normalization so ordinary matching still
- * prefers exact live values. The minimum-length guard at call sites prevents
- * short codes/IDs from becoming overly fuzzy.
- */
-function normalizeLooseToken(value) {
-  return normalizeComparableValue(value)
-    .replace(/[\s._%()/+\-]+/g, "");
-}
-
 function looksLikeDelimitedMultiValue(value) {
   const text = normalizeCellValue(value);
   if (!text || text.length > 240) return false;
@@ -94,28 +77,14 @@ function looksLikeMultiValueColumn({ rows, column, sampleSize = 80 }) {
 function valueMatchesToken(actual, expected) {
   const target = normalizeComparableValue(expected);
   if (!target) return false;
-
-  const looseTarget = normalizeLooseToken(expected);
-
-  return splitMultiValueCell(actual).some((item) => {
-    const exact = normalizeComparableValue(item);
-    if (exact === target) return true;
-
-    // Only permit separator-insensitive equivalence for reasonably
-    // descriptive values. This avoids fuzzy matching of tiny codes/IDs.
-    const looseItem = normalizeLooseToken(item);
-    return (
-      looseTarget.length >= 6 &&
-      looseItem.length >= 6 &&
-      looseItem === looseTarget
-    );
-  });
+  return splitMultiValueCell(actual).some(
+    (item) => normalizeComparableValue(item) === target
+  );
 }
 
 module.exports = {
   normalizeCellValue,
   normalizeComparableValue,
-  normalizeLooseToken,
   looksLikeDelimitedMultiValue,
   splitMultiValueCell,
   looksLikeMultiValueColumn,

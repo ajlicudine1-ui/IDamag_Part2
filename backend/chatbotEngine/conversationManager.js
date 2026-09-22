@@ -72,21 +72,6 @@ function createEmptyContext() {
     // Verified entity/key scope used for longer relationship-aware chains.
     relationshipScope: null,
 
-    /**
-     * Last VERIFIED compound request.
-     *
-     * A compound request may contain multiple operations over one shared
-     * scope, for example:
-     *   count rows + sum a metric
-     *
-     * Store every verified clause so a short follow-up such as
-     * "what about <new value>?" can replace only the newly mentioned
-     * scope while preserving ALL prior operations.
-     *
-     * This is planner-agnostic and schema-driven.
-     */
-    compoundContext: null,
-
     history: [],
   };
 }
@@ -1087,66 +1072,6 @@ function updateConversation(
 }
 
 /**
- * Save the complete VERIFIED compound request in the user's real session.
- *
- * Compound clauses are executed in an isolated temporary session so they
- * can depend on one another without polluting ordinary history. After the
- * compound finishes, this compact structured snapshot is copied back to the
- * real session specifically for future continuous Q&A.
- */
-function saveCompoundContext(
-  sessionId = "default",
-  {
-    question = null,
-    clauses = [],
-  } = {}
-) {
-  const context =
-    getConversation(sessionId);
-
-  const verifiedClauses =
-    Array.isArray(clauses)
-      ? clauses
-          .filter((item) =>
-            item &&
-            item.plan &&
-            item.result &&
-            item.result.success !== false &&
-            item.plan.route === "dataset"
-          )
-          .map((item) => ({
-            question: item.question || null,
-            plan: {
-              ...item.plan,
-              filters: cloneFilters(item.plan.filters),
-              selectColumns: Array.isArray(item.plan.selectColumns)
-                ? [...item.plan.selectColumns]
-                : [],
-              filterGroups: cloneFilterGroups(item.plan.filterGroups),
-            },
-            result: item.result,
-          }))
-      : [];
-
-  if (verifiedClauses.length < 2) {
-    context.compoundContext = null;
-    return null;
-  }
-
-  context.compoundContext = {
-    question: question || null,
-    clauses: verifiedClauses,
-    timestamp: Date.now(),
-  };
-
-  if (question) {
-    context.lastQuestion = question;
-  }
-
-  return context.compoundContext;
-}
-
-/**
  * Get context that may be useful for
  * interpreting the next question.
  */
@@ -1214,11 +1139,6 @@ function getRelevantContext(
     relationshipScope:
       isFollowUp
         ? context.relationshipScope
-        : null,
-
-    compoundContext:
-      isFollowUp
-        ? context.compoundContext
         : null,
 
     /**
@@ -1298,7 +1218,6 @@ module.exports = {
   isCorrectionQuestion,
   applyConversationCorrection,
   preserveRelationshipScope,
-  saveCompoundContext,
   clearConversation,
   clearAllConversations,
 };
