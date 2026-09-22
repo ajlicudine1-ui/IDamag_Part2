@@ -5,6 +5,7 @@ const {
 } = require("./columnMatcher");
 
 const { compare } = require("./filterEngine");
+const { getColumns, normalizeText } = require("./utils");
 
 function makeError(code, message, details = {}) {
   return {
@@ -523,7 +524,68 @@ function validateDatasetPlan({
   };
 }
 
-function validateResolvedFilterValues({ datasets, plan }) {
+function filterValues(filter) {
+  const operator = String(filter?.operator || "equals").trim().toLowerCase();
+  return ["in", "not_in"].includes(operator)
+    ? (Array.isArray(filter?.value) ? filter.value : [filter?.value])
+    : [filter?.value];
+}
+
+function columnSupportsFilterValues(rows, column, filter) {
+  const values = filterValues(filter)
+    .filter((value) => value !== undefined && value !== null && String(value).trim() !== "");
+
+  if (!column || !values.length) return false;
+
+  // Ground against equality semantics even for negative filters. We want to
+  // know whether the referenced category actually exists in this live field.
+  return values.every((value) =>
+    rows.some((row) => compare(row?.[column], value, "equals"))
+  );
+}
+
+function findBestSupportedFilterColumn({ rows, filter, question = "" }) {
+  const columns = getColumns(rows);
+  const candidates = columns.filter((column) =>
+    columnSupportsFilterValues(rows, column, filter)
+  );
+
+  if (!candidates.length) return null;
+  if (candidates.length === 1) return candidates[0];
+
+  // When the same live value exists in several fields, only arbitrate if the
+  // question itself clearly names one of those fields. Otherwise ambiguity is
+  // safer than silently moving a filter to the wrong column.
+  const explicitlyNamed = candidates.filter((column) =>
+    questionExplicitlyNamesColumn(question, column)
+  );
+
+  if (explicitlyNamed.length === 1) return explicitlyNamed[0];
+
+  // A conservative lexical tiebreaker helps cases where the planner selected
+  // a near-synonymous field name but the live value proves another field is
+  // correct. It is intentionally weak and only used when there is one clear
+  // best overlap with the original requested field name.
+  const requestedTokens = new Set(
+    normalizeText(filter?.column || "").split(/\s+/).filter(Boolean)
+  );
+
+  const scored = candidates
+    .map((column) => {
+      const tokens = normalizeText(column).split(/\s+/).filter(Boolean);
+      const overlap = tokens.filter((token) => requestedTokens.has(token)).length;
+      return { column, overlap };
+    })
+    .sort((a, b) => b.overlap - a.overlap);
+
+  if (scored.length && scored[0].overlap > 0 && scored[0].overlap > (scored[1]?.overlap || 0)) {
+    return scored[0].column;
+  }
+
+  return null;
+}
+
+function validateResolvedFilterValues({ datasets, plan, question = "" }) {
   if (!plan || plan.route !== "dataset") return { valid: true, plan };
   const rows = datasets?.[plan.dataset];
   if (!Array.isArray(rows) || !rows.length) {
@@ -531,30 +593,54 @@ function validateResolvedFilterValues({ datasets, plan }) {
   }
 
   const filters = Array.isArray(plan.filters) ? plan.filters : [];
+  let repaired = false;
+  const groundedFilters = [];
+
   for (const filter of filters) {
     const operator = String(filter?.operator || "equals").trim().toLowerCase();
-    if (["empty", "not_empty", "greater_than", "greater_or_equal", "less_than", "less_or_equal"].includes(operator)) continue;
-
-    const values = ["in", "not_in"].includes(operator)
-      ? (Array.isArray(filter.value) ? filter.value : [filter.value])
-      : [filter.value];
-
-    // Positive categorical filters must be supported by at least one live
-    // value in the selected field. Negative filters still require the
-    // excluded value to exist so a typo cannot silently become "everything".
-    for (const value of values) {
-      const exists = rows.some((row) => compare(row?.[filter.column], value, "equals"));
-      if (!exists) {
-        return makeError(
-          "FILTER_VALUE_NOT_GROUNDED",
-          `Filter value "${String(value)}" was not found in live field "${filter.column}".`,
-          { column: filter.column, value }
-        );
-      }
+    if (["empty", "not_empty", "greater_than", "greater_or_equal", "less_than", "less_or_equal"].includes(operator)) {
+      groundedFilters.push(filter);
+      continue;
     }
+
+    if (columnSupportsFilterValues(rows, filter.column, filter)) {
+      groundedFilters.push(filter);
+      continue;
+    }
+
+    const supportedColumn = findBestSupportedFilterColumn({
+      rows,
+      filter,
+      question,
+    });
+
+    if (supportedColumn) {
+      groundedFilters.push({
+        ...filter,
+        column: supportedColumn,
+      });
+      repaired = true;
+      continue;
+    }
+
+    const firstValue = filterValues(filter)[0];
+    return makeError(
+      "FILTER_VALUE_NOT_GROUNDED",
+      `Filter value "${String(firstValue)}" was not found in live field "${filter.column}" or in one unambiguous live field.`,
+      { column: filter.column, value: firstValue }
+    );
   }
 
-  return { valid: true, plan };
+  return {
+    valid: true,
+    plan: repaired
+      ? {
+          ...plan,
+          filters: groundedFilters,
+          liveFilterFieldGrounded: true,
+        }
+      : plan,
+  };
 }
 
 function validateQueryPlan({

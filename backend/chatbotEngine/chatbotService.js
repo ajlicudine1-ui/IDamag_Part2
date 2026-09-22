@@ -5626,6 +5626,7 @@ async function answerQuestion(
       const groundedValueValidation = validateResolvedFilterValues({
         datasets,
         plan,
+        question: cleanQuestion,
       });
 
       if (!groundedValueValidation.valid) {

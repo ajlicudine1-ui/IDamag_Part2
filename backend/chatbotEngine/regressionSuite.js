@@ -5894,3 +5894,70 @@ test('problem2 result validation rejects a numeric answer inconsistent with filt
   assert.equal(validation.valid, false);
   assert.equal(validation.code, 'NUMERIC_SOURCE_MISMATCH');
 });
+
+test('problem2 live filter grounding can repair a wrong planner field when one live field uniquely supports the value', () => {
+  const { validateResolvedFilterValues } = require('./queryValidator');
+  const datasets = {
+    Main: [
+      { Province: 'Pangasinan', Enterprises: 'Vegetable Production', Commodities: 'Rice, Sugar Cane' },
+      { Province: 'La Union', Enterprises: 'Mushroom Production', Commodities: 'Corn' },
+    ],
+  };
+
+  const validation = validateResolvedFilterValues({
+    datasets,
+    question: 'Which Pangasinan associations produce sugarcane?',
+    plan: {
+      route: 'dataset',
+      dataset: 'Main',
+      operation: 'lookup',
+      filters: [
+        { column: 'Province', operator: 'equals', value: 'Pangasinan' },
+        { column: 'Enterprises', operator: 'equals', value: 'sugarcane' },
+      ],
+    },
+  });
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.plan.liveFilterFieldGrounded, true);
+  assert.equal(validation.plan.filters[0].column, 'Province');
+  assert.equal(validation.plan.filters[1].column, 'Commodities');
+});
+
+test('problem2 lookup removes duplicate projected entity rows from denormalized data', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    Association: [
+      { Province: 'Pangasinan', Commodity: 'Sugar Cane', 'Name of Association': 'Alpha Association' },
+      { Province: 'Pangasinan', Commodity: 'Sugar Cane', 'Name of Association': 'Alpha Association' },
+      { Province: 'Pangasinan', Commodity: 'Sugar Cane', 'Name of Association': 'Beta Association' },
+      { Province: 'La Union', Commodity: 'Sugar Cane', 'Name of Association': 'Gamma Association' },
+    ],
+  };
+
+  const result = executePlan({
+    datasets,
+    question: 'Which Pangasinan associations produce sugar cane?',
+    plan: {
+      route: 'dataset',
+      dataset: 'Association',
+      operation: 'lookup',
+      filters: [
+        { column: 'Province', operator: 'equals', value: 'Pangasinan' },
+        { column: 'Commodity', operator: 'equals', value: 'Sugar Cane' },
+      ],
+      selectColumns: ['Name of Association'],
+      outputRequested: true,
+      showAll: true,
+      limit: 100,
+    },
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.matchedRowCount, 3);
+  assert.equal(result.count, 2);
+  assert.equal(result.results.length, 2);
+  assert.equal(result.results[0]['Name of Association'], 'Alpha Association');
+  assert.equal(result.results[1]['Name of Association'], 'Beta Association');
+  assert.equal(result.duplicateLookupRowsRemoved, true);
+});
