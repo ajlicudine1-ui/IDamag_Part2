@@ -327,7 +327,7 @@ function questionExplicitlyNamesNumericRankingMetric({ datasets, schema, questio
   return false;
 }
 
-function repairAggregateIntent({ datasets, plan, question }) {
+function repairAggregateIntent({ datasets, schema, plan, question }) {
   if (!plan || plan.route !== 'dataset' || !plan.dataset) return plan;
 
   // Ranking words take precedence over aggregation words. This avoids
@@ -341,11 +341,74 @@ function repairAggregateIntent({ datasets, plan, question }) {
   const rows = datasets?.[plan.dataset];
   if (!Array.isArray(rows) || !rows.length) return plan;
 
-  const column = plan.column ? (findColumn(rows, plan.column) || plan.column) : null;
-  if (!column || !isNumericColumn(rows, column)) return plan;
-
   const operation = aggregation === 'sum' ? 'sum' : 'average';
-  if (plan.operation === operation) return plan;
+  let column = plan.column ? (findColumn(rows, plan.column) || plan.column) : null;
+
+  // A planner can correctly understand the requested aggregation while
+  // accidentally putting the entity/label field in `column` and the real
+  // numeric metric in `selectColumns`. Repair that mismatch from the live
+  // worksheet instead of asking for clarification or summing a text field.
+  // This is schema/data driven: no dataset, header, or example value is
+  // hardcoded here.
+  if (!column || !isNumericColumn(rows, column)) {
+    const candidates = [];
+    const addCandidate = (name, sourceBoost = 0) => {
+      if (!name) return;
+      const resolved = findColumn(rows, name) || name;
+      if (!isNumericColumn(rows, resolved)) return;
+      if (candidates.some((item) => normalizeText(item.column) === normalizeText(resolved))) return;
+      candidates.push({
+        column: resolved,
+        score: scoreTargetToColumn(question, resolved) + sourceBoost,
+      });
+    };
+
+    // Columns the planner already selected are especially strong evidence.
+    for (const selected of Array.isArray(plan.selectColumns) ? plan.selectColumns : []) {
+      addCandidate(selected, 0.35);
+    }
+
+    // Also consider live-schema fields explicitly/semantically named by the
+    // question, which supports header changes such as "Total Land Area (ha)"
+    // -> "Land Area (ha)" while keeping "total" as the SUM intent.
+    for (const explicit of explicitColumnsForDataset(schema, question, plan.dataset)) {
+      addCandidate(explicit, 0.25);
+    }
+
+    // Last-resort live-column search, accepted only with a strong semantic
+    // lead so we do not guess between unrelated numeric measures.
+    for (const candidateName of Object.keys(rows[0] || {})) {
+      addCandidate(candidateName, 0);
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+    const best = candidates[0] || null;
+    const second = candidates[1] || null;
+    const hasStrongLead = best && (
+      best.score >= 0.9 ||
+      (!second || best.score - second.score >= 0.25)
+    );
+
+    if (!hasStrongLead) return plan;
+    column = best.column;
+  }
+
+  // If the operation is already correct, still repair the metric field when
+  // needed. This is the exact failure mode where `sum(Association)` survived
+  // because only the operation, not the aggregate field, was validated.
+  if (plan.operation === operation) {
+    if (normalizeText(plan.column) === normalizeText(column)) return plan;
+    return {
+      ...plan,
+      column,
+      groupBy: null,
+      aggregation: null,
+      labelColumn: null,
+      selectColumns: [column],
+      aggregateMetricFieldRepaired: true,
+      aggregateIntentParityApplied: true,
+    };
+  }
 
   // Only repair value-returning plans. Count/group/rank operations carry
   // distinct semantics and must not be silently converted.
@@ -355,10 +418,13 @@ function repairAggregateIntent({ datasets, plan, question }) {
   return {
     ...plan,
     operation,
+    column,
     groupBy: null,
     aggregation: null,
     labelColumn: null,
     selectColumns: [column],
+    aggregateMetricFieldRepaired:
+      normalizeText(plan.column) !== normalizeText(column) || undefined,
     aggregateIntentParityApplied: true,
   };
 }
@@ -395,7 +461,7 @@ function enforcePlannerInvariants({ datasets, schema, plan, question }) {
   let next = plan;
   next = normalizeSameColumnEqualityFilters(next);
   next = repairCategoricalCountIntent({ datasets, plan: next, question });
-  next = repairAggregateIntent({ datasets, plan: next, question });
+  next = repairAggregateIntent({ datasets, schema, plan: next, question });
   next = repairGroupedAggregatePlan({ datasets, schema, plan: next, question });
   next = applySimpleRowRankingInvariant({ datasets, schema, plan: next, question });
   next = removeProjectionFieldFilterArtifacts({ datasets, plan: next, question });

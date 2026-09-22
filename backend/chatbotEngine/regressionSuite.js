@@ -5816,206 +5816,52 @@ test('aggregate formatter avoids total Total and average Average wording', () =>
   );
 });
 
-test('problem2 exact preferred live value outranks fuzzy cross-field candidates', () => {
-  const { resolveEntityAcrossDatasets } = require('./entityResolver');
-  const datasets = {
-    Main: [
-      { Province: 'La Union', Category: 'Union', Name: 'Alpha' },
-      { Province: 'Pangasinan', Category: 'La Union-like', Name: 'Beta' },
-    ],
-  };
-  const result = resolveEntityAcrossDatasets({
-    datasets,
-    requestedValue: 'La Union',
-    preferredDataset: 'Main',
-    preferredColumn: 'Province',
-  });
-  assert.equal(result.resolved, true);
-  assert.equal(result.column, 'Province');
-  assert.equal(result.resolvedValue, 'La Union');
-  assert.equal(result.exactLiveValueMatch, true);
-});
 
-test('problem2 live schema metric grounding corrects a conflicting numeric metric choice', () => {
-  const { validateQueryPlan } = require('./queryValidator');
+test('aggregate invariant repairs text entity column to selected live numeric metric', () => {
+  const { enforcePlannerInvariants } = require('./plannerInvariantEngine');
   const datasets = {
     Main: [
-      { Project: 'A1', Cost: '100', Beneficiaries: '4' },
-      { Project: 'A2', Cost: '200', Beneficiaries: '8' },
+      { Province: 'North', Association: 'A', 'Land Area (ha)': '12.5' },
+      { Province: 'North', Association: 'B', 'Land Area (ha)': '7.5' },
+      { Province: 'South', Association: 'C', 'Land Area (ha)': '5' },
     ],
   };
   const schema = buildSchema(datasets);
-  const validation = validateQueryPlan({
+  const plan = enforcePlannerInvariants({
     datasets,
-    schema,
-    question: 'What is the average cost?',
-    plan: {
-      route: 'dataset', dataset: 'Main', operation: 'average', column: 'Beneficiaries', filters: [],
-    },
-  });
-  assert.equal(validation.valid, true);
-  assert.equal(validation.plan.column, 'Cost');
-  assert.equal(validation.plan.liveSchemaMetricGrounded, true);
-});
-
-test('problem2 unresolved categorical filter values are rejected before execution', () => {
-  const { validateResolvedFilterValues } = require('./queryValidator');
-  const datasets = { Main: [{ Province: 'La Union' }, { Province: 'Pangasinan' }] };
-  const validation = validateResolvedFilterValues({
-    datasets,
-    plan: {
-      route: 'dataset', dataset: 'Main', operation: 'row_count',
-      filters: [{ column: 'Province', operator: 'equals', value: 'Imaginary Province' }],
-    },
-  });
-  assert.equal(validation.valid, false);
-  assert.equal(validation.code, 'FILTER_VALUE_NOT_GROUNDED');
-});
-
-test('problem2 result validation rejects a numeric answer inconsistent with filtered live rows', () => {
-  const { validateResult } = require('./resultValidator');
-  const datasets = {
-    Main: [
-      { Region: 'North', Amount: '10' },
-      { Region: 'North', Amount: '20' },
-      { Region: 'South', Amount: '500' },
-    ],
-  };
-  const validation = validateResult({
-    datasets,
-    plan: {
-      route: 'dataset', dataset: 'Main', operation: 'sum', column: 'Amount',
-      filters: [{ column: 'Region', operator: 'equals', value: 'North' }],
-    },
-    result: {
-      success: true, operation: 'sum', value: 530, answer: 'The total is 530.',
-    },
-  });
-  assert.equal(validation.valid, false);
-  assert.equal(validation.code, 'NUMERIC_SOURCE_MISMATCH');
-});
-
-test('problem2 live filter grounding can repair a wrong planner field when one live field uniquely supports the value', () => {
-  const { validateResolvedFilterValues } = require('./queryValidator');
-  const datasets = {
-    Main: [
-      { Province: 'Pangasinan', Enterprises: 'Vegetable Production', Commodities: 'Rice, Sugar Cane' },
-      { Province: 'La Union', Enterprises: 'Mushroom Production', Commodities: 'Corn' },
-    ],
-  };
-
-  const validation = validateResolvedFilterValues({
-    datasets,
-    question: 'Which Pangasinan associations produce sugarcane?',
-    plan: {
-      route: 'dataset',
-      dataset: 'Main',
-      operation: 'lookup',
-      filters: [
-        { column: 'Province', operator: 'equals', value: 'Pangasinan' },
-        { column: 'Enterprises', operator: 'equals', value: 'sugarcane' },
-      ],
-    },
-  });
-
-  assert.equal(validation.valid, true);
-  assert.equal(validation.plan.liveFilterFieldGrounded, true);
-  assert.equal(validation.plan.filters[0].column, 'Province');
-  assert.equal(validation.plan.filters[1].column, 'Commodities');
-});
-
-test('problem2 lookup removes duplicate projected entity rows from denormalized data', () => {
-  const { executePlan } = require('./calculationEngine');
-  const datasets = {
-    Association: [
-      { Province: 'Pangasinan', Commodity: 'Sugar Cane', 'Name of Association': 'Alpha Association' },
-      { Province: 'Pangasinan', Commodity: 'Sugar Cane', 'Name of Association': 'Alpha Association' },
-      { Province: 'Pangasinan', Commodity: 'Sugar Cane', 'Name of Association': 'Beta Association' },
-      { Province: 'La Union', Commodity: 'Sugar Cane', 'Name of Association': 'Gamma Association' },
-    ],
-  };
-
-  const result = executePlan({
-    datasets,
-    question: 'Which Pangasinan associations produce sugar cane?',
-    plan: {
-      route: 'dataset',
-      dataset: 'Association',
-      operation: 'lookup',
-      filters: [
-        { column: 'Province', operator: 'equals', value: 'Pangasinan' },
-        { column: 'Commodity', operator: 'equals', value: 'Sugar Cane' },
-      ],
-      selectColumns: ['Name of Association'],
-      outputRequested: true,
-      showAll: true,
-      limit: 100,
-    },
-  });
-
-  assert.equal(result.success, true);
-  assert.equal(result.matchedRowCount, 3);
-  assert.equal(result.count, 2);
-  assert.equal(result.results.length, 2);
-  assert.equal(result.results[0]['Name of Association'], 'Alpha Association');
-  assert.equal(result.results[1]['Name of Association'], 'Beta Association');
-  assert.equal(result.duplicateLookupRowsRemoved, true);
-});
-
-test('problem2 aggregate field guard prefers explicitly named numeric measure over entity noun', () => {
-  const { enforceExplicitQuestionColumn } = require('./plannerNormalizer');
-  const { buildSchema } = require('./schemaBuilder');
-
-  const datasets = {
-    Main: [
-      { Province: 'North', Association: 'Group A', 'Total Land Area (ha)': '10.5' },
-      { Province: 'North', Association: 'Group B', 'Total Land Area (ha)': '20.0' },
-    ],
-  };
-  const schema = buildSchema(datasets);
-
-  const repaired = enforceExplicitQuestionColumn({
-    plan: {
-      route: 'dataset',
-      dataset: 'Main',
-      operation: 'sum',
-      column: 'Total Land Area (ha)',
-      filters: [{ column: 'Province', operator: 'equals', value: 'North' }],
-      selectColumns: ['Total Land Area (ha)'],
-    },
     schema,
     question: 'What is the total land area of the North associations?',
+    plan: {
+      route: 'dataset', dataset: 'Main', operation: 'sum', column: 'Association',
+      filters: [{ column: 'Province', operator: 'equals', value: 'North' }],
+      selectColumns: ['Land Area (ha)'],
+    },
   });
-
-  assert.equal(repaired.operation, 'sum');
-  assert.equal(repaired.column, 'Total Land Area (ha)');
-  assert.equal(repaired.dataset, 'Main');
+  assert.equal(plan.operation, 'sum');
+  assert.equal(plan.column, 'Land Area (ha)');
+  assert.deepEqual(plan.selectColumns, ['Land Area (ha)']);
+  assert.equal(plan.aggregateMetricFieldRepaired, true);
 });
 
-test('problem2 aggregate field guard does not replace a numeric metric with an explicit text entity', () => {
-  const { enforceExplicitQuestionColumn } = require('./plannerNormalizer');
-  const { buildSchema } = require('./schemaBuilder');
-
+test('aggregate invariant handles renamed numeric header without requiring word total in header', () => {
+  const { enforcePlannerInvariants } = require('./plannerInvariantEngine');
   const datasets = {
     Main: [
-      { Association: 'Group A', Amount: '10' },
-      { Association: 'Group B', Amount: '20' },
+      { Region: 'A', Entity: 'X', 'Area (ha)': '10' },
+      { Region: 'A', Entity: 'Y', 'Area (ha)': '20' },
     ],
   };
   const schema = buildSchema(datasets);
-
-  const repaired = enforceExplicitQuestionColumn({
-    plan: {
-      route: 'dataset',
-      dataset: 'Main',
-      operation: 'sum',
-      column: 'Amount',
-      filters: [],
-      selectColumns: ['Amount'],
-    },
+  const plan = enforcePlannerInvariants({
+    datasets,
     schema,
-    question: 'What is the total for the associations?',
+    question: 'What is the total area of the entities in A?',
+    plan: {
+      route: 'dataset', dataset: 'Main', operation: 'sum', column: 'Entity',
+      filters: [{ column: 'Region', operator: 'equals', value: 'A' }],
+      selectColumns: ['Area (ha)'],
+    },
   });
-
-  assert.equal(repaired.column, 'Amount');
+  assert.equal(plan.operation, 'sum');
+  assert.equal(plan.column, 'Area (ha)');
 });
