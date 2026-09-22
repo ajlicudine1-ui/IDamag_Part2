@@ -42,6 +42,22 @@ function StaffDashboard() {
   const [reports, setReports] = useState([]);
 
   // =========================================================
+  // MANAGEMENT VIEW / WORKSHEET LIST
+  // =========================================================
+
+  const [managementView, setManagementView] =
+    useState("reports");
+
+  const [worksheets, setWorksheets] =
+    useState([]);
+
+  const [worksheetsLoading, setWorksheetsLoading] =
+    useState(false);
+
+  const [worksheetsLoadError, setWorksheetsLoadError] =
+    useState("");
+
+  // =========================================================
   // REPORT MODAL
   // =========================================================
 
@@ -242,6 +258,117 @@ function StaffDashboard() {
     selectedOffice,
     selectedDivision,
   ]);
+
+  // =========================================================
+  // LOAD WORKSHEETS FOR MANAGEMENT VIEW
+  // =========================================================
+
+  const loadWorksheets = async () => {
+    try {
+      setWorksheetsLoading(true);
+      setWorksheetsLoadError("");
+
+      const response = await fetch(WORKSHEET_API_URL, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(
+          text || "Unable to load worksheets."
+        );
+      }
+
+      const payload = await response.json();
+
+      const rows = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload?.data)
+          ? payload.data
+          : Array.isArray(payload?.worksheets)
+            ? payload.worksheets
+            : [];
+
+      setWorksheets(rows);
+    } catch (error) {
+      console.error(
+        "Worksheet load error:",
+        error
+      );
+
+      setWorksheets([]);
+      setWorksheetsLoadError(
+        error.message ||
+          "Unable to load worksheets."
+      );
+    } finally {
+      setWorksheetsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (managementView !== "worksheets") return;
+
+    loadWorksheets();
+  }, [managementView]);
+
+  const getWorksheetDashboardId = (worksheet) =>
+    worksheet?.dashboardId ??
+    worksheet?.reportId ??
+    worksheet?.dashboard?.id ??
+    worksheet?.report?.id ??
+    null;
+
+  const getWorksheetDashboardName = (worksheet) => {
+    const embeddedTitle =
+      worksheet?.dashboardName ||
+      worksheet?.reportTitle ||
+      worksheet?.dashboard?.title ||
+      worksheet?.report?.title;
+
+    if (embeddedTitle) return embeddedTitle;
+
+    const dashboardId =
+      getWorksheetDashboardId(worksheet);
+
+    const report = reports.find(
+      (item) =>
+        String(item.id) ===
+        String(dashboardId)
+    );
+
+    return report?.title || "Unknown Dashboard";
+  };
+
+  const visibleWorksheets = worksheets.filter(
+    (worksheet) => {
+      const dashboardId =
+        getWorksheetDashboardId(worksheet);
+
+      // Only show worksheets that belong to the reports
+      // currently loaded for the selected Category/Subcategory.
+      return reports.some(
+        (report) =>
+          String(report.id) ===
+          String(dashboardId)
+      );
+    }
+  );
+
+  const formatWorksheetDate = (value) => {
+    if (!value) return "—";
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+      return "—";
+    }
+
+    return date.toLocaleString();
+  };
 
   // =========================================================
   // SAVE REPORT
@@ -684,6 +811,10 @@ function StaffDashboard() {
 
         closeWorksheetModal();
 
+        if (managementView === "worksheets") {
+          await loadWorksheets();
+        }
+
         alert(
           "Worksheets saved successfully."
         );
@@ -824,13 +955,13 @@ function StaffDashboard() {
 
           <div className="flex items-center gap-4 rounded-3xl border border-slate-100 bg-white p-6 shadow-sm">
 
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-moss-50">
+            <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-2xl bg-moss-50">
 
               <FileText className="h-6 w-6 text-moss-600" />
 
             </div>
 
-            <div>
+            <div className="min-w-0 flex-1">
 
               <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
                 Reports
@@ -840,6 +971,38 @@ function StaffDashboard() {
                 {reports.length} Published
               </p>
 
+              <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setManagementView("reports")
+                  }
+                  className={`rounded-xl border px-3 py-2 text-[9px] font-black uppercase tracking-wider transition-all ${
+                    managementView === "reports"
+                      ? "border-moss-600 bg-moss-600 text-white shadow-sm"
+                      : "border-moss-100 bg-moss-50 text-moss-700 hover:bg-moss-100"
+                  }`}
+                >
+                  Report Management
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setManagementView("worksheets")
+                  }
+                  className={`rounded-xl border px-3 py-2 text-[9px] font-black uppercase tracking-wider transition-all ${
+                    managementView === "worksheets"
+                      ? "border-moss-600 bg-moss-600 text-white shadow-sm"
+                      : "border-moss-100 bg-moss-50 text-moss-700 hover:bg-moss-100"
+                  }`}
+                >
+                  Worksheet Management
+                </button>
+
+              </div>
+
             </div>
 
           </div>
@@ -847,301 +1010,362 @@ function StaffDashboard() {
         </div>
 
         {/* ===================================================
-            REPORTS
+            REPORT / WORKSHEET MANAGEMENT
         =================================================== */}
 
-        <div className="overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-sm">
+        {managementView === "reports" ? (
+          <div className="overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-sm">
 
-          <div className="flex flex-col gap-4 border-b border-slate-50 bg-slate-50/20 px-8 py-6 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-col gap-4 border-b border-slate-50 bg-slate-50/20 px-8 py-6 lg:flex-row lg:items-center lg:justify-between">
 
-            <div>
+              <div>
 
-              <h3 className="flex items-center gap-3 text-xl font-black leading-tight tracking-tight text-slate-900">
+                <h3 className="flex items-center gap-3 text-xl font-black leading-tight tracking-tight text-slate-900">
 
-                <Layout
-                  size={24}
-                  className="text-moss-600"
-                />
+                  <Layout
+                    size={24}
+                    className="text-moss-600"
+                  />
 
-                Reports Management
+                  Reports Management
 
-              </h3>
+                </h3>
 
-            </div>
+              </div>
 
-            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
 
-              {user.role ===
-                "Admin" &&
-                !selectedDivision && (
-                  <div className="flex items-center gap-2 rounded-lg border border-amber-100 bg-amber-50 px-3 py-1.5 text-[10px] font-bold text-amber-500">
+                {user.role ===
+                  "Admin" &&
+                  !selectedDivision && (
+                    <div className="flex items-center gap-2 rounded-lg border border-amber-100 bg-amber-50 px-3 py-1.5 text-[10px] font-bold text-amber-500">
 
-                    <AlertCircle
-                      size={12}
-                    />
+                      <AlertCircle size={12} />
 
-                    Select a specific
-                    section to add
-                    reports
+                      Select a specific section to add reports
 
-                  </div>
-                )}
+                    </div>
+                  )}
 
-              {/* ADD WORKSHEET */}
-
-              <button
-                type="button"
-                onClick={
-                  openWorksheetModal
-                }
-                disabled={
-                  reports.length === 0
-                }
-                className={`
-                  flex
-                  items-center
-                  gap-2
-                  rounded-2xl
-                  px-5
-                  py-3.5
-                  text-[11px]
-                  font-black
-                  uppercase
-                  tracking-widest
-                  transition-all
-                  active:scale-95
-
-                  ${
-                    reports.length ===
-                    0
+                <button
+                  type="button"
+                  onClick={openWorksheetModal}
+                  disabled={reports.length === 0}
+                  className={`flex items-center gap-2 rounded-2xl px-5 py-3.5 text-[11px] font-black uppercase tracking-widest transition-all active:scale-95 ${
+                    reports.length === 0
                       ? "cursor-not-allowed bg-slate-100 text-slate-400"
                       : "border border-moss-200 bg-moss-50 text-moss-700 hover:bg-moss-100"
+                  }`}
+                >
+
+                  <Sheet size={18} />
+
+                  Add Worksheet
+
+                </button>
+
+                <button
+                  onClick={() =>
+                    setIsModalOpen(true)
                   }
-                `}
-              >
+                  disabled={
+                    user.role === "Admin" &&
+                    !selectedDivision
+                  }
+                  className={`flex items-center gap-2 rounded-2xl px-6 py-3.5 text-[11px] font-black uppercase tracking-widest shadow-lg transition-all active:scale-95 ${
+                    user.role === "Admin" &&
+                    !selectedDivision
+                      ? "cursor-not-allowed bg-slate-100 text-slate-400 shadow-none"
+                      : "bg-moss-600 text-white shadow-moss-600/20 hover:bg-moss-700"
+                  }`}
+                >
 
-                <Sheet size={18} />
+                  <Plus size={18} />
 
-                Add Worksheet
+                  Add New Report
 
-              </button>
+                </button>
 
-              {/* ADD REPORT */}
-
-              <button
-                onClick={() =>
-                  setIsModalOpen(
-                    true
-                  )
-                }
-                disabled={
-                  user.role ===
-                    "Admin" &&
-                  !selectedDivision
-                }
-                className={`flex items-center gap-2 rounded-2xl px-6 py-3.5 text-[11px] font-black uppercase tracking-widest shadow-lg transition-all active:scale-95 ${
-                  user.role ===
-                    "Admin" &&
-                  !selectedDivision
-                    ? "cursor-not-allowed bg-slate-100 text-slate-400 shadow-none"
-                    : "bg-moss-600 text-white shadow-moss-600/20 hover:bg-moss-700"
-                }`}
-              >
-
-                <Plus size={18} />
-
-                Add New Report
-
-              </button>
+              </div>
 
             </div>
 
-          </div>
+            <div className="overflow-x-auto">
 
-          {/* TABLE */}
+              <table className="w-full text-left">
 
-          <div className="overflow-x-auto">
-
-            <table className="w-full text-left">
-
-              <thead>
-
-                <tr className="bg-slate-50/50">
-
-                  <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                    Report Title
-                  </th>
-
-                  <th className="px-8 py-4 text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                    Power BI URL
-                  </th>
-
-                  <th className="px-8 py-4 text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                    Date Added
-                  </th>
-
-                  <th className="px-8 py-4 text-right text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                    Actions
-                  </th>
-
-                </tr>
-
-              </thead>
-
-              <tbody className="divide-y divide-slate-100">
-
-                {reports.length ===
-                0 ? (
-                  <tr>
-
-                    <td
-                      colSpan="4"
-                      className="px-8 py-12 text-center font-medium text-slate-400"
-                    >
-
-                      No reports found for
-                      this Category.
-
-                    </td>
-
+                <thead>
+                  <tr className="bg-slate-50/50">
+                    <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      Report Title
+                    </th>
+                    <th className="px-8 py-4 text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      Power BI URL
+                    </th>
+                    <th className="px-8 py-4 text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      Date Added
+                    </th>
+                    <th className="px-8 py-4 text-right text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      Actions
+                    </th>
                   </tr>
-                ) : (
-                  reports.map(
-                    (report) => (
+                </thead>
+
+                <tbody className="divide-y divide-slate-100">
+
+                  {reports.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan="4"
+                        className="px-8 py-12 text-center font-medium text-slate-400"
+                      >
+                        No reports found for this Category.
+                      </td>
+                    </tr>
+                  ) : (
+                    reports.map((report) => (
                       <tr
-                        key={
-                          report.id
-                        }
+                        key={report.id}
                         className="transition-colors hover:bg-slate-50/30"
                       >
-
                         <td className="px-8 py-4">
-
                           <div className="text-[13px] font-bold leading-relaxed text-slate-800">
-
-                            {
-                              report.title
-                            }
-
+                            {report.title}
                           </div>
 
                           <div className="flex max-w-xs items-center truncate">
-
                             <span className="max-w-[150px] truncate text-[10px] font-bold uppercase tracking-tight text-slate-400 opacity-70">
-
                               {report.description ||
                                 "No description provided"}
-
                             </span>
 
                             {report.description &&
-                              report
-                                .description
-                                .length >
-                                30 && (
+                              report.description.length > 30 && (
                                 <button
                                   onClick={() =>
-                                    setViewingReport(
-                                      report
-                                    )
+                                    setViewingReport(report)
                                   }
                                   className="ml-2 whitespace-nowrap rounded-md bg-moss-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-moss-600 transition-colors hover:bg-moss-100 hover:text-moss-700"
                                 >
-
                                   Read More
-
                                 </button>
                               )}
-
                           </div>
-
                         </td>
 
                         <td className="px-8 py-4 text-center">
-
                           <button
                             onClick={() =>
-                              setPreviewId(
-                                report.reportId
-                              )
+                              setPreviewId(report.reportId)
                             }
                             className="inline-flex items-center gap-1.5 rounded-lg border border-moss-100/50 bg-moss-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-widest text-moss-600 transition-all hover:bg-moss-100"
                           >
-
-                            <ExternalLink
-                              size={12}
-                            />
-
+                            <ExternalLink size={12} />
                             Preview
-
                           </button>
-
                         </td>
 
                         <td className="px-8 py-4 text-center">
-
                           <span className="rounded-md border border-slate-100 bg-slate-50 px-2 py-0.5 text-[11px] font-bold text-slate-500">
-
                             {new Date(
                               report.createdAt
                             ).toLocaleDateString()}
-
                           </span>
-
                         </td>
 
                         <td className="px-8 py-4 text-right">
-
                           <div className="flex items-center justify-end gap-1.5">
-
                             <button
                               onClick={() =>
-                                openEditModal(
-                                  report
-                                )
+                                openEditModal(report)
                               }
                               className="rounded-xl p-2 text-slate-300 transition-all hover:bg-moss-50 hover:text-moss-600"
                               title="Edit"
                             >
-
-                              <Edit3
-                                size={16}
-                              />
-
+                              <Edit3 size={16} />
                             </button>
 
                             <button
                               onClick={() =>
-                                handleDeleteReport(
-                                  report.id
-                                )
+                                handleDeleteReport(report.id)
                               }
                               className="rounded-xl p-2 text-slate-200 transition-all hover:bg-red-50 hover:text-red-500"
                               title="Delete"
                             >
-
-                              <Trash2
-                                size={16}
-                              />
-
+                              <Trash2 size={16} />
                             </button>
-
                           </div>
-
                         </td>
-
                       </tr>
-                    )
-                  )
-                )}
+                    ))
+                  )}
 
-              </tbody>
+                </tbody>
 
-            </table>
+              </table>
+
+            </div>
 
           </div>
+        ) : (
+          <div className="overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-sm">
 
-        </div>
+            <div className="flex flex-col gap-4 border-b border-slate-50 bg-slate-50/20 px-8 py-6 lg:flex-row lg:items-center lg:justify-between">
+
+              <div>
+                <h3 className="flex items-center gap-3 text-xl font-black leading-tight tracking-tight text-slate-900">
+                  <Sheet
+                    size={24}
+                    className="text-moss-600"
+                  />
+                  Worksheet Management
+                </h3>
+                <p className="mt-1 text-xs font-medium text-slate-400">
+                  View the worksheets connected to each published dashboard.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={loadWorksheets}
+                  disabled={worksheetsLoading}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-[10px] font-black uppercase tracking-widest text-slate-500 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {worksheetsLoading
+                    ? "Loading..."
+                    : "Refresh"}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={openWorksheetModal}
+                  disabled={reports.length === 0}
+                  className={`flex items-center gap-2 rounded-2xl px-5 py-3.5 text-[11px] font-black uppercase tracking-widest transition-all active:scale-95 ${
+                    reports.length === 0
+                      ? "cursor-not-allowed bg-slate-100 text-slate-400"
+                      : "bg-moss-600 text-white shadow-lg shadow-moss-600/20 hover:bg-moss-700"
+                  }`}
+                >
+                  <Plus size={18} />
+                  Add Worksheet
+                </button>
+              </div>
+
+            </div>
+
+            {worksheetsLoadError && (
+              <div className="mx-8 mt-6 flex items-start gap-2 rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-xs font-bold text-red-600">
+                <AlertCircle
+                  size={16}
+                  className="mt-0.5 shrink-0"
+                />
+                {worksheetsLoadError}
+              </div>
+            )}
+
+            <div className="overflow-x-auto">
+
+              <table className="w-full text-left">
+
+                <thead>
+                  <tr className="bg-slate-50/50">
+                    <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      Dashboard Name
+                    </th>
+                    <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      Worksheet Name
+                    </th>
+                    <th className="px-6 py-4 text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      GID
+                    </th>
+                    <th className="px-6 py-4 text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      Created
+                    </th>
+                    <th className="px-6 py-4 text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      Updated
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody className="divide-y divide-slate-100">
+
+                  {worksheetsLoading ? (
+                    <tr>
+                      <td
+                        colSpan="5"
+                        className="px-8 py-12 text-center font-medium text-slate-400"
+                      >
+                        Loading worksheets...
+                      </td>
+                    </tr>
+                  ) : visibleWorksheets.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan="5"
+                        className="px-8 py-12 text-center font-medium text-slate-400"
+                      >
+                        No worksheets found for the selected reports.
+                      </td>
+                    </tr>
+                  ) : (
+                    visibleWorksheets.map((worksheet) => (
+                      <tr
+                        key={
+                          worksheet.worksheetId ||
+                          `${getWorksheetDashboardId(worksheet)}-${worksheet.worksheetName}-${worksheet.gid}`
+                        }
+                        className="transition-colors hover:bg-slate-50/30"
+                      >
+                        <td className="px-6 py-4">
+                          <div className="max-w-[280px] text-[13px] font-bold leading-relaxed text-slate-800">
+                            {getWorksheetDashboardName(worksheet)}
+                          </div>
+                        </td>
+
+                        <td className="px-6 py-4">
+                          <span className="text-[12px] font-bold text-slate-600">
+                            {worksheet.worksheetName ||
+                              worksheet.name ||
+                              "—"}
+                          </span>
+                        </td>
+
+                        <td className="px-6 py-4 text-center">
+                          <span className="rounded-md border border-moss-100 bg-moss-50 px-2.5 py-1 text-[11px] font-black text-moss-700">
+                            {worksheet.gid ?? "—"}
+                          </span>
+                        </td>
+
+                        <td className="px-6 py-4 text-center">
+                          <span className="text-[11px] font-bold text-slate-500">
+                            {formatWorksheetDate(
+                              worksheet.createdAt ||
+                                worksheet.created_at
+                            )}
+                          </span>
+                        </td>
+
+                        <td className="px-6 py-4 text-center">
+                          <span className="text-[11px] font-bold text-slate-500">
+                            {formatWorksheetDate(
+                              worksheet.updatedAt ||
+                                worksheet.updated_at
+                            )}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+
+                </tbody>
+
+              </table>
+
+            </div>
+
+          </div>
+        )}
 
         {/* ===================================================
             ADD / EDIT POWER BI REPORT MODAL

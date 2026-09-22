@@ -1097,6 +1097,15 @@ app.get(
         await DashboardWorksheet.findAll({
           where,
 
+          attributes: [
+            "worksheetId",
+            "dashboardId",
+            "worksheetName",
+            "gid",
+            "createdAt",
+            "updatedAt",
+          ],
+
           order: [
             [
               "worksheetId",
@@ -1105,16 +1114,73 @@ app.get(
           ],
         });
 
-      res.json(worksheets);
+      const dashboardIds = [
+        ...new Set(
+          worksheets.map(
+            (worksheet) =>
+              Number(
+                worksheet.dashboardId
+              )
+          )
+        ),
+      ].filter(Number.isFinite);
+
+      const reports =
+        dashboardIds.length > 0
+          ? await Report.findAll({
+              where: {
+                id: dashboardIds,
+              },
+
+              attributes: [
+                "id",
+                "title",
+              ],
+            })
+          : [];
+
+      const reportMap =
+        new Map(
+          reports.map((report) => [
+            Number(report.id),
+            report.title,
+          ])
+        );
+
+      const results =
+        worksheets.map(
+          (worksheet) => {
+            const row =
+              worksheet.toJSON();
+
+            return {
+              ...row,
+
+              dashboardName:
+                reportMap.get(
+                  Number(
+                    row.dashboardId
+                  )
+                ) ||
+                "Unknown Dashboard",
+            };
+          }
+        );
+
+      return res
+        .status(200)
+        .json(results);
     } catch (error) {
       console.error(
         "GET WORKSHEETS ERROR:",
         error
       );
 
-      res.status(500).json({
-        error: error.message,
-      });
+      return res
+        .status(500)
+        .json({
+          error: error.message,
+        });
     }
   }
 );

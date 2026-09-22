@@ -6113,3 +6113,100 @@ test('problem2 grounded list response is preserved for Groq and local parity', (
   });
   assert.equal(keep, true);
 });
+
+test('problem3 ambiguous field asks a targeted live-schema clarification instead of guessing', () => {
+  const { detectColumnAmbiguity } = require('./columnMatcher');
+  const datasets = {
+    Main: [
+      { 'Project Status': 'Active', 'Implementation Status': 'Ongoing', Amount: 10 },
+      { 'Project Status': 'Closed', 'Implementation Status': 'Completed', Amount: 20 },
+    ],
+  };
+
+  const repaired = detectColumnAmbiguity({
+    plan: {
+      route: 'dataset',
+      dataset: 'Main',
+      operation: 'list',
+      column: 'Project Status',
+      selectColumns: ['Project Status'],
+    },
+    datasets,
+    question: 'Show the status.',
+    context: { isFollowUp: false },
+  });
+
+  assert.equal(repaired.route, 'clarify');
+  assert.match(repaired.question, /Project Status/);
+  assert.match(repaired.question, /Implementation Status/);
+  assert.equal(repaired.ambiguity.candidates.length, 2);
+});
+
+test('problem3 verified follow-up context resolves an ambiguous live field near-tie', () => {
+  const { detectColumnAmbiguity } = require('./columnMatcher');
+  const datasets = {
+    Main: [
+      { 'Project Status': 'Active', 'Implementation Status': 'Ongoing', Amount: 10 },
+      { 'Project Status': 'Closed', 'Implementation Status': 'Completed', Amount: 20 },
+    ],
+  };
+
+  const repaired = detectColumnAmbiguity({
+    plan: {
+      route: 'dataset',
+      dataset: 'Main',
+      operation: 'list',
+      column: 'Project Status',
+      selectColumns: ['Project Status'],
+    },
+    datasets,
+    question: 'What about the status?',
+    context: {
+      isFollowUp: true,
+      lastMetric: 'Implementation Status',
+      lastSubjectColumn: null,
+      lastPlan: { dataset: 'Main', column: 'Implementation Status' },
+      semanticPlan: null,
+    },
+  });
+
+  assert.equal(repaired.route, 'dataset');
+  assert.equal(repaired.column, 'Implementation Status');
+  assert.deepEqual(repaired.selectColumns, ['Implementation Status']);
+  assert.equal(repaired.contextualAmbiguityResolved, true);
+});
+
+test('problem3 explicit live field still outranks ambiguity and context', () => {
+  const { detectColumnAmbiguity } = require('./columnMatcher');
+  const datasets = {
+    Main: [
+      { 'Project Status': 'Active', 'Implementation Status': 'Ongoing' },
+    ],
+  };
+
+  const repaired = detectColumnAmbiguity({
+    plan: {
+      route: 'dataset', dataset: 'Main', operation: 'list',
+      column: 'Project Status', selectColumns: ['Project Status'],
+    },
+    datasets,
+    question: 'Show the project status.',
+    context: {
+      isFollowUp: true,
+      lastMetric: 'Implementation Status',
+      lastPlan: { column: 'Implementation Status' },
+    },
+  });
+
+  assert.equal(repaired.route, 'dataset');
+  assert.equal(repaired.column, 'Project Status');
+  assert.equal(repaired.contextualAmbiguityResolved, undefined);
+});
+
+test('problem3 morphology-aware semantic matching handles plural field wording generically', () => {
+  const { scoreColumnTarget } = require('./columnMatcher');
+  const pluralScore = scoreColumnTarget('show the municipalities', 'Municipality');
+  const unrelatedScore = scoreColumnTarget('show the municipalities', 'Province');
+  assert.ok(pluralScore > unrelatedScore);
+  assert.ok(pluralScore >= 1);
+});
