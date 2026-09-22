@@ -696,6 +696,92 @@ function isNumericLikeColumn({
 }
 
 
+
+function splitDependentDetailTail(question) {
+  const original = String(question || "").replace(/\s+/g, " ").trim();
+  if (!original) {
+    return { coreQuestion: original, detailTail: "" };
+  }
+
+  const match = original.match(
+    /^(.*?)(?:,?\s+and\s+)((?:what|which|where|who)\b.+)$/i
+  );
+
+  if (!match?.[1] || !match?.[2]) {
+    return { coreQuestion: original, detailTail: "" };
+  }
+
+  const tail = match[2].trim();
+  const normalizedTail = normalizeText(tail);
+
+  const referential =
+    /\b(?:it|its|they|them|their|those|these|that|this|same)\b/.test(
+      normalizedTail
+    );
+
+  const independentAnalyticalOperation =
+    /\b(?:total|sum|average|avg|mean|median|minimum|maximum|max|min|count|number\s+of|how\s+many|how\s+much|percentage|percent|ratio|difference|top|bottom|highest|lowest|largest|smallest|compare|rank)\b/.test(
+      normalizedTail
+    );
+
+  if (!referential || independentAnalyticalOperation) {
+    return { coreQuestion: original, detailTail: "" };
+  }
+
+  return {
+    coreQuestion: match[1].trim(),
+    detailTail: tail,
+  };
+}
+
+function inferRequestedDetailColumns({
+  detailTail,
+  columns,
+  excluded = [],
+} = {}) {
+  const tail = normalizeText(detailTail);
+  if (!tail || !Array.isArray(columns)) {
+    return [];
+  }
+
+  const excludedSet = new Set(
+    excluded.filter(Boolean).map((value) => normalizeText(value))
+  );
+
+  return columns
+    .map((column, index) => {
+      const name = column?.name || column;
+      const normalizedName = normalizeText(name);
+      if (!normalizedName || excludedSet.has(normalizedName)) {
+        return null;
+      }
+
+      const tokens = normalizedName
+        .split(/\s+/)
+        .filter((token) => token && !["of", "the", "no", "number"].includes(token));
+
+      if (!tokens.length) {
+        return null;
+      }
+
+      const exactPhrase = tail.includes(normalizedName);
+      const tokenCoverage = tokens.every((token) => tail.includes(token));
+
+      if (!exactPhrase && !tokenCoverage) {
+        return null;
+      }
+
+      return {
+        column: name,
+        score: (exactPhrase ? 10 : 0) + tokens.length,
+        index,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((item) => item.column);
+}
+
 function parseRankingTargets(
   question
 ) {
@@ -1008,14 +1094,19 @@ function repairRankingIdentityPlan({
       question,
     });
 
+  const {
+    coreQuestion: rankingCoreQuestion,
+    detailTail: rankingDetailTail,
+  } = splitDependentDetailTail(question);
+
   const direction =
     detectRankingDirection(
-      question
+      rankingCoreQuestion
     );
 
   const targets =
     parseRankingTargets(
-      question
+      rankingCoreQuestion
     );
 
   if (
@@ -1404,9 +1495,20 @@ function repairRankingIdentityPlan({
     }
   }
 
+  const requestedDetailColumns =
+    inferRequestedDetailColumns({
+      detailTail: rankingDetailTail,
+      columns,
+      excluded: [
+        ...identityColumns,
+        metric.column.name,
+      ],
+    });
+
   const selectColumns = [
     ...identityColumns,
     metric.column.name,
+    ...requestedDetailColumns,
   ];
 
   /**
@@ -1567,6 +1669,7 @@ function repairRankingIdentityPlan({
         [
           finalLabelColumn,
           metric.column.name,
+          ...requestedDetailColumns,
         ].filter(Boolean)
       ),
     ],
@@ -3218,6 +3321,77 @@ function normalizeSchemaPhraseMorphology(value) {
     .trim();
 }
 
+function findStrongMorphologicalQuestionColumn({
+  schema,
+  question,
+  preferredDataset = null,
+}) {
+  const morphologicalQuestion =
+    normalizeSchemaPhraseMorphology(question);
+
+  if (!morphologicalQuestion) {
+    return null;
+  }
+
+  const candidates = [];
+
+  for (const dataset of schema || []) {
+    if (
+      preferredDataset &&
+      String(dataset?.name || "") !== String(preferredDataset)
+    ) {
+      continue;
+    }
+
+    for (const column of dataset?.columns || []) {
+      const name = column?.name;
+      if (!name) continue;
+
+      const morphologicalColumn =
+        normalizeSchemaPhraseMorphology(name);
+
+      if (!morphologicalColumn) continue;
+
+      const escaped = morphologicalColumn.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&"
+      );
+
+      const regex = new RegExp(
+        `(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`,
+        "u"
+      );
+
+      if (!regex.test(morphologicalQuestion)) {
+        continue;
+      }
+
+      candidates.push({
+        dataset: dataset.name,
+        column: name,
+        score: 97 + morphologicalColumn.length / 10000,
+        length: morphologicalColumn.length,
+      });
+    }
+  }
+
+  if (!candidates.length && preferredDataset) {
+    return findStrongMorphologicalQuestionColumn({
+      schema,
+      question,
+      preferredDataset: null,
+    });
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score - a.score ||
+      b.length - a.length
+  );
+
+  return candidates[0] || null;
+}
+
 function findExplicitSchemaColumn({
   schema,
   question,
@@ -3480,17 +3654,83 @@ function enforceExplicitQuestionColumn({
     return plan;
   }
 
-  const match =
-    findExplicitSchemaColumn({
-      schema,
-      question,
+  const aggregateMetricOperations =
+    new Set([
+      "sum",
+      "average",
+      "median",
+      "minimum",
+      "maximum",
+    ]);
 
-      preferredDataset:
-        plan.dataset || null,
-    });
+  let match = null;
 
-  if (!match) {
-    return plan;
+  if (
+    aggregateMetricOperations.has(
+      normalizedOperation
+    )
+  ) {
+    /**
+     * Aggregate operations must stay attached to an explicitly named numeric
+     * measure, not an entity/label field that also appears in the question.
+     * Example pattern: "total land area of the associations" names both a
+     * numeric measure and a text entity field. The measure must win.
+     *
+     * This is driven entirely by the current live schema. If no explicitly
+     * named numeric field can be verified, preserve the planner's current
+     * metric instead of replacing it with a text field.
+     */
+    const explicitColumns =
+      findExplicitSchemaColumns({
+        schema,
+        question,
+        preferredDataset:
+          plan.dataset || null,
+      });
+
+    match =
+      explicitColumns.find(
+        (candidate) => {
+          const datasetSchema =
+            (schema || []).find(
+              (entry) =>
+                String(entry?.name || "") ===
+                String(candidate?.dataset || plan.dataset || "")
+            );
+
+          const columnSchema =
+            (datasetSchema?.columns || []).find(
+              (column) =>
+                String(column?.name || "") ===
+                String(candidate?.column || "")
+            );
+
+          return Boolean(
+            columnSchema &&
+            isNumericLikeColumn({
+              column: columnSchema,
+              rows: [],
+            })
+          );
+        }
+      ) || null;
+
+    if (!match) {
+      return plan;
+    }
+  } else {
+    match =
+      findExplicitSchemaColumn({
+        schema,
+        question,
+
+        preferredDataset:
+          plan.dataset || null,
+      });
+
+    if (!match) {
+      return plan;
+    }
   }
 
   const resolved = {
@@ -4065,6 +4305,7 @@ module.exports = {
   normalizePlannerPlan,
   singularizeSchemaToken,
   normalizeSchemaPhraseMorphology,
+  findStrongMorphologicalQuestionColumn,
   findExplicitSchemaColumn,
   operationUsesMetricColumn,
   enforceExplicitQuestionColumn,

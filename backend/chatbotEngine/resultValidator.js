@@ -1,3 +1,6 @@
+const { parseNumber, normalizeText } = require("./utils");
+const { compare } = require("./filterEngine");
+
 /**
  * RESULT VALIDATOR
  * ----------------
@@ -343,12 +346,85 @@ function validateCollectionResult(
   return null;
 }
 
+
+function getPlanRows({ datasets, plan }) {
+  const rows = datasets?.[plan?.dataset];
+  if (!Array.isArray(rows)) return null;
+  const filters = Array.isArray(plan?.filters) ? plan.filters : [];
+  return rows.filter((row) => filters.every((filter) =>
+    compare(row?.[filter.column], filter.value, filter.operator || "equals")
+  ));
+}
+
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function nearlyEqual(a, b) {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+  const tolerance = Math.max(1e-9, Math.abs(b) * 1e-9);
+  return Math.abs(a - b) <= tolerance;
+}
+
+function validateAgainstLiveRows({ datasets, plan, result, operation }) {
+  if (!datasets || !plan?.dataset || result?.success === false) return null;
+  const rows = getPlanRows({ datasets, plan });
+  if (!rows) return null;
+
+  if (operation === "row_count" && typeof result.value === "number") {
+    if (result.value !== rows.length) {
+      return invalid("ROW_COUNT_SOURCE_MISMATCH", "The returned count does not match the filtered live rows.", { returned: result.value, expected: rows.length });
+    }
+  }
+
+  if (["sum", "average", "median", "minimum", "maximum"].includes(operation) && plan.column && typeof result.value === "number") {
+    const values = rows.map((row) => parseNumber(row?.[plan.column])).filter((value) => value !== null);
+    if (!values.length) return null;
+    const total = values.reduce((sum, value) => sum + value, 0);
+    const expected = operation === "sum" ? total
+      : operation === "average" ? total / values.length
+      : operation === "median" ? median(values)
+      : operation === "minimum" ? Math.min(...values)
+      : Math.max(...values);
+    if (!nearlyEqual(result.value, expected)) {
+      return invalid("NUMERIC_SOURCE_MISMATCH", `The returned ${operation} does not match the filtered live data.`, { returned: result.value, expected, column: plan.column, recordsUsed: values.length });
+    }
+  }
+
+  if (operation === "rank_rows" && Array.isArray(result.results) && plan.column) {
+    const direction = String(plan.direction || "desc").toLowerCase() === "asc" ? "asc" : "desc";
+    for (let i = 0; i < result.results.length; i += 1) {
+      const item = result.results[i];
+      const rowMetric = parseNumber(item?.row?.[plan.column]);
+      if (rowMetric === null || typeof item?.value !== "number" || !nearlyEqual(item.value, rowMetric)) {
+        return invalid("RANK_VALUE_SOURCE_MISMATCH", "A ranked value does not match its source row.", { index: i, column: plan.column, returned: item?.value, source: rowMetric });
+      }
+      if (i > 0) {
+        const prev = result.results[i - 1]?.value;
+        const curr = item?.value;
+        if (typeof prev === "number" && typeof curr === "number") {
+          const outOfOrder = direction === "asc" ? curr < prev : curr > prev;
+          if (outOfOrder) {
+            return invalid("RANK_ORDER_MISMATCH", "The ranked result order does not match the requested direction.", { direction, previous: prev, current: curr });
+          }
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
 /**
  * Main validator.
  */
 function validateResult({
   plan,
   result,
+  datasets = null,
 }) {
   const baseCheck =
     validateBaseResult(
@@ -418,6 +494,17 @@ function validateResult({
     if (lookupCheck) {
       return lookupCheck;
     }
+  }
+
+  const liveCheck = validateAgainstLiveRows({
+    datasets,
+    plan,
+    result,
+    operation,
+  });
+
+  if (liveCheck) {
+    return liveCheck;
   }
 
   if (

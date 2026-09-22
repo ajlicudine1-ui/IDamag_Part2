@@ -2,6 +2,7 @@ const {
   parseNumber,
   formatNumber,
   getColumns,
+  normalizeText,
 } = require("./utils");
 const {
   findDatasetName,
@@ -247,6 +248,27 @@ function findBestTargetForColumn({
  * Generic cross-worksheet lookup that MERGES requested fields
  * from multiple worksheets into one result object.
  */
+function dedupeProjectedLookupResults(results, selectedColumns = []) {
+  const seen = new Set();
+  const unique = [];
+
+  for (const item of Array.isArray(results) ? results : []) {
+    const columns = selectedColumns.length
+      ? selectedColumns
+      : Object.keys(item || {});
+
+    const key = columns
+      .map((column) => normalizeText(item?.[column]))
+      .join("\u001f");
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+  }
+
+  return unique;
+}
+
 function tryCrossDatasetLookup({
   datasets,
   plan,
@@ -424,6 +446,7 @@ function tryCrossDatasetLookup({
     if (!results.length) continue;
 
     const selectedColumns = resolvers.map((item) => item.column);
+    const distinctResults = dedupeProjectedLookupResults(results, selectedColumns);
 
     return {
       success: true,
@@ -441,12 +464,14 @@ function tryCrossDatasetLookup({
           outputColumn: item.column,
         })),
       filters: source.filters,
-      count: results.length,
-      results,
+      matchedRowCount: results.length,
+      count: distinctResults.length,
+      results: distinctResults,
+      duplicateLookupRowsRemoved: distinctResults.length !== results.length,
       answer: formatLookupAnswer({
-        results,
+        results: distinctResults,
         selectedColumns,
-        count: results.length,
+        count: distinctResults.length,
       }),
     };
   }
@@ -1766,11 +1791,11 @@ function executePlan({
       );
     }
 
-    const shown = plan.showAll
-      ? filteredRows
-      : filteredRows.slice(0, limit);
-
-    const projectedResults = shown.map((row) => {
+    // Project first, then deduplicate exact projected rows BEFORE applying the
+    // display limit. Denormalized worksheets often repeat the same entity once
+    // per intervention/event; a lookup asking which entities match should not
+    // print the same projected entity dozens of times.
+    const allProjectedResults = filteredRows.map((row) => {
       const projected = {};
 
       for (const selected of selectedColumns) {
@@ -1783,18 +1808,30 @@ function executePlan({
       return projected;
     });
 
+    const distinctProjectedResults = dedupeProjectedLookupResults(
+      allProjectedResults,
+      selectedColumns
+    );
+
+    const projectedResults = plan.showAll
+      ? distinctProjectedResults
+      : distinctProjectedResults.slice(0, limit);
+
     return {
       success: true,
       source: "dataset",
       dataset: datasetName,
       operation,
-      count: filteredRows.length,
+      matchedRowCount: filteredRows.length,
+      count: distinctProjectedResults.length,
       results: projectedResults,
       filters,
+      duplicateLookupRowsRemoved:
+        distinctProjectedResults.length !== allProjectedResults.length,
       answer: formatLookupAnswer({
         results: projectedResults,
         selectedColumns,
-        count: filteredRows.length,
+        count: distinctProjectedResults.length,
       }),
     };
   }
@@ -1982,6 +2019,34 @@ function executePlan({
         );
       }
 
+      const requestedDetailColumns =
+        (Array.isArray(plan.selectColumns)
+          ? plan.selectColumns
+          : [])
+          .filter((column) =>
+            column &&
+            column !== labelColumn &&
+            column !== metricColumn &&
+            Object.prototype.hasOwnProperty.call(filteredRows[0] || {}, column)
+          );
+
+      const rankedAnswerLines = ranked.map((item, index) => {
+        const details = requestedDetailColumns
+          .map((column) => {
+            const value = item.row?.[column];
+            if (value === null || value === undefined || String(value).trim() === "") {
+              return null;
+            }
+            return `${column}: ${String(value).trim()}`;
+          })
+          .filter(Boolean);
+
+        return (
+          `${index + 1}. ${item.label}: ${formatNumber(item.value)}` +
+          (details.length ? ` — ${details.join("; ")}` : "")
+        );
+      });
+
       return {
         success: true,
         source: "dataset",
@@ -1995,12 +2060,7 @@ function executePlan({
         answer:
           `${direction === "desc" ? "Top" : "Bottom"} ${ranked.length} ` +
           `${labelColumn} by ${metricColumn} in ${datasetName}${filterText}:\n` +
-          ranked
-            .map(
-              (item, index) =>
-                `${index + 1}. ${item.label}: ${formatNumber(item.value)}`
-            )
-            .join("\n"),
+          rankedAnswerLines.join("\n"),
       };
     }
 

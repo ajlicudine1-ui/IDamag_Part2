@@ -872,6 +872,37 @@ function resolveDirectFilteredAggregatePlan({
 }
 
 
+
+function normalizeDirectRequestedFieldPhrase(
+  rawPhrase
+) {
+  let phrase =
+    String(
+      rawPhrase || ""
+    )
+      .trim();
+
+  if (!phrase) {
+    return "";
+  }
+
+  phrase =
+    phrase.replace(
+      /^(?:the\s+)?(?:distinct|unique|different)\s+/i,
+      ""
+    );
+
+  phrase =
+    phrase.replace(
+      /\s+(?:(?:is|are|was|were|has|have|had|do|does|did)\s+)?(?:produced|produce|produces|provided|provide|provides|received|receive|receives|distributed|distribute|distributes|grown|grow|grows|raised|raise|raises|registered|register|registers|located|locate|locates|submitted|submit|submits|released|release|releases|delivered|deliver|delivers|allocated|allocate|allocates|assigned|assign|assigns|served|serve|serves|covered|cover|covers|affected|affect|affects|face|faces|faced|belong|belongs|belonged)\b.*$/i,
+      ""
+    )
+    .trim();
+
+  return phrase;
+}
+
+
 function resolveDirectFilteredFieldPlan({
   question,
   schema,
@@ -955,12 +986,14 @@ function resolveDirectFilteredFieldPlan({
       .trim();
 
   const requestedPhrase =
-    rawRequestedPhrase
-      .replace(
-        /\s+(?:appear|appears|appeared|represented|present|available|exist|exists|occur|occurs|found|listed|shown)\s*$/i,
-        ""
-      )
-      .trim();
+    normalizeDirectRequestedFieldPhrase(
+      rawRequestedPhrase
+        .replace(
+          /\s+(?:appear|appears|appeared|represented|present|available|exist|exists|occur|occurs|found|listed|shown)\s*$/i,
+          ""
+        )
+        .trim()
+    );
 
   const identifierText =
     match[2]
@@ -1244,5 +1277,6 @@ module.exports = {
   inferApproximateEntityFilterFromText,
   resolveDirectFilteredAggregatePlan,
   resolveDirectFilteredFieldPlan,
+  normalizeDirectRequestedFieldPhrase,
   normalizedEditSimilarity,
 };
