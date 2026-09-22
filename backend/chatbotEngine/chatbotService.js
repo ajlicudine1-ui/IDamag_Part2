@@ -109,6 +109,7 @@ const {
 
 const {
   buildSemanticVerifiedAnswer,
+  buildNaturalListNarrative,
 } = require("./responseNarrativeEngine");
 
 const {
@@ -10224,41 +10225,6 @@ async function answerQuestion(
       let finalAnswer =
         result.answer;
 
-      /**
-       * Grounded list projection answer.
-       *
-       * When a list filters one field but returns another, the projected
-       * field is the semantic subject of the response. Build that wording
-       * directly from the verified plan/result before any legacy row-aware
-       * rendering can relabel the filter field as the answer subject.
-       *
-       * This is schema-driven and applies to every dataset.
-       */
-      const semanticGroqListAnswer =
-        String(
-          groqPlan.operation ||
-          ""
-        )
-          .trim()
-          .toLowerCase() ===
-          "list" &&
-        groqPlan?.listProjectionGrounded === true
-          ? buildSemanticVerifiedAnswer({
-              question:
-                cleanQuestion,
-              plan:
-                groqPlan,
-              result,
-            })
-          : null;
-
-      if (
-        semanticGroqListAnswer
-      ) {
-        finalAnswer =
-          semanticGroqListAnswer;
-      }
-
       let oneToManyResolved =
         undefined;
 
@@ -10281,7 +10247,6 @@ async function answerQuestion(
        * hardcoded here.
        */
       if (
-        !semanticGroqListAnswer &&
         String(
           groqPlan.operation ||
           ""
@@ -10332,6 +10297,25 @@ async function answerQuestion(
             oneToManyResolved =
               matchingRows.length > 1;
           }
+        }
+      }
+
+      // Final response-only guard for grounded list projections.
+      // The query plan/results are already verified; this only ensures the
+      // returned sentence names the projected/output field as the subject
+      // instead of accidentally naming the filter field.
+      if (
+        String(groqPlan.operation || "").trim().toLowerCase() === "list" &&
+        groqPlan?.listProjectionGrounded === true
+      ) {
+        const groundedListAnswer = buildNaturalListNarrative({
+          question: cleanQuestion,
+          plan: groqPlan,
+          result,
+        });
+
+        if (groundedListAnswer) {
+          finalAnswer = groundedListAnswer;
         }
       }
 
@@ -10747,6 +10731,23 @@ async function answerQuestion(
           oneToManyResolved =
             matchingRows.length > 1;
         }
+      }
+    }
+
+    // Apply the same response-only projection grounding to the local
+    // fallback path so Groq availability cannot change list wording.
+    if (
+      String(localPlan.operation || "").trim().toLowerCase() === "list" &&
+      localPlan?.listProjectionGrounded === true
+    ) {
+      const groundedListAnswer = buildNaturalListNarrative({
+        question: cleanQuestion,
+        plan: localPlan,
+        result,
+      });
+
+      if (groundedListAnswer) {
+        finalAnswer = groundedListAnswer;
       }
     }
 
