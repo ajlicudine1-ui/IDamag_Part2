@@ -42,6 +42,7 @@ const {
 
 const {
   validateQueryPlan,
+  validateResolvedFilterValues,
 } = require("./queryValidator");
 
 const {
@@ -5097,6 +5098,7 @@ async function answerQuestion(
             schema,
             plan:
               childPlan,
+            question: cleanQuestion,
           });
 
         if (
@@ -5149,6 +5151,7 @@ async function answerQuestion(
               childPlan,
             result:
               rawResult,
+            datasets,
           });
 
         if (
@@ -5589,6 +5592,7 @@ async function answerQuestion(
           datasets,
           schema,
           plan,
+          question: cleanQuestion,
         });
 
       if (
@@ -5614,6 +5618,21 @@ async function answerQuestion(
 
       plan =
         entityResolution.plan;
+
+      // Problem #2 safeguard: after fuzzy/entity resolution, every
+      // categorical filter must still be supported by the selected live
+      // worksheet/field. A typo or cross-field fuzzy match must not silently
+      // execute as a confident answer.
+      const groundedValueValidation = validateResolvedFilterValues({
+        datasets,
+        plan,
+      });
+
+      if (!groundedValueValidation.valid) {
+        throw new Error(groundedValueValidation.message);
+      }
+
+      plan = groundedValueValidation.plan;
 
       if (
         process.env.NODE_ENV !==
@@ -5732,6 +5751,7 @@ async function answerQuestion(
         validateResult({
           plan,
           result,
+          datasets,
         });
 
       if (

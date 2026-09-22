@@ -1,7 +1,10 @@
 const {
   findDatasetName,
   findColumn,
+  questionExplicitlyNamesColumn,
 } = require("./columnMatcher");
+
+const { compare } = require("./filterEngine");
 
 function makeError(code, message, details = {}) {
   return {
@@ -261,6 +264,7 @@ function validateRelationship(datasets, relationship) {
 function validateDatasetPlan({
   datasets,
   plan,
+  question = "",
 }) {
   const operationCheck =
     validateDatasetOperation(plan);
@@ -374,6 +378,43 @@ function validateDatasetPlan({
     }
   }
 
+
+  // Problem #2 safeguard: if the user explicitly names exactly one LIVE
+  // numeric field and the operation consumes a numeric metric, that field
+  // wins over a fuzzy planner choice. This uses only the current worksheet
+  // schema and therefore works for Groq and local plans alike.
+  const metricOperations = new Set([
+    "sum", "average", "median", "minimum", "maximum",
+    "group_sum", "group_average", "group_minimum",
+    "group_maximum", "rank_rows", "rank_groups",
+  ]);
+
+  if (question && metricOperations.has(operation)) {
+    const isStrictNumericColumn = (column) => {
+      const values = rows
+        .map((row) => row?.[column])
+        .filter((value) => value !== null && value !== undefined && String(value).trim() !== "")
+        .slice(0, 100);
+      if (!values.length) return false;
+      const numeric = values.filter((value) => {
+        const text = String(value).trim().replace(/[₱$€£,%]/g, "").replace(/,/g, "").trim();
+        return /^[-+]?\d+(?:\.\d+)?$/.test(text);
+      }).length;
+      return numeric / values.length >= 0.7;
+    };
+
+    const explicitNumericColumns = Object.keys(rows[0] || {}).filter(
+      (column) =>
+        isStrictNumericColumn(column) &&
+        questionExplicitlyNamesColumn(question, column)
+    );
+
+    if (explicitNumericColumns.length === 1) {
+      normalizedPlan.column = explicitNumericColumns[0];
+      normalizedPlan.liveSchemaMetricGrounded = true;
+    }
+  }
+
   if (operation === "lookup") {
     const requested =
       Array.isArray(
@@ -482,10 +523,45 @@ function validateDatasetPlan({
   };
 }
 
+function validateResolvedFilterValues({ datasets, plan }) {
+  if (!plan || plan.route !== "dataset") return { valid: true, plan };
+  const rows = datasets?.[plan.dataset];
+  if (!Array.isArray(rows) || !rows.length) {
+    return makeError("EMPTY_DATASET", "The selected worksheet has no usable rows.");
+  }
+
+  const filters = Array.isArray(plan.filters) ? plan.filters : [];
+  for (const filter of filters) {
+    const operator = String(filter?.operator || "equals").trim().toLowerCase();
+    if (["empty", "not_empty", "greater_than", "greater_or_equal", "less_than", "less_or_equal"].includes(operator)) continue;
+
+    const values = ["in", "not_in"].includes(operator)
+      ? (Array.isArray(filter.value) ? filter.value : [filter.value])
+      : [filter.value];
+
+    // Positive categorical filters must be supported by at least one live
+    // value in the selected field. Negative filters still require the
+    // excluded value to exist so a typo cannot silently become "everything".
+    for (const value of values) {
+      const exists = rows.some((row) => compare(row?.[filter.column], value, "equals"));
+      if (!exists) {
+        return makeError(
+          "FILTER_VALUE_NOT_GROUNDED",
+          `Filter value "${String(value)}" was not found in live field "${filter.column}".`,
+          { column: filter.column, value }
+        );
+      }
+    }
+  }
+
+  return { valid: true, plan };
+}
+
 function validateQueryPlan({
   datasets,
   schema,
   plan,
+  question = "",
 }) {
   if (
     !plan ||
@@ -511,6 +587,7 @@ function validateQueryPlan({
       datasets,
       schema,
       plan,
+      question,
     });
   }
 
@@ -522,4 +599,5 @@ function validateQueryPlan({
 
 module.exports = {
   validateQueryPlan,
+  validateResolvedFilterValues,
 };

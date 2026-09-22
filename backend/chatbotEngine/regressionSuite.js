@@ -5815,3 +5815,82 @@ test('aggregate formatter avoids total Total and average Average wording', () =>
     'the average price is 25.'
   );
 });
+
+test('problem2 exact preferred live value outranks fuzzy cross-field candidates', () => {
+  const { resolveEntityAcrossDatasets } = require('./entityResolver');
+  const datasets = {
+    Main: [
+      { Province: 'La Union', Category: 'Union', Name: 'Alpha' },
+      { Province: 'Pangasinan', Category: 'La Union-like', Name: 'Beta' },
+    ],
+  };
+  const result = resolveEntityAcrossDatasets({
+    datasets,
+    requestedValue: 'La Union',
+    preferredDataset: 'Main',
+    preferredColumn: 'Province',
+  });
+  assert.equal(result.resolved, true);
+  assert.equal(result.column, 'Province');
+  assert.equal(result.resolvedValue, 'La Union');
+  assert.equal(result.exactLiveValueMatch, true);
+});
+
+test('problem2 live schema metric grounding corrects a conflicting numeric metric choice', () => {
+  const { validateQueryPlan } = require('./queryValidator');
+  const datasets = {
+    Main: [
+      { Project: 'A1', Cost: '100', Beneficiaries: '4' },
+      { Project: 'A2', Cost: '200', Beneficiaries: '8' },
+    ],
+  };
+  const schema = buildSchema(datasets);
+  const validation = validateQueryPlan({
+    datasets,
+    schema,
+    question: 'What is the average cost?',
+    plan: {
+      route: 'dataset', dataset: 'Main', operation: 'average', column: 'Beneficiaries', filters: [],
+    },
+  });
+  assert.equal(validation.valid, true);
+  assert.equal(validation.plan.column, 'Cost');
+  assert.equal(validation.plan.liveSchemaMetricGrounded, true);
+});
+
+test('problem2 unresolved categorical filter values are rejected before execution', () => {
+  const { validateResolvedFilterValues } = require('./queryValidator');
+  const datasets = { Main: [{ Province: 'La Union' }, { Province: 'Pangasinan' }] };
+  const validation = validateResolvedFilterValues({
+    datasets,
+    plan: {
+      route: 'dataset', dataset: 'Main', operation: 'row_count',
+      filters: [{ column: 'Province', operator: 'equals', value: 'Imaginary Province' }],
+    },
+  });
+  assert.equal(validation.valid, false);
+  assert.equal(validation.code, 'FILTER_VALUE_NOT_GROUNDED');
+});
+
+test('problem2 result validation rejects a numeric answer inconsistent with filtered live rows', () => {
+  const { validateResult } = require('./resultValidator');
+  const datasets = {
+    Main: [
+      { Region: 'North', Amount: '10' },
+      { Region: 'North', Amount: '20' },
+      { Region: 'South', Amount: '500' },
+    ],
+  };
+  const validation = validateResult({
+    datasets,
+    plan: {
+      route: 'dataset', dataset: 'Main', operation: 'sum', column: 'Amount',
+      filters: [{ column: 'Region', operator: 'equals', value: 'North' }],
+    },
+    result: {
+      success: true, operation: 'sum', value: 530, answer: 'The total is 530.',
+    },
+  });
+  assert.equal(validation.valid, false);
+  assert.equal(validation.code, 'NUMERIC_SOURCE_MISMATCH');
+});

@@ -737,6 +737,44 @@ function resolveEntityAcrossDatasets({
   preferredDataset = null,
   preferredColumn = null,
 }) {
+  // Problem #2 safeguard: exact live values in the planner-selected
+  // worksheet/field always outrank fuzzy cross-dataset candidates.
+  // This is schema/data-driven and prevents a similarly spelled value in
+  // another field from stealing an otherwise exact user match.
+  const preferredRows = preferredDataset ? datasets?.[preferredDataset] : null;
+  if (Array.isArray(preferredRows) && preferredRows.length && preferredColumn) {
+    const actualPreferredColumn = getColumns(preferredRows).find(
+      (column) => normalizeText(column) === normalizeText(preferredColumn)
+    );
+
+    if (actualPreferredColumn) {
+      const requestedKey = normalizeLooseToken(requestedValue);
+      const rawValues = getColumnValues(preferredRows, actualPreferredColumn);
+      const exactValues = looksLikeMultiValueColumn({ rows: preferredRows, column: actualPreferredColumn })
+        ? rawValues.flatMap((value) => splitMultiValueCell(value))
+        : rawValues;
+
+      const exact = exactValues.find(
+        (value) => normalizeLooseToken(value) === requestedKey
+      );
+
+      if (exact !== undefined) {
+        return {
+          resolved: true,
+          ambiguous: false,
+          dataset: preferredDataset,
+          column: actualPreferredColumn,
+          requestedValue,
+          resolvedValue: exact,
+          rawScore: 6,
+          score: 6,
+          exactLiveValueMatch: true,
+          candidates: [],
+        };
+      }
+    }
+  }
+
   const candidates =
     findEntityCandidates({
       datasets,
