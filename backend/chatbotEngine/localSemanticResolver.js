@@ -15,6 +15,7 @@ const {
 
 const {
   resolveLocalQuantityAggregationPlan,
+  resolveLocalMathematicalPlan,
 } = require("./localAggregationResolver");
 
 const STOP_WORDS = new Set([
@@ -237,8 +238,8 @@ function resolveStrongLocalSemanticPlan({
   datasets = {},
   context = null,
 } = {}) {
-  if (!isLikelyDataQuestion(question)) return null;
-
+  // Preserve the specialized quantity/unit resolver first (for questions such
+  // as "how many kilograms of fertilizer were distributed?").
   const aggregationPlan =
     resolveLocalQuantityAggregationPlan({
       question,
@@ -259,6 +260,19 @@ function resolveStrongLocalSemanticPlan({
   ) {
     return aggregationPlan;
   }
+
+  const mathematicalPlan =
+    resolveLocalMathematicalPlan({
+      question,
+      schema,
+      datasets,
+    });
+
+  if (mathematicalPlan) {
+    return mathematicalPlan;
+  }
+
+  if (!isLikelyDataQuestion(question)) return null;
 
   const relationPlan =
     resolveLocalRelationPlan({
