@@ -1697,6 +1697,68 @@ function executePlan({
       };
     }
 
+    // Preserve distinct entity records when repeated names represent separate
+    // records (for example, the same project name with different IDs).
+    if (
+      operation === "list" &&
+      plan.preserveEntityRecords === true &&
+      Array.isArray(plan.selectColumns) &&
+      plan.selectColumns.length > 1
+    ) {
+      const selectedColumns = plan.selectColumns
+        .map((name) => findColumn(rows, name))
+        .filter(Boolean);
+
+      const projected = filteredRows.map((row) => {
+        const out = {};
+        for (const selected of selectedColumns) {
+          out[selected] = row?.[selected];
+        }
+        return out;
+      });
+
+      const idColumn = selectedColumns.find((column) =>
+        /(^|\s)(id|identifier|code)(\s|$)/i.test(String(column))
+      );
+      const seen = new Set();
+      const records = [];
+      for (const row of projected) {
+        const key = idColumn
+          ? String(row?.[idColumn] ?? '').trim().toLowerCase()
+          : selectedColumns.map((column) => String(row?.[column] ?? '').trim().toLowerCase()).join('||');
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        records.push(row);
+      }
+
+      const shown = plan.showAll === true ? records : records.slice(0, getLimit(plan));
+      const lines = shown.map((row, index) => {
+        const parts = selectedColumns
+          .map((column) => `${column}: ${String(row?.[column] ?? '').trim() || '—'}`)
+          .join(' | ');
+        return `${index + 1}. ${parts}`;
+      });
+
+      return {
+        success: true,
+        source: "dataset",
+        dataset: datasetName,
+        operation,
+        column: selectedColumn,
+        labelColumn: selectedColumn,
+        matchedRowCount: filteredRows.length,
+        count: records.length,
+        results: shown,
+        filters,
+        preserveEntityRecords: true,
+        entityRecordColumns: selectedColumns,
+        listProjectionGrounded: true,
+        answer:
+          `I found ${formatNumber(records.length)} matching record(s):\n` +
+          lines.join('\n'),
+      };
+    }
+
     // --------------------------------------------------------
     // LIST BEHAVIOR
     // --------------------------------------------------------

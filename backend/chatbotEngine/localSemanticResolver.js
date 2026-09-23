@@ -7,6 +7,7 @@ const {
 
 const {
   inferValueFilters,
+  applyFilters,
 } = require("./filterEngine");
 
 const {
@@ -427,6 +428,63 @@ function identityColumnFallbackScore(rows, column, question, filterColumns = new
   );
 }
 
+
+function findRecordIdentityColumns(rows, entityColumn, filters = []) {
+  if (!Array.isArray(rows) || !rows.length) return [];
+
+  const scopedRows = applyFilters(rows, filters || []);
+  const sourceRows = scopedRows.length ? scopedRows : rows;
+  const columns = Object.keys(rows[0] || {});
+  const normalizedEntity = normalizeText(entityColumn);
+  const filterColumns = new Set((filters || []).map((f) => normalizeText(f?.column)).filter(Boolean));
+
+  const idCandidates = columns
+    .filter((column) => normalizeText(column) !== normalizedEntity)
+    .map((column) => {
+      const normalized = normalizeText(column);
+      const idLike = /(^|\s)(id|identifier|code)(\s|$)/.test(normalized) || /(^|\s)(no|number)(\s|$)/.test(normalized);
+      if (!idLike) return null;
+      const values = sourceRows.map((row) => String(row?.[column] ?? '').trim()).filter(Boolean);
+      if (!values.length) return null;
+      const distinct = new Set(values.map((v) => v.toLowerCase())).size;
+      const uniqueness = distinct / values.length;
+      return { column, score: uniqueness + (normalized.includes('id') ? 0.25 : 0) };
+    })
+    .filter(Boolean)
+    .sort((a,b) => b.score - a.score);
+
+  const locationPriority = [
+    'municipality','city','barangay','location','district','province','region','office'
+  ];
+  let locationColumn = null;
+  for (const key of locationPriority) {
+    locationColumn = columns.find((column) => {
+      const normalized = normalizeText(column);
+      return normalized !== normalizedEntity && !filterColumns.has(normalized) && normalized.includes(key);
+    });
+    if (locationColumn) break;
+  }
+
+  const result = [];
+  if (idCandidates[0] && idCandidates[0].score >= 0.90) result.push(idCandidates[0].column);
+  result.push(entityColumn);
+  if (locationColumn && !result.includes(locationColumn)) result.push(locationColumn);
+  return result;
+}
+
+function hasDuplicateEntityValues(rows, entityColumn, filters = []) {
+  const scopedRows = applyFilters(rows, filters || []);
+  const sourceRows = scopedRows.length ? scopedRows : rows;
+  const seen = new Set();
+  for (const row of sourceRows) {
+    const value = String(row?.[entityColumn] ?? '').trim().toLowerCase();
+    if (!value) continue;
+    if (seen.has(value)) return true;
+    seen.add(value);
+  }
+  return false;
+}
+
 function resolveLocalEntityListPlan({ question, schema = [], datasets = {} } = {}) {
   if (!isEntityListQuestion(question)) return null;
 
@@ -504,6 +562,19 @@ function resolveLocalEntityListPlan({ question, schema = [], datasets = {} } = {
 
   if (best.columnScore < 0.42 && best.score < 0.52) return null;
 
+  const bestRows = datasets?.[best.dataset] || [];
+  const candidateRecordColumns =
+    findRecordIdentityColumns(bestRows, best.column, best.filters);
+  const hasStrongRecordId =
+    candidateRecordColumns.length > 1 &&
+    normalizeText(candidateRecordColumns[0]) !== normalizeText(best.column) &&
+    /(^|\s)(id|identifier|code)(\s|$)/.test(normalizeText(candidateRecordColumns[0]));
+  const preserveEntityRecords =
+    hasStrongRecordId || hasDuplicateEntityValues(bestRows, best.column, best.filters);
+  const entityRecordColumns = preserveEntityRecords
+    ? candidateRecordColumns
+    : [best.column];
+
   return {
     route: "dataset",
     dataset: best.dataset,
@@ -514,11 +585,14 @@ function resolveLocalEntityListPlan({ question, schema = [], datasets = {} } = {
     aggregation: null,
     direction: null,
     filters: copyFilters(best.filters),
-    selectColumns: [best.column],
+    selectColumns: entityRecordColumns,
     outputRequested: true,
     transform: null,
     showAll: true,
     limit: 100,
+    preserveEntityRecords,
+    entityRecordColumns,
+    listProjectionGrounded: true,
     localEntityListResolved: true,
     localSemanticConfidence: Math.max(0, Math.min(1, best.score)),
     localEntityListEvidence: {
