@@ -86,6 +86,9 @@ function StaffDashboard() {
   const [worksheetError, setWorksheetError] =
     useState("");
 
+  const [editingWorksheet, setEditingWorksheet] =
+    useState(null);
+
   const [worksheetForm, setWorksheetForm] = useState({
     reportId: "",
     sheetUrl: "",
@@ -558,6 +561,7 @@ function StaffDashboard() {
   // =========================================================
 
   const openWorksheetModal = () => {
+    setEditingWorksheet(null);
     setWorksheetError("");
 
     setWorksheetForm({
@@ -571,16 +575,41 @@ function StaffDashboard() {
       ],
     });
 
-    setIsWorksheetModalOpen(
-      true
+    setIsWorksheetModalOpen(true);
+  };
+
+  const openEditWorksheetModal = (worksheet) => {
+    const dashboardId = getWorksheetDashboardId(worksheet);
+    const report = reports.find(
+      (item) => String(item.id) === String(dashboardId)
     );
+
+    setEditingWorksheet(worksheet);
+    setWorksheetError("");
+
+    setWorksheetForm({
+      reportId: String(dashboardId ?? ""),
+      sheetUrl:
+        worksheet.sheetUrl ||
+        worksheet.sheet_url ||
+        report?.sheetUrl ||
+        report?.sheet_url ||
+        "",
+      worksheets: [
+        {
+          worksheetName:
+            worksheet.worksheetName || worksheet.name || "",
+          gid: String(worksheet.gid ?? ""),
+        },
+      ],
+    });
+
+    setIsWorksheetModalOpen(true);
   };
 
   const closeWorksheetModal = () => {
-    setIsWorksheetModalOpen(
-      false
-    );
-
+    setIsWorksheetModalOpen(false);
+    setEditingWorksheet(null);
     setWorksheetError("");
 
     setWorksheetForm({
@@ -744,68 +773,51 @@ function StaffDashboard() {
       try {
         setWorksheetSaving(true);
 
-        /*
-         * Save each worksheet as its own row.
-         *
-         * This does NOT require changing your
-         * database structure.
-         */
-        for (
-          const worksheet of
-          worksheetForm.worksheets
-        ) {
-          const response =
-            await fetch(
-              WORKSHEET_API_URL,
-              {
-                method: "POST",
+        if (editingWorksheet) {
+          const worksheet = worksheetForm.worksheets[0];
+          const worksheetId = editingWorksheet.worksheetId || editingWorksheet.id;
 
-                headers: {
-                  "Content-Type":
-                    "application/json",
-                },
-
-                body: JSON.stringify({
-                  /*
-                   * Selected Power BI report.
-                   *
-                   * report.id = normal database
-                   * report row ID.
-                   */
-                  dashboardId:
-                    Number(
-                      worksheetForm.reportId
-                    ),
-
-                  /*
-                   * Published Google Sheet.
-                   */
-                  sheetUrl:
-                    worksheetForm.sheetUrl.trim(),
-
-                  /*
-                   * Existing worksheet table
-                   * fields.
-                   */
-                  worksheetName:
-                    worksheet.worksheetName.trim(),
-
-                  gid:
-                    String(
-                      worksheet.gid
-                    ).trim(),
-                }),
-              }
-            );
+          const response = await fetch(
+            `${WORKSHEET_API_URL}/${worksheetId}`,
+            {
+              method: "PUT",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                dashboardId: Number(worksheetForm.reportId),
+                sheetUrl: worksheetForm.sheetUrl.trim(),
+                worksheetName: worksheet.worksheetName.trim(),
+                gid: String(worksheet.gid).trim(),
+              }),
+            }
+          );
 
           if (!response.ok) {
-            const text =
-              await response.text();
+            const text = await response.text();
+            throw new Error(text || "Unable to update worksheet.");
+          }
+        } else {
+          for (const worksheet of worksheetForm.worksheets) {
+            const response = await fetch(WORKSHEET_API_URL, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                dashboardId: Number(worksheetForm.reportId),
+                sheetUrl: worksheetForm.sheetUrl.trim(),
+                worksheetName: worksheet.worksheetName.trim(),
+                gid: String(worksheet.gid).trim(),
+              }),
+            });
 
-            throw new Error(
-              text ||
-                `Unable to save ${worksheet.worksheetName}.`
-            );
+            if (!response.ok) {
+              const text = await response.text();
+              throw new Error(
+                text || `Unable to save ${worksheet.worksheetName}.`
+              );
+            }
           }
         }
 
@@ -816,7 +828,9 @@ function StaffDashboard() {
         }
 
         alert(
-          "Worksheets saved successfully."
+          editingWorksheet
+            ? "Worksheet updated successfully."
+            : "Worksheets saved successfully."
         );
       } catch (error) {
         console.error(
@@ -832,6 +846,52 @@ function StaffDashboard() {
         setWorksheetSaving(false);
       }
     };
+
+  // =========================================================
+  // DELETE WORKSHEET
+  // =========================================================
+
+  const handleDeleteWorksheet = (worksheet) => {
+    const worksheetId = worksheet.worksheetId || worksheet.id;
+    const worksheetName =
+      worksheet.worksheetName || worksheet.name || "this worksheet";
+
+    setConfirmConfig({
+      title: "Delete Worksheet?",
+      message: `Are you sure you want to permanently delete ${worksheetName}?`,
+      action: () => executeDeleteWorksheet(worksheetId),
+    });
+
+    setShowConfirmModal(true);
+  };
+
+  const executeDeleteWorksheet = async (worksheetId) => {
+    try {
+      const response = await fetch(
+        `${WORKSHEET_API_URL}/${worksheetId}`,
+        { method: "DELETE" }
+      );
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || "Unable to delete worksheet.");
+      }
+
+      setWorksheets((current) =>
+        current.filter(
+          (worksheet) =>
+            String(worksheet.worksheetId || worksheet.id) !==
+            String(worksheetId)
+        )
+      );
+
+      setShowConfirmModal(false);
+    } catch (error) {
+      console.error("Worksheet delete error:", error);
+      alert(error.message || "Unable to delete worksheet.");
+      setShowConfirmModal(false);
+    }
+  };
 
   // =========================================================
   // LOADING
@@ -1291,6 +1351,9 @@ function StaffDashboard() {
                     <th className="px-6 py-4 text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">
                       Updated
                     </th>
+                    <th className="px-6 py-4 text-right text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                      Actions
+                    </th>
                   </tr>
                 </thead>
 
@@ -1299,7 +1362,7 @@ function StaffDashboard() {
                   {worksheetsLoading ? (
                     <tr>
                       <td
-                        colSpan="5"
+                        colSpan="6"
                         className="px-8 py-12 text-center font-medium text-slate-400"
                       >
                         Loading worksheets...
@@ -1308,7 +1371,7 @@ function StaffDashboard() {
                   ) : visibleWorksheets.length === 0 ? (
                     <tr>
                       <td
-                        colSpan="5"
+                        colSpan="6"
                         className="px-8 py-12 text-center font-medium text-slate-400"
                       >
                         No worksheets found for the selected reports.
@@ -1359,6 +1422,28 @@ function StaffDashboard() {
                                 worksheet.updated_at
                             )}
                           </span>
+                        </td>
+
+                        <td className="px-6 py-4 text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => openEditWorksheetModal(worksheet)}
+                              className="rounded-xl p-2 text-slate-300 transition-all hover:bg-moss-50 hover:text-moss-600"
+                              title="Edit worksheet"
+                            >
+                              <Edit3 size={16} />
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteWorksheet(worksheet)}
+                              className="rounded-xl p-2 text-slate-200 transition-all hover:bg-red-50 hover:text-red-500"
+                              title="Delete worksheet"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))
@@ -1629,14 +1714,15 @@ function StaffDashboard() {
 
                     <h3 className="text-xl font-black tracking-tight text-slate-900">
 
-                      Add Worksheets
+                      {editingWorksheet ? "Edit Worksheet" : "Add Worksheets"}
 
                     </h3>
 
                     <p className="mt-1 text-xs font-medium text-slate-400">
 
-                      Connect Google Sheet pages
-                      to a Power BI report.
+                      {editingWorksheet
+                        ? "Update the selected worksheet details."
+                        : "Connect Google Sheet pages to a Power BI report."}
 
                     </p>
 
@@ -1786,8 +1872,9 @@ function StaffDashboard() {
 
                         <p className="mt-1 text-[11px] font-medium text-slate-400">
 
-                          Add every worksheet used by
-                          this dashboard.
+                          {editingWorksheet
+                            ? "Edit this worksheet's name and GID."
+                            : "Add every worksheet used by this dashboard."}
 
                         </p>
 
@@ -1795,18 +1882,16 @@ function StaffDashboard() {
 
                       {/* PLUS BUTTON */}
 
-                      <button
-                        type="button"
-                        onClick={
-                          addWorksheetRow
-                        }
-                        className="flex h-10 w-10 items-center justify-center rounded-xl bg-moss-600 text-white shadow-md shadow-moss-600/20 transition hover:bg-moss-700 active:scale-95"
-                        title="Add another worksheet"
-                      >
-
-                        <Plus size={20} />
-
-                      </button>
+                      {!editingWorksheet && (
+                        <button
+                          type="button"
+                          onClick={addWorksheetRow}
+                          className="flex h-10 w-10 items-center justify-center rounded-xl bg-moss-600 text-white shadow-md shadow-moss-600/20 transition hover:bg-moss-700 active:scale-95"
+                          title="Add another worksheet"
+                        >
+                          <Plus size={20} />
+                        </button>
+                      )}
 
                     </div>
 
@@ -1834,10 +1919,8 @@ function StaffDashboard() {
 
                               </p>
 
-                              {worksheetForm
-                                .worksheets
-                                .length >
-                                1 && (
+                              {!editingWorksheet &&
+                                worksheetForm.worksheets.length > 1 && (
                                 <button
                                   type="button"
                                   onClick={() =>
@@ -2003,7 +2086,9 @@ function StaffDashboard() {
 
                     {worksheetSaving
                       ? "Saving..."
-                      : "Save Worksheets"}
+                      : editingWorksheet
+                        ? "Update Worksheet"
+                        : "Save Worksheets"}
 
                   </button>
 
