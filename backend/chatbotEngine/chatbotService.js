@@ -3907,6 +3907,56 @@ function isSelfContainedAnalyticalQuestion({
 }
 
 
+function enforceFreshAnalyticalScopeBoundary({
+  originalPlan,
+  contextualPlan,
+  schema,
+  question,
+}) {
+  if (!contextualPlan || typeof contextualPlan !== "object") {
+    return contextualPlan;
+  }
+
+  if (
+    !isSelfContainedAnalyticalQuestion({ schema, question }) ||
+    looksLikeContinuousFollowUp(question) ||
+    hasReferentialScopeLanguage(question)
+  ) {
+    return contextualPlan;
+  }
+
+  const basePlan =
+    originalPlan && typeof originalPlan === "object"
+      ? originalPlan
+      : {};
+
+  const freshFilters = Array.isArray(basePlan.filters)
+    ? basePlan.filters.map((filter) => ({
+        ...filter,
+        value: Array.isArray(filter?.value)
+          ? [...filter.value]
+          : filter?.value,
+      }))
+    : [];
+
+  const repaired = {
+    ...contextualPlan,
+    filters: freshFilters,
+  };
+
+  // A standalone analytical question may still legitimately resolve to the
+  // same worksheet as the previous turn. Keep the planner's current worksheet
+  // when it supplied one, but do not let conversation memory manufacture one.
+  if (basePlan.dataset) {
+    repaired.dataset = basePlan.dataset;
+  }
+
+  repaired.freshAnalyticalScopeReset = true;
+
+  return repaired;
+}
+
+
 function findFollowUpMetricColumn({
   schema,
   question,
@@ -10120,6 +10170,18 @@ async function answerQuestion(
         question: cleanQuestion,
       });
 
+    const groqPlanBeforeConversationContext = {
+      ...groqPlan,
+      filters: Array.isArray(groqPlan?.filters)
+        ? groqPlan.filters.map((filter) => ({
+            ...filter,
+            value: Array.isArray(filter?.value)
+              ? [...filter.value]
+              : filter?.value,
+          }))
+        : [],
+    };
+
     groqPlan =
       applyConversationContext(
         groqPlan,
@@ -10131,6 +10193,17 @@ async function answerQuestion(
             cleanQuestion,
         }
       );
+
+    groqPlan =
+      enforceFreshAnalyticalScopeBoundary({
+        originalPlan:
+          groqPlanBeforeConversationContext,
+        contextualPlan:
+          groqPlan,
+        schema,
+        question:
+          cleanQuestion,
+      });
 
     groqPlan =
       repairConversationalListPlan({
@@ -10371,6 +10444,18 @@ async function answerQuestion(
         question: cleanQuestion,
       });
 
+    const localPlanBeforeConversationContext = {
+      ...localPlan,
+      filters: Array.isArray(localPlan?.filters)
+        ? localPlan.filters.map((filter) => ({
+            ...filter,
+            value: Array.isArray(filter?.value)
+              ? [...filter.value]
+              : filter?.value,
+          }))
+        : [],
+    };
+
     localPlan =
       applyConversationContext(
         localPlan,
@@ -10382,6 +10467,17 @@ async function answerQuestion(
             cleanQuestion,
         }
       );
+
+    localPlan =
+      enforceFreshAnalyticalScopeBoundary({
+        originalPlan:
+          localPlanBeforeConversationContext,
+        contextualPlan:
+          localPlan,
+        schema,
+        question:
+          cleanQuestion,
+      });
 
     localPlan =
       repairConversationalListPlan({
