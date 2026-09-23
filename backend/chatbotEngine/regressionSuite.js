@@ -6273,3 +6273,53 @@ test('problem3 local absence planner resolves a fresh no-value question from liv
   assert.equal(plan.filters[0].column, 'Rainfed Total Area Planted');
   assert.equal(plan.filters[0].operator, 'empty_or_zero');
 });
+
+
+test('problem3 local entity-list planner resolves a filtered descriptive entity without requiring a numeric metric', () => {
+  const { resolveStrongLocalSemanticPlan } = require('./localSemanticResolver');
+
+  const question = 'What PRDP subprojects are in Pangasinan?';
+  const datasets = {
+    Sheet1: [
+      {
+        Province: 'Pangasinan',
+        Municipality: 'Umingan',
+        'SP Name': 'Rehabilitation of Gonzales-San Juan Farm to Market Road',
+        'SP ID': 'PRDP-001',
+        'Total SP Cost': '119270614.8',
+      },
+      {
+        Province: 'Pangasinan',
+        Municipality: 'Manaoag',
+        'SP Name': 'Construction of Oraan Bridge with Approaches',
+        'SP ID': 'PRDP-002',
+        'Total SP Cost': '20575036.07',
+      },
+      {
+        Province: 'La Union',
+        Municipality: 'Rosario',
+        'SP Name': 'Construction of Malicnao Bridge',
+        'SP ID': 'PRDP-003',
+        'Total SP Cost': '38947267.22',
+      },
+    ],
+  };
+
+  const schema = [
+    {
+      name: 'Sheet1',
+      columns: Object.keys(datasets.Sheet1[0]).map((name) => ({ name })),
+    },
+  ];
+
+  const plan = resolveStrongLocalSemanticPlan({ question, schema, datasets });
+  assert.equal(plan.route, 'dataset');
+  assert.equal(plan.dataset, 'Sheet1');
+  assert.equal(plan.operation, 'list');
+  assert.equal(plan.column, 'SP Name');
+  assert.equal(plan.labelColumn, 'SP Name');
+  assert.deepEqual(plan.selectColumns, ['SP Name']);
+  assert.deepEqual(plan.filters, [
+    { column: 'Province', operator: 'equals', value: 'Pangasinan' },
+  ]);
+});

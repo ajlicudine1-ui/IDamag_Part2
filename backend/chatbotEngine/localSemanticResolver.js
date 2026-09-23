@@ -378,6 +378,158 @@ function isReferentialQuestion(question) {
   return /\b(?:they|them|their|those|these|it|that|same|ones)\b/.test(text);
 }
 
+function isEntityListQuestion(question) {
+  const text = normalizeText(question);
+  if (!text) return false;
+
+  if (hasExplicitAbsenceIntent(question)) return false;
+
+  // Mathematical/ranking requests belong to the mathematical planner.
+  if (/\b(?:total|sum|average|avg|mean|median|highest|lowest|largest|smallest|maximum|minimum|max|min|top|bottom|how many|number of|count)\b/.test(text)) {
+    return false;
+  }
+
+  return /^(?:what|which|who|list|show|name|give me|tell me|find)\b/.test(text);
+}
+
+function isMostlyNumericColumn(rows, column) {
+  const values = populatedValues(rows, column);
+  if (!values.length) return false;
+  const numeric = values.filter((value) => parseNumber(value) !== null).length;
+  return numeric / values.length >= 0.7;
+}
+
+function identityColumnFallbackScore(rows, column, question, filterColumns = new Set()) {
+  if (!column || filterColumns.has(normalizeText(column))) return 0;
+  if (isMostlyNumericColumn(rows, column)) return 0;
+
+  const name = normalizeText(column);
+  const semantic = scoreColumnAgainstQuestion(column, question);
+  const values = populatedValues(rows, column);
+  if (!values.length) return 0;
+
+  const distinct = new Set(values.map((value) => normalizeText(value))).size;
+  const uniqueness = distinct / Math.max(1, values.length);
+  const avgLength = values.reduce((sum, value) => sum + String(value).trim().length, 0) / values.length;
+
+  let identitySignal = 0;
+  if (/\b(?:name|title)\b/.test(name)) identitySignal = 1;
+  else if (/\b(?:id|identifier|code)\b/.test(name)) identitySignal = 0.55;
+
+  const descriptiveSignal = Math.min(1, avgLength / 40);
+
+  return Math.min(
+    1,
+    semantic * 0.45 +
+      identitySignal * 0.30 +
+      uniqueness * 0.15 +
+      descriptiveSignal * 0.10
+  );
+}
+
+function resolveLocalEntityListPlan({ question, schema = [], datasets = {} } = {}) {
+  if (!isEntityListQuestion(question)) return null;
+
+  const candidates = [];
+
+  for (const datasetSchema of schema || []) {
+    const datasetName = datasetSchema?.name;
+    const rows = datasets?.[datasetName];
+    if (!datasetName || !Array.isArray(rows) || !rows.length) continue;
+
+    const columns = (datasetSchema.columns || [])
+      .map((column) => typeof column === "string" ? column : column?.name)
+      .filter(Boolean);
+
+    // Resolve literal values such as Province=Pangasinan first. This also
+    // helps us prefer the worksheet that actually contains the requested scope.
+    const filters = inferValueFilters(rows, question, []);
+    const filterColumns = new Set(
+      (filters || []).map((filter) => normalizeText(filter?.column)).filter(Boolean)
+    );
+
+    const scored = columns
+      .map((column) => ({
+        column,
+        semanticScore: scoreColumnAgainstQuestion(column, question),
+        fallbackScore: identityColumnFallbackScore(rows, column, question, filterColumns),
+      }))
+      .filter((item) => item.semanticScore >= 0.30 || item.fallbackScore >= 0.30)
+      .map((item) => ({
+        ...item,
+        score: Math.max(item.semanticScore, item.fallbackScore),
+      }))
+      .sort((a, b) => b.score - a.score);
+
+    if (!scored.length) continue;
+
+    const bestColumn = scored[0];
+    const datasetNameScore = scoreDatasetName(datasetName, question);
+    const filterEvidence = Array.isArray(filters) && filters.length ? 1 : 0;
+
+    const score = Math.min(
+      1,
+      bestColumn.score * 0.72 +
+        datasetNameScore * 0.10 +
+        filterEvidence * 0.18
+    );
+
+    candidates.push({
+      dataset: datasetName,
+      column: bestColumn.column,
+      filters: Array.isArray(filters) ? filters : [],
+      score,
+      columnScore: bestColumn.score,
+      semanticScore: bestColumn.semanticScore,
+      fallbackScore: bestColumn.fallbackScore,
+    });
+  }
+
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => b.score - a.score);
+
+  const best = candidates[0];
+  const second = candidates[1];
+
+  // When there is no grounded filter and two worksheets are equally plausible,
+  // do not guess an entity source.
+  if (
+    second &&
+    Math.abs(best.score - second.score) < 0.035 &&
+    !best.filters.length &&
+    !second.filters.length
+  ) {
+    return null;
+  }
+
+  if (best.columnScore < 0.42 && best.score < 0.52) return null;
+
+  return {
+    route: "dataset",
+    dataset: best.dataset,
+    operation: "list",
+    column: best.column,
+    labelColumn: best.column,
+    groupBy: null,
+    aggregation: null,
+    direction: null,
+    filters: copyFilters(best.filters),
+    selectColumns: [best.column],
+    outputRequested: true,
+    transform: null,
+    showAll: true,
+    limit: 100,
+    localEntityListResolved: true,
+    localSemanticConfidence: Math.max(0, Math.min(1, best.score)),
+    localEntityListEvidence: {
+      columnScore: Number(best.columnScore.toFixed(4)),
+      semanticScore: Number(best.semanticScore.toFixed(4)),
+      fallbackScore: Number(best.fallbackScore.toFixed(4)),
+      filterCount: best.filters.length,
+    },
+  };
+}
+
 function copyFilters(filters) {
   return Array.isArray(filters)
     ? filters.map((filter) => ({
@@ -510,6 +662,17 @@ function resolveStrongLocalSemanticPlan({
     }
 
     return relationPlan;
+  }
+
+  const entityListPlan =
+    resolveLocalEntityListPlan({
+      question,
+      schema,
+      datasets,
+    });
+
+  if (entityListPlan) {
+    return entityListPlan;
   }
 
   const candidates = [];
@@ -664,5 +827,7 @@ module.exports = {
   isReferentialQuestion,
   hasExplicitAbsenceIntent,
   resolveLocalAbsencePlan,
+  isEntityListQuestion,
+  resolveLocalEntityListPlan,
   resolveStrongLocalSemanticPlan,
 };
