@@ -14,7 +14,7 @@ const { evaluateLocalPlanConfidence } = require('./planConfidenceEngine');
 const { buildSemanticPlan, semanticPlanToExecutable } = require('./semanticPlan');
 const { currentQuestionRequiresReplan } = require('./currentQuestionOverrideEngine');
 const { buildSemanticVerifiedAnswer } = require('./responseNarrativeEngine');
-const { currentQuestionOverridesAnalyticalGroup } = require('./plannerNormalizer');
+const { currentQuestionOverridesAnalyticalGroup, repairSemanticAggregatePlan } = require('./plannerNormalizer');
 const { updateConversation, getRelevantContext, clearConversation, saveCompoundContext } = require('./conversationManager');
 const { answerQuestion } = require('./chatbotService');
 
@@ -5242,6 +5242,40 @@ test('how-many categorical target is counted rather than summed as a text metric
   assert.equal(result.success, true);
   assert.equal(result.operation, 'row_count');
   assert.equal(result.value, 2);
+});
+
+
+
+test('problem3 aggregate metric repair replaces nonnumeric entity column with selected live numeric metric', () => {
+  const datasets = {
+    Main_Table_2026: [
+      { Association: 'A', Province: 'Pangasinan', 'Total Land Area (ha)': '10' },
+      { Association: 'B', Province: 'Pangasinan', 'Total Land Area (ha)': '20' },
+      { Association: 'C', Province: 'La Union', 'Total Land Area (ha)': '30' },
+    ],
+  };
+  const schema = buildSchema(datasets);
+  const repaired = repairSemanticAggregatePlan({
+    datasets,
+    schema,
+    question: 'What is the total land area of the Pangasinan associations?',
+    plan: {
+      route: 'dataset',
+      dataset: 'Main_Table_2026',
+      operation: 'sum',
+      column: 'Association',
+      filters: [{ column: 'Province', operator: 'equals', value: 'Pangasinan' }],
+      selectColumns: ['Total Land Area (ha)'],
+      outputRequested: true,
+    },
+  });
+
+  assert.equal(repaired.operation, 'sum');
+  assert.equal(repaired.column, 'Total Land Area (ha)');
+  assert.deepEqual(repaired.selectColumns, ['Total Land Area (ha)']);
+  assert.deepEqual(repaired.filters, [
+    { column: 'Province', operator: 'equals', value: 'Pangasinan' },
+  ]);
 });
 
 async function run() {

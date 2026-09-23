@@ -2270,6 +2270,64 @@ function repairSemanticAggregatePlan({
     metricName = explicitNumeric.column;
   }
 
+  /**
+   * Cross-planner aggregate metric invariant:
+   * Some planners correctly place the requested numeric metric in
+   * selectColumns while leaving `column` on the entity/label field.
+   * For scalar SUM/AVERAGE questions that is structurally invalid.
+   *
+   * Example:
+   *   operation: "sum"
+   *   column: "Association"
+   *   selectColumns: ["Total Land Area (ha)"]
+   *
+   * Prefer the single verified numeric selected field instead of letting
+   * the calculation layer reject the plan. This is schema-driven and
+   * therefore applies equally to Groq, local, and deterministic plans.
+   */
+  if (!explicitNumeric?.column) {
+    const selectedNumeric = [
+      ...new Set(
+        (Array.isArray(plan.selectColumns) ? plan.selectColumns : [])
+          .map((name) => String(name || "").trim())
+          .filter(Boolean)
+          .filter((name) => {
+            const column = (datasetSchema.columns || []).find(
+              (candidate) =>
+                String(candidate?.name || "") === String(name)
+            );
+
+            return Boolean(
+              column && isNumericLikeColumn({ column, rows })
+            );
+          })
+      ),
+    ];
+
+    if (selectedNumeric.length === 1) {
+      const selectedMetric = selectedNumeric[0];
+      const normalizedQuestion = normalizeText(question);
+      const normalizedMetric = normalizeText(selectedMetric);
+      const metricTokens = normalizedMetric
+        .split(/\s+/)
+        .filter((token) =>
+          token &&
+          !["total", "average", "avg", "mean", "sum"].includes(token)
+        );
+      const questionTokens = new Set(
+        normalizedQuestion.split(/\s+/).filter(Boolean)
+      );
+      const overlap = metricTokens.length
+        ? metricTokens.filter((token) => questionTokens.has(token)).length /
+          metricTokens.length
+        : 0;
+
+      if (overlap >= 0.5 || scoreTargetToColumn(normalizedQuestion, normalizedMetric) >= 0.72) {
+        metricName = selectedMetric;
+      }
+    }
+  }
+
   const metricSchema =
     (datasetSchema.columns || []).find(
       (column) =>
