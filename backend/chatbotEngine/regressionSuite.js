@@ -6348,3 +6348,30 @@ test('entity list preserves separate records when names repeat but IDs differ', 
   assert.deepEqual(result.results[0], { 'SP ID': 'A-1', 'SP Name': 'Farm Mechanization Service Facility', Municipality: 'San Fabian' });
   assert.deepEqual(result.results[1], { 'SP ID': 'A-2', 'SP Name': 'Farm Mechanization Service Facility', Municipality: 'Umingan' });
 });
+
+
+test('shared list execution preserves duplicate entity names for Groq-shaped plans when strong IDs exist', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    Sheet1: [
+      { Province: 'Pangasinan', Municipality: 'San Fabian', 'SP ID': 'A-1', 'SP Name': 'Farm Mechanization Service Facility' },
+      { Province: 'Pangasinan', Municipality: 'Umingan', 'SP ID': 'A-2', 'SP Name': 'Farm Mechanization Service Facility' },
+      { Province: 'Pangasinan', Municipality: 'Manaoag', 'SP ID': 'A-3', 'SP Name': 'Other Project' },
+    ],
+  };
+  const plan = {
+    route: 'dataset', dataset: 'Sheet1', operation: 'list', column: 'SP Name',
+    labelColumn: null,
+    filters: [{ column: 'Province', operator: 'equals', value: 'Pangasinan' }],
+    selectColumns: ['SP Name'],
+    showAll: true, outputRequested: true, limit: 100,
+  };
+  const result = executePlan({ plan, datasets, question: 'What PRDP subprojects are in Pangasinan?' });
+  assert.equal(result.count, 3);
+  assert.equal(result.results.length, 3);
+  assert.equal(result.preserveEntityRecords, true);
+  assert.equal(result.entityRecordProjectionInferred, true);
+  assert.deepEqual(result.entityRecordColumns, ['SP ID', 'SP Name', 'Municipality']);
+  assert.deepEqual(result.results[0], { 'SP ID': 'A-1', 'SP Name': 'Farm Mechanization Service Facility', Municipality: 'San Fabian' });
+  assert.deepEqual(result.results[1], { 'SP ID': 'A-2', 'SP Name': 'Farm Mechanization Service Facility', Municipality: 'Umingan' });
+});
