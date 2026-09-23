@@ -150,6 +150,7 @@ function validateFilters(
       "in",
       "not_in",
       "empty",
+      "empty_or_zero",
       "not_empty",
     ]);
 
@@ -598,7 +599,7 @@ function validateResolvedFilterValues({ datasets, plan, question = "" }) {
 
   for (const filter of filters) {
     const operator = String(filter?.operator || "equals").trim().toLowerCase();
-    if (["empty", "not_empty", "greater_than", "greater_or_equal", "less_than", "less_or_equal"].includes(operator)) {
+    if (["empty", "empty_or_zero", "not_empty", "greater_than", "greater_or_equal", "less_than", "less_or_equal"].includes(operator)) {
       groundedFilters.push(filter);
       continue;
     }

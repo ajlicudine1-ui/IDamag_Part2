@@ -16,6 +16,8 @@ const {
   splitMultiValueCell,
   valueMatchesToken,
   normalizeLooseToken,
+  isMissingLikeValue,
+  isMissingOrZeroValue,
 } = require("./valueNormalizer");
 
 /**
@@ -120,18 +122,13 @@ function compare(
     normalizedOperator
   ) {
     case "empty":
-      return (
-        actual === null ||
-        actual === undefined ||
-        String(actual).trim() === ""
-      );
+      return isMissingLikeValue(actual);
+
+    case "empty_or_zero":
+      return isMissingOrZeroValue(actual);
 
     case "not_empty":
-      return !(
-        actual === null ||
-        actual === undefined ||
-        String(actual).trim() === ""
-      );
+      return !isMissingLikeValue(actual);
 
     case "not_equals":
       return !(

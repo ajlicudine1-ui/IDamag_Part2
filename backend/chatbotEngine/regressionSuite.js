@@ -6215,3 +6215,61 @@ test('problem3 paired lookup keeps thousands-formatted numeric cells intact in n
   assert.doesNotMatch(answer, /associated with 1 and 153/);
   assert.doesNotMatch(answer, /associated with 6 and 591/);
 });
+
+test('problem3 absence filters treat blank and common dash sentinels as missing without treating ordinary zero as empty', () => {
+  const { compare } = require('./filterEngine');
+
+  assert.equal(compare('', null, 'empty'), true);
+  assert.equal(compare('   ', null, 'empty'), true);
+  assert.equal(compare('-', null, 'empty'), true);
+  assert.equal(compare('—', null, 'empty'), true);
+  assert.equal(compare('N/A', null, 'empty'), true);
+  assert.equal(compare('0', null, 'empty'), false);
+
+  assert.equal(compare('', null, 'empty_or_zero'), true);
+  assert.equal(compare('-', null, 'empty_or_zero'), true);
+  assert.equal(compare('—', null, 'empty_or_zero'), true);
+  assert.equal(compare('0', null, 'empty_or_zero'), true);
+  assert.equal(compare(0, null, 'empty_or_zero'), true);
+  assert.equal(compare('12', null, 'empty_or_zero'), false);
+});
+
+test('problem3 local absence planner resolves a fresh no-value question from live schema instead of inheriting prior entity scope', () => {
+  const {
+    resolveLocalAbsencePlan,
+    hasExplicitAbsenceIntent,
+  } = require('./localSemanticResolver');
+
+  const question = 'Are there any municipalities with no rainfed planted area?';
+  assert.equal(hasExplicitAbsenceIntent(question), true);
+
+  const schema = [
+    {
+      name: 'Planting',
+      columns: [
+        { name: 'Province' },
+        { name: 'Municipality' },
+        { name: 'Rainfed Total Area Planted' },
+        { name: 'Irrigated Total Area Planted' },
+      ],
+    },
+  ];
+
+  const datasets = {
+    Planting: [
+      { Province: 'A', Municipality: 'Town 1', 'Rainfed Total Area Planted': '-', 'Irrigated Total Area Planted': '10' },
+      { Province: 'A', Municipality: 'Town 2', 'Rainfed Total Area Planted': '', 'Irrigated Total Area Planted': '20' },
+      { Province: 'A', Municipality: 'Town 3', 'Rainfed Total Area Planted': '0', 'Irrigated Total Area Planted': '30' },
+      { Province: 'A', Municipality: 'Town 4', 'Rainfed Total Area Planted': '15', 'Irrigated Total Area Planted': '40' },
+    ],
+  };
+
+  const plan = resolveLocalAbsencePlan({ question, schema, datasets });
+  assert.equal(plan.route, 'dataset');
+  assert.equal(plan.dataset, 'Planting');
+  assert.equal(plan.operation, 'list');
+  assert.equal(plan.column, 'Municipality');
+  assert.equal(plan.filters.length, 1);
+  assert.equal(plan.filters[0].column, 'Rainfed Total Area Planted');
+  assert.equal(plan.filters[0].operator, 'empty_or_zero');
+});

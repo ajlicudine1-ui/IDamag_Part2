@@ -1246,7 +1246,7 @@ Dataset:
   "filters":[
     {
       "column":"exact column",
-      "operator":"equals|not_equals|contains|starts_with|ends_with|greater_than|greater_or_equal|less_than|less_or_equal|in|not_in",
+      "operator":"equals|not_equals|contains|starts_with|ends_with|greater_than|greater_or_equal|less_than|less_or_equal|in|not_in|empty|empty_or_zero|not_empty",
       "value":"scalar or array for in/not_in"
     }
   ],
@@ -1256,7 +1256,7 @@ Dataset:
       "filters":[
         {
           "column":"exact column",
-          "operator":"equals|not_equals|contains|starts_with|ends_with|greater_than|greater_or_equal|less_than|less_or_equal|in|not_in",
+          "operator":"equals|not_equals|contains|starts_with|ends_with|greater_than|greater_or_equal|less_than|less_or_equal|in|not_in|empty|empty_or_zero|not_empty",
           "value":"scalar or array"
         }
       ]

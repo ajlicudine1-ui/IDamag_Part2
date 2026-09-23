@@ -53,6 +53,9 @@ const FILTER_OPERATORS = new Set([
   "less_or_equal",
   "in",
   "not_in",
+  "empty",
+  "empty_or_zero",
+  "not_empty",
 ]);
 
 function cloneFilters(filters) {

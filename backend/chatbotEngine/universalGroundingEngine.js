@@ -111,6 +111,7 @@ function filterMatchesRows(
   if (
     [
       "empty",
+      "empty_or_zero",
       "not_empty",
       "greater_than",
       "greater_or_equal",

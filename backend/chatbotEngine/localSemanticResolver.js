@@ -196,6 +196,163 @@ function structuralDatasetScore(rows, entityColumn) {
   };
 }
 
+
+function hasExplicitAbsenceIntent(question) {
+  const text = normalizeText(question);
+  if (!text) return false;
+
+  return (
+    /\b(?:with|have|has|having)\s+no\s+\w/.test(text) ||
+    /\bwithout\s+\w/.test(text) ||
+    /\b(?:with|have|has|having)\s+(?:missing|blank|empty)\s+\w/.test(text) ||
+    /\bwhere\b.*\b(?:missing|blank|empty|no)\b/.test(text)
+  );
+}
+
+function extractAbsenceParts(question) {
+  const text = normalizeText(question);
+  if (!text) return null;
+
+  const patterns = [
+    /^(.*?)(?:\bwith\s+no\s+)(.+)$/,
+    /^(.*?)(?:\b(?:have|has|having)\s+no\s+)(.+)$/,
+    /^(.*?)(?:\bwithout\s+)(.+)$/,
+    /^(.*?)(?:\bwith\s+(?:missing|blank|empty)\s+)(.+)$/,
+    /^(.*?)(?:\b(?:have|has|having)\s+(?:missing|blank|empty)\s+)(.+)$/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match) continue;
+
+    const subject = match[1]
+      .replace(/^(?:are there any|is there any|which|what|show|list|find|give me|tell me|do any|does any)\s+/, "")
+      .trim();
+
+    const condition = match[2].trim();
+    if (condition) return { subject, condition };
+  }
+
+  const whereMatch = text.match(/^(.*?)\bwhere\b(.+)$/);
+  if (whereMatch && /\b(?:missing|blank|empty|no)\b/.test(whereMatch[2])) {
+    const subject = whereMatch[1]
+      .replace(/^(?:are there any|is there any|which|what|show|list|find|give me|tell me)\s+/, "")
+      .trim();
+    const condition = whereMatch[2]
+      .replace(/^.*?\b(?:missing|blank|empty|no)\b\s*/, "")
+      .trim();
+    if (condition) return { subject, condition };
+  }
+
+  return null;
+}
+
+function resolveLocalAbsencePlan({ question, schema = [], datasets = {} } = {}) {
+  if (!hasExplicitAbsenceIntent(question)) return null;
+
+  const parts = extractAbsenceParts(question);
+  if (!parts?.condition) return null;
+
+  const candidates = [];
+
+  for (const datasetSchema of schema || []) {
+    const datasetName = datasetSchema?.name;
+    const rows = datasets?.[datasetName];
+    if (!datasetName || !Array.isArray(rows) || !rows.length) continue;
+
+    const columns = (datasetSchema.columns || [])
+      .map((column) => typeof column === "string" ? column : column?.name)
+      .filter(Boolean);
+
+    const conditionCandidates = columns
+      .map((column) => ({
+        column,
+        score: scoreColumnAgainstQuestion(column, parts.condition),
+      }))
+      .filter((item) => item.score >= 0.45)
+      .sort((a, b) => b.score - a.score);
+
+    if (!conditionCandidates.length) continue;
+
+    const entityCandidates = columns
+      .filter((column) => column !== conditionCandidates[0].column)
+      .map((column) => ({
+        column,
+        score: scoreColumnAgainstQuestion(column, parts.subject || question),
+      }))
+      .filter((item) => item.score >= 0.45)
+      .sort((a, b) => b.score - a.score);
+
+    if (!entityCandidates.length) continue;
+
+    const condition = conditionCandidates[0];
+    const entity = entityCandidates[0];
+
+    const combined =
+      condition.score * 0.62 +
+      entity.score * 0.38;
+
+    candidates.push({
+      dataset: datasetName,
+      conditionColumn: condition.column,
+      entityColumn: entity.column,
+      conditionScore: condition.score,
+      entityScore: entity.score,
+      score: combined,
+    });
+  }
+
+  if (!candidates.length) return null;
+
+  candidates.sort((a, b) => b.score - a.score);
+  const best = candidates[0];
+  const second = candidates[1];
+
+  if (
+    second &&
+    second.dataset !== best.dataset &&
+    Math.abs(best.score - second.score) < 0.04
+  ) {
+    return {
+      route: "clarify",
+      question: `I found more than one possible field for the missing-value condition. Which worksheet or field should I use?`,
+      confidence: 0.35,
+      localAbsenceAmbiguous: true,
+    };
+  }
+
+  return {
+    route: "dataset",
+    dataset: best.dataset,
+    operation: "list",
+    column: best.entityColumn,
+    labelColumn: best.entityColumn,
+    groupBy: null,
+    aggregation: null,
+    direction: null,
+    filters: [
+      {
+        column: best.conditionColumn,
+        operator: "empty_or_zero",
+        value: null,
+      },
+    ],
+    selectColumns: [best.entityColumn],
+    outputRequested: true,
+    transform: null,
+    showAll: true,
+    limit: 100,
+    localAbsenceResolved: true,
+    localSemanticConfidence: Math.max(0, Math.min(1, best.score)),
+    localAbsenceEvidence: {
+      entityColumn: best.entityColumn,
+      conditionColumn: best.conditionColumn,
+      entityScore: Number(best.entityScore.toFixed(4)),
+      conditionScore: Number(best.conditionScore.toFixed(4)),
+    },
+  };
+}
+
 function detectRequestedOperation(question) {
   const text = normalizeText(question);
 
@@ -211,7 +368,7 @@ function isLikelyDataQuestion(question) {
   if (!text) return false;
 
   return (
-    /^(?:which|what|who|show|list|name|give|tell|how many|number of|count of)\b/.test(text) ||
+    /^(?:which|what|who|show|list|name|give|tell|how many|number of|count of|are there any|is there any|do any|does any|find)\b/.test(text) ||
     /\b(?:received?|attended?|submitted?|used?|provided?|managed?|produced?|grew|grown|faced?|implemented?|conducted?|handled?|funded?|served?)\b/.test(text)
   );
 }
@@ -238,6 +395,17 @@ function resolveStrongLocalSemanticPlan({
   datasets = {},
   context = null,
 } = {}) {
+  const absencePlan =
+    resolveLocalAbsencePlan({
+      question,
+      schema,
+      datasets,
+    });
+
+  if (absencePlan) {
+    return absencePlan;
+  }
+
   // Preserve the specialized quantity/unit resolver first (for questions such
   // as "how many kilograms of fertilizer were distributed?").
   const aggregationPlan =
@@ -494,5 +662,7 @@ module.exports = {
   detectRequestedOperation,
   isLikelyDataQuestion,
   isReferentialQuestion,
+  hasExplicitAbsenceIntent,
+  resolveLocalAbsencePlan,
   resolveStrongLocalSemanticPlan,
 };

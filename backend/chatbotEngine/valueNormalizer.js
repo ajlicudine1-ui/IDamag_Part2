@@ -11,6 +11,39 @@ function normalizeCellValue(value) {
   return String(value).trim();
 }
 
+
+function isMissingLikeValue(value) {
+  if (value === null || value === undefined) return true;
+
+  const text = String(value).trim();
+  if (!text) return true;
+
+  const normalized = normalizeText(text);
+  if (!normalized) return true;
+
+  return new Set([
+    "-",
+    "—",
+    "–",
+    "n/a",
+    "na",
+    "not available",
+    "not applicable",
+    "none",
+    "null",
+  ]).has(normalized);
+}
+
+function isMissingOrZeroValue(value) {
+  if (isMissingLikeValue(value)) return true;
+
+  const text = String(value).trim();
+  if (!text) return true;
+
+  const numeric = Number(text.replace(/,/g, ""));
+  return Number.isFinite(numeric) && numeric === 0;
+}
+
 function normalizeComparableValue(value) {
   return normalizeText(normalizeCellValue(value));
 }
@@ -120,4 +153,6 @@ module.exports = {
   splitMultiValueCell,
   looksLikeMultiValueColumn,
   valueMatchesToken,
+  isMissingLikeValue,
+  isMissingOrZeroValue,
 };
