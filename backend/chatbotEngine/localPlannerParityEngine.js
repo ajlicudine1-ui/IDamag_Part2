@@ -1191,6 +1191,12 @@ function ensureLocalPlannerParity({
     });
 
   const requestedColumn =
+    (
+      repaired.localSemanticResolved === true &&
+      repaired.column
+        ? repaired.column
+        : null
+    ) ||
     inferPrimaryColumn({
       question,
       schema,
@@ -1336,6 +1342,28 @@ function ensureLocalPlannerParity({
       current:
         repaired.selectColumns,
     });
+
+  // Mathematical aggregate plans must expose the same final metric in
+  // selectColumns that will actually be executed. This prevents stale
+  // planner metadata such as column=Female with selectColumns=[Male].
+  if (
+    repaired.column &&
+    [
+      "sum",
+      "average",
+      "median",
+      "minimum",
+      "maximum",
+      "group_sum",
+      "group_average",
+      "group_minimum",
+      "group_maximum",
+    ].includes(repaired.operation)
+  ) {
+    repaired.selectColumns = [
+      repaired.column,
+    ];
+  }
 
   if (
     repaired.column &&

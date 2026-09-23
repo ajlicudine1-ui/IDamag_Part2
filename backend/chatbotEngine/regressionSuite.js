@@ -5244,6 +5244,97 @@ test('how-many categorical target is counted rather than summed as a text metric
   assert.equal(result.value, 2);
 });
 
+
+test('problem3 short what-about scope switch preserves unrelated verified filters before Groq', async () => {
+  const sessionId = `problem3-scope-${Date.now()}`;
+  clearConversation(sessionId);
+
+  const input = {
+    Main: [
+      { Association: 'P3-A', Province: 'Pangasinan', Phase: 'Phase 3' },
+      { Association: 'LU-A', Province: 'La Union', Phase: 'Phase 3' },
+      { Association: 'LU-B', Province: 'La Union', Phase: 'Phase 2' },
+    ],
+  };
+
+  updateConversation(sessionId, {
+    question: 'How many are there?',
+    plan: {
+      route: 'dataset',
+      dataset: 'Main',
+      operation: 'row_count',
+      filters: [
+        { column: 'Phase', operator: 'equals', value: 'Phase 3' },
+      ],
+      selectColumns: [],
+      outputRequested: true,
+      limit: 1,
+      showAll: false,
+    },
+    result: {
+      success: true,
+      source: 'dataset',
+      dataset: 'Main',
+      operation: 'row_count',
+      value: 2,
+      filters: [
+        { column: 'Phase', operator: 'equals', value: 'Phase 3' },
+      ],
+      answer: 'There are 2 there.',
+    },
+  });
+
+  const result = await answerQuestion(
+    input,
+    'What about La Union?',
+    sessionId
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'row_count');
+  assert.equal(result.value, 1);
+  assert.equal(result.plannerSource, 'conversation');
+  assert.equal(result.earlyConversationalFilterSwitch, true);
+  assert.deepEqual(
+    result.debugPlan.filters.map((f) => [f.column, f.value]),
+    [
+      ['Phase', 'Phase 3'],
+      ['Province', 'La Union'],
+    ]
+  );
+});
+
+test('problem3 zero-row numeric aggregate is a grounded no-data result, not a clarification', () => {
+  const { executePlan } = require('./calculationEngine');
+  const result = executePlan({
+    datasets: {
+      Main: [
+        { Province: 'Pangasinan', Phase: 'Phase 3', 'Total Land Area (ha)': 10 },
+      ],
+    },
+    plan: {
+      route: 'dataset',
+      dataset: 'Main',
+      operation: 'sum',
+      column: 'Total Land Area (ha)',
+      filters: [
+        { column: 'Phase', operator: 'equals', value: 'Phase 3' },
+        { column: 'Province', operator: 'equals', value: 'La Union' },
+      ],
+    },
+    question: 'What is their total land area?',
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'sum');
+  assert.equal(result.noData, true);
+  assert.equal(result.emptyReason, 'no_matching_rows');
+  assert.equal(result.recordsUsed, 0);
+  assert.equal(result.value, null);
+  assert.doesNotMatch(result.answer, /rephrase|understood your question/i);
+  assert.match(result.answer, /No matching records/i);
+});
+
 async function run() {
   let passed = 0;
   const failures = [];
@@ -6112,4 +6203,302 @@ test('problem2 grounded list response is preserved for Groq and local parity', (
     semanticAnswer: 'The associations whose commodities include sugarcane are Group A and Group B.',
   });
   assert.equal(keep, true);
+});
+
+test('problem3 ambiguous field asks a targeted live-schema clarification instead of guessing', () => {
+  const { detectColumnAmbiguity } = require('./columnMatcher');
+  const datasets = {
+    Main: [
+      { 'Project Status': 'Active', 'Implementation Status': 'Ongoing', Amount: 10 },
+      { 'Project Status': 'Closed', 'Implementation Status': 'Completed', Amount: 20 },
+    ],
+  };
+
+  const repaired = detectColumnAmbiguity({
+    plan: {
+      route: 'dataset',
+      dataset: 'Main',
+      operation: 'list',
+      column: 'Project Status',
+      selectColumns: ['Project Status'],
+    },
+    datasets,
+    question: 'Show the status.',
+    context: { isFollowUp: false },
+  });
+
+  assert.equal(repaired.route, 'clarify');
+  assert.match(repaired.question, /Project Status/);
+  assert.match(repaired.question, /Implementation Status/);
+  assert.equal(repaired.ambiguity.candidates.length, 2);
+});
+
+test('problem3 verified follow-up context resolves an ambiguous live field near-tie', () => {
+  const { detectColumnAmbiguity } = require('./columnMatcher');
+  const datasets = {
+    Main: [
+      { 'Project Status': 'Active', 'Implementation Status': 'Ongoing', Amount: 10 },
+      { 'Project Status': 'Closed', 'Implementation Status': 'Completed', Amount: 20 },
+    ],
+  };
+
+  const repaired = detectColumnAmbiguity({
+    plan: {
+      route: 'dataset',
+      dataset: 'Main',
+      operation: 'list',
+      column: 'Project Status',
+      selectColumns: ['Project Status'],
+    },
+    datasets,
+    question: 'What about the status?',
+    context: {
+      isFollowUp: true,
+      lastMetric: 'Implementation Status',
+      lastSubjectColumn: null,
+      lastPlan: { dataset: 'Main', column: 'Implementation Status' },
+      semanticPlan: null,
+    },
+  });
+
+  assert.equal(repaired.route, 'dataset');
+  assert.equal(repaired.column, 'Implementation Status');
+  assert.deepEqual(repaired.selectColumns, ['Implementation Status']);
+  assert.equal(repaired.contextualAmbiguityResolved, true);
+});
+
+test('problem3 explicit live field still outranks ambiguity and context', () => {
+  const { detectColumnAmbiguity } = require('./columnMatcher');
+  const datasets = {
+    Main: [
+      { 'Project Status': 'Active', 'Implementation Status': 'Ongoing' },
+    ],
+  };
+
+  const repaired = detectColumnAmbiguity({
+    plan: {
+      route: 'dataset', dataset: 'Main', operation: 'list',
+      column: 'Project Status', selectColumns: ['Project Status'],
+    },
+    datasets,
+    question: 'Show the project status.',
+    context: {
+      isFollowUp: true,
+      lastMetric: 'Implementation Status',
+      lastPlan: { column: 'Implementation Status' },
+    },
+  });
+
+  assert.equal(repaired.route, 'dataset');
+  assert.equal(repaired.column, 'Project Status');
+  assert.equal(repaired.contextualAmbiguityResolved, undefined);
+});
+
+test('problem3 morphology-aware semantic matching handles plural field wording generically', () => {
+  const { scoreColumnTarget } = require('./columnMatcher');
+  const pluralScore = scoreColumnTarget('show the municipalities', 'Municipality');
+  const unrelatedScore = scoreColumnTarget('show the municipalities', 'Province');
+  assert.ok(pluralScore > unrelatedScore);
+  assert.ok(pluralScore >= 1);
+});
+
+test('problem3 local fallback resolves explicit aggregate metric plus live value filter', () => {
+  const { resolveStandardLocalAggregatePlan } = require('./localSemanticResolver');
+  const schema = [
+    { name: 'Main_Table_2026', columns: [
+      { name: 'Province' },
+      { name: 'Association' },
+      { name: 'Total Land Area (ha)' },
+    ] },
+    { name: 'Association', columns: [
+      { name: 'Name of Association' },
+      { name: 'QTY' },
+      { name: 'Total Cost' },
+    ] },
+  ];
+  const datasets = {
+    Main_Table_2026: [
+      { Province: 'Pangasinan', Association: 'A', 'Total Land Area (ha)': 71.03 },
+      { Province: 'Pangasinan', Association: 'B', 'Total Land Area (ha)': 161.6967 },
+      { Province: 'La Union', Association: 'C', 'Total Land Area (ha)': 120 },
+    ],
+    Association: [
+      { 'Name of Association': 'A', QTY: 3, 'Total Cost': 1000 },
+      { 'Name of Association': 'B', QTY: 2, 'Total Cost': 2000 },
+    ],
+  };
+
+  const plan = resolveStandardLocalAggregatePlan({
+    question: 'What is the total land area of the Pangasinan associations?',
+    schema,
+    datasets,
+  });
+
+  assert.equal(plan.route, 'dataset');
+  assert.equal(plan.dataset, 'Main_Table_2026');
+  assert.equal(plan.operation, 'sum');
+  assert.equal(plan.column, 'Total Land Area (ha)');
+  assert.ok(plan.filters.some((f) => f.column === 'Province' && f.value === 'Pangasinan'));
+});
+
+test('problem3 local aggregate resolver does not guess a metric for bare total', () => {
+  const { resolveStandardLocalAggregatePlan } = require('./localSemanticResolver');
+  const schema = [
+    { name: 'Main', columns: [
+      { name: 'Total Cost' },
+      { name: 'Total Land Area (ha)' },
+    ] },
+  ];
+  const datasets = {
+    Main: [
+      { 'Total Cost': 100, 'Total Land Area (ha)': 10 },
+      { 'Total Cost': 200, 'Total Land Area (ha)': 20 },
+    ],
+  };
+
+  const plan = resolveStandardLocalAggregatePlan({
+    question: 'What is the total?',
+    schema,
+    datasets,
+  });
+
+  assert.equal(plan, null);
+});
+
+test('problem3 local math planner tolerates a typo in total and resolves live metric', () => {
+  const { resolveStandardLocalAggregatePlan } = require('./localSemanticResolver');
+  const schema = [{ name: 'Main', columns: [{ name: 'Male' }, { name: 'Female' }] }];
+  const datasets = { Main: [{ Male: 10, Female: 20 }, { Male: 5, Female: 7 }] };
+
+  const plan = resolveStandardLocalAggregatePlan({
+    question: 'tatal male',
+    schema,
+    datasets,
+  });
+
+  assert.equal(plan.route, 'dataset');
+  assert.equal(plan.operation, 'sum');
+  assert.equal(plan.column, 'Male');
+  assert.deepEqual(plan.selectColumns, ['Male']);
+});
+
+test('problem3 local math planner supports total by province', () => {
+  const { resolveStandardLocalAggregatePlan } = require('./localSemanticResolver');
+  const schema = [{ name: 'Main', columns: [
+    { name: 'Province' },
+    { name: 'Total Land Area (ha)' },
+  ] }];
+  const datasets = { Main: [
+    { Province: 'Pangasinan', 'Total Land Area (ha)': 10 },
+    { Province: 'Pangasinan', 'Total Land Area (ha)': 20 },
+    { Province: 'La Union', 'Total Land Area (ha)': 5 },
+  ] };
+
+  const plan = resolveStandardLocalAggregatePlan({
+    question: 'total land area by province',
+    schema,
+    datasets,
+  });
+
+  assert.equal(plan.route, 'dataset');
+  assert.equal(plan.operation, 'group_sum');
+  assert.equal(plan.column, 'Total Land Area (ha)');
+  assert.equal(plan.groupBy, 'Province');
+  assert.equal(plan.aggregation, 'sum');
+});
+
+test('problem3 local math planner supports average members by phase', () => {
+  const { resolveStandardLocalAggregatePlan } = require('./localSemanticResolver');
+  const schema = [{ name: 'Main', columns: [
+    { name: 'Phase' },
+    { name: 'No. of members' },
+  ] }];
+  const datasets = { Main: [
+    { Phase: 'Phase 2', 'No. of members': 10 },
+    { Phase: 'Phase 3', 'No. of members': 20 },
+  ] };
+
+  const plan = resolveStandardLocalAggregatePlan({
+    question: 'average number of members by phase',
+    schema,
+    datasets,
+  });
+
+  assert.equal(plan.route, 'dataset');
+  assert.equal(plan.operation, 'group_average');
+  assert.equal(plan.column, 'No. of members');
+  assert.equal(plan.groupBy, 'Phase');
+  assert.equal(plan.aggregation, 'average');
+});
+
+test('problem3 local math planner does not confuse phase grouping with numeric metric', () => {
+  const { resolveStandardLocalAggregatePlan } = require('./localSemanticResolver');
+  const schema = [{ name: 'Main', columns: [
+    { name: 'Phase' },
+    { name: 'Total Land Area (ha)' },
+  ] }];
+  const datasets = { Main: [
+    { Phase: 'Phase 2', 'Total Land Area (ha)': 10 },
+    { Phase: 'Phase 3', 'Total Land Area (ha)': 20 },
+  ] };
+
+  const plan = resolveStandardLocalAggregatePlan({
+    question: 'average land area for each phase',
+    schema,
+    datasets,
+  });
+
+  assert.equal(plan.operation, 'group_average');
+  assert.equal(plan.column, 'Total Land Area (ha)');
+  assert.equal(plan.groupBy, 'Phase');
+});
+
+test('problem3 local math planner supports grouped row counts', () => {
+  const { resolveStandardLocalAggregatePlan } = require('./localSemanticResolver');
+  const schema = [{ name: 'Main', columns: [
+    { name: 'Province' },
+    { name: 'Association' },
+  ] }];
+  const datasets = { Main: [
+    { Province: 'Pangasinan', Association: 'A' },
+    { Province: 'Pangasinan', Association: 'B' },
+    { Province: 'La Union', Association: 'C' },
+  ] };
+
+  const plan = resolveStandardLocalAggregatePlan({
+    question: 'how many associations by province',
+    schema,
+    datasets,
+  });
+
+  assert.equal(plan.operation, 'group_count');
+  assert.equal(plan.groupBy, 'Province');
+});
+
+test('problem3 local planner parity keeps aggregate selectColumns aligned with final metric', () => {
+  const { ensureLocalPlannerParity } = require('./localPlannerParityEngine');
+  const schema = [{ name: 'Main', columns: [
+    { name: 'Male' },
+    { name: 'Female' },
+  ] }];
+  const datasets = { Main: [{ Male: 10, Female: 20 }] };
+
+  const plan = ensureLocalPlannerParity({
+    plan: {
+      route: 'dataset',
+      dataset: 'Main',
+      operation: 'sum',
+      column: 'Female',
+      selectColumns: ['Male'],
+      filters: [],
+      localSemanticResolved: true,
+    },
+    question: 'total female',
+    schema,
+    datasets,
+    context: null,
+  });
+
+  assert.equal(plan.column, 'Female');
+  assert.deepEqual(plan.selectColumns, ['Female']);
 });

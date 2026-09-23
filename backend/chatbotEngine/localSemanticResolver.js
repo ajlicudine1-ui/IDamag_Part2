@@ -195,6 +195,328 @@ function structuralDatasetScore(rows, entityColumn) {
   };
 }
 
+
+function editDistance(a, b) {
+  const left = String(a || "");
+  const right = String(b || "");
+
+  if (left === right) return 0;
+  if (!left.length) return right.length;
+  if (!right.length) return left.length;
+
+  const previous = Array.from({ length: right.length + 1 }, (_, i) => i);
+
+  for (let i = 1; i <= left.length; i += 1) {
+    let diagonal = previous[0];
+    previous[0] = i;
+
+    for (let j = 1; j <= right.length; j += 1) {
+      const old = previous[j];
+      const substitution = diagonal + (left[i - 1] === right[j - 1] ? 0 : 1);
+      const insertion = previous[j - 1] + 1;
+      const deletion = old + 1;
+
+      previous[j] = Math.min(substitution, insertion, deletion);
+      diagonal = old;
+    }
+  }
+
+  return previous[right.length];
+}
+
+function fuzzyTokenMatch(token, target) {
+  const a = normalizeText(token);
+  const b = normalizeText(target);
+  if (!a || !b) return false;
+  if (a === b) return true;
+
+  const distance = editDistance(a, b);
+  const maxLength = Math.max(a.length, b.length);
+
+  if (maxLength <= 4) return distance <= 1;
+  if (maxLength <= 8) return distance <= 2;
+  return distance / maxLength <= 0.24;
+}
+
+function questionHasFuzzyKeyword(question, keywords) {
+  const tokens = normalizeText(question).split(/\s+/).filter(Boolean);
+  return tokens.some((token) => keywords.some((keyword) => fuzzyTokenMatch(token, keyword)));
+}
+
+function detectStandardAggregateOperation(question) {
+  const text = normalizeText(question);
+
+  // Explicit mathematical operators take precedence over the phrase
+  // "number of" when it is part of a metric name, e.g.
+  // "average number of members by phase".
+  if (/\b(?:total|sum|combined|altogether|in all)\b/.test(text)) return "sum";
+  if (/\b(?:average|avg|mean)\b/.test(text)) return "average";
+  if (/\bmedian\b/.test(text)) return "median";
+  if (/\b(?:minimum|min|lowest|smallest|least)\b/.test(text)) return "minimum";
+  if (/\b(?:maximum|max|highest|largest|greatest|most)\b/.test(text)) return "maximum";
+  if (/\b(?:how many|number of|count(?: of)?)\b/.test(text)) return "row_count";
+
+  // Local fallback must tolerate ordinary typing mistakes without needing Groq.
+  if (questionHasFuzzyKeyword(question, ["total", "sum"])) return "sum";
+  if (questionHasFuzzyKeyword(question, ["average", "mean"])) return "average";
+  if (questionHasFuzzyKeyword(question, ["median"])) return "median";
+  if (questionHasFuzzyKeyword(question, ["minimum", "lowest", "smallest"])) return "minimum";
+  if (questionHasFuzzyKeyword(question, ["maximum", "highest", "largest"])) return "maximum";
+
+  return null;
+}
+
+function detectGroupingPhrase(question) {
+  const text = normalizeText(question);
+  if (!text) return null;
+
+  const match =
+    text.match(/\b(?:grouped by|for each|per|by)\s+(.+?)(?=\s+(?:with|where|that|who|whose|having|in|from)\b|[?.!,]|$)/) ||
+    text.match(/\beach\s+([a-z][a-z0-9 _/-]*?)(?=[?.!,]|$)/);
+
+  if (!match?.[1]) return null;
+
+  return match[1]
+    .replace(/\b(?:total|sum|average|avg|mean|median|minimum|min|maximum|max|highest|lowest|largest|smallest|count|number)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim() || null;
+}
+
+function mapGroupedAggregateOperation(operation) {
+  const map = {
+    row_count: "group_count",
+    sum: "group_sum",
+    average: "group_average",
+    minimum: "group_minimum",
+    maximum: "group_maximum",
+  };
+
+  return map[operation] || null;
+}
+
+function scoreColumnAgainstPhrase(columnName, phrase) {
+  if (!phrase) return 0;
+  return scoreColumnAgainstQuestion(columnName, phrase);
+}
+
+function resolveBestGroupingColumn({
+  datasetSchema,
+  rows,
+  phrase,
+  excludedColumns = [],
+} = {}) {
+  if (!phrase) return null;
+
+  const excluded = new Set(excludedColumns.map((value) => normalizeText(value)));
+  const candidates = [];
+
+  for (const rawColumn of datasetSchema?.columns || []) {
+    const columnName = typeof rawColumn === "string" ? rawColumn : rawColumn?.name;
+    if (!columnName || excluded.has(normalizeText(columnName))) continue;
+
+    const values = populatedValues(rows, columnName);
+    if (!values.length) continue;
+
+    const numericRatio = numericRatioForColumn(rows, columnName);
+    const phraseScore = scoreColumnAgainstPhrase(columnName, phrase);
+    if (phraseScore < 0.42) continue;
+
+    // Grouping dimensions are normally categorical; numeric group fields remain
+    // possible but receive a penalty rather than being completely rejected.
+    const categoricalBonus = numericRatio < 0.7 ? 0.18 : -0.08;
+    const score = phraseScore + categoricalBonus;
+
+    candidates.push({ column: columnName, score, phraseScore, numericRatio });
+  }
+
+  candidates.sort((a, b) => b.score - a.score || b.phraseScore - a.phraseScore);
+  return candidates[0] || null;
+}
+
+function numericRatioForColumn(rows, columnName) {
+  const values = populatedValues(rows, columnName);
+  if (!values.length) return 0;
+
+  const numeric = values.filter((value) => parseNumber(value) !== null).length;
+  return numeric / values.length;
+}
+
+function resolveStandardLocalAggregatePlan({
+  question,
+  schema = [],
+  datasets = {},
+} = {}) {
+  const operation = detectStandardAggregateOperation(question);
+  if (!operation) return null;
+
+  const groupingPhrase = detectGroupingPhrase(question);
+
+  // Preserve the existing entity-count and quantity-aggregation resolvers for
+  // ordinary ungrouped "how many/how much" questions. This resolver owns
+  // row_count only when the user explicitly asks for a grouped calculation.
+  if (operation === "row_count" && !groupingPhrase) return null;
+
+  const candidates = [];
+
+  for (const datasetSchema of schema || []) {
+    const datasetName = datasetSchema?.name;
+    const rows = datasets?.[datasetName];
+
+    if (!datasetName || !Array.isArray(rows) || !rows.length) continue;
+
+    const datasetNameScore = scoreDatasetName(datasetName, question);
+    const datasetGrouping = resolveBestGroupingColumn({
+      datasetSchema,
+      rows,
+      phrase: groupingPhrase,
+    });
+
+    if (operation === "row_count") {
+      const filters = inferValueFilters(
+        rows,
+        question,
+        [datasetGrouping?.column].filter(Boolean)
+      );
+      const grouping = datasetGrouping;
+
+      const score = Math.min(
+        1,
+        0.58 +
+          datasetNameScore * 0.10 +
+          (Array.isArray(filters) && filters.length ? 0.16 : 0) +
+          (grouping ? 0.16 : 0)
+      );
+
+      candidates.push({
+        dataset: datasetName,
+        column: null,
+        filters: Array.isArray(filters) ? filters : [],
+        grouping,
+        columnScore: 1,
+        numericRatio: 1,
+        datasetNameScore,
+        score,
+      });
+      continue;
+    }
+
+    for (const rawColumn of datasetSchema.columns || []) {
+      const columnName = typeof rawColumn === "string" ? rawColumn : rawColumn?.name;
+      if (!columnName) continue;
+
+      if (
+        groupingPhrase &&
+        datasetGrouping?.column &&
+        normalizeText(columnName) === normalizeText(datasetGrouping.column)
+      ) {
+        continue;
+      }
+
+      const numericRatio = numericRatioForColumn(rows, columnName);
+      if (numericRatio < 0.7) continue;
+
+      const columnScore = scoreColumnAgainstQuestion(columnName, question);
+      if (columnScore < 0.30) continue;
+
+      const grouping = datasetGrouping;
+
+      const filters = inferValueFilters(
+        rows,
+        question,
+        [columnName, grouping?.column].filter(Boolean)
+      );
+
+      const filterBonus = Array.isArray(filters) && filters.length ? 0.18 : 0;
+      const groupingBonus = grouping ? 0.14 : 0;
+
+      const score = Math.min(
+        1,
+        columnScore * 0.67 +
+          numericRatio * 0.10 +
+          datasetNameScore * 0.07 +
+          filterBonus +
+          groupingBonus
+      );
+
+      candidates.push({
+        dataset: datasetName,
+        column: columnName,
+        filters: Array.isArray(filters) ? filters : [],
+        grouping,
+        columnScore,
+        numericRatio,
+        datasetNameScore,
+        score,
+      });
+    }
+  }
+
+  if (!candidates.length) return null;
+
+  candidates.sort((a, b) =>
+    b.score - a.score ||
+    b.columnScore - a.columnScore ||
+    b.numericRatio - a.numericRatio
+  );
+
+  const best = candidates[0];
+  const second = candidates[1];
+
+  if (operation !== "row_count") {
+    // A bare aggregate word such as "what is the total?" must not
+    // arbitrarily pick a numeric field just because its header contains
+    // "total". Require real metric evidence in the current question.
+    if (best.columnScore < 0.48) return null;
+
+    if (
+      second &&
+      second.dataset !== best.dataset &&
+      Math.abs(best.score - second.score) < 0.04 &&
+      best.columnScore < 0.72
+    ) {
+      return null;
+    }
+  }
+
+  const groupedOperation =
+    best.grouping && groupingPhrase
+      ? mapGroupedAggregateOperation(operation)
+      : null;
+
+  return {
+    route: "dataset",
+    dataset: best.dataset,
+    operation: groupedOperation || operation,
+    column: best.column,
+    labelColumn: best.grouping?.column || null,
+    groupBy: best.grouping?.column || null,
+    aggregation: groupedOperation ? groupedOperation.replace(/^group_/, "") : null,
+    direction: null,
+    filters: best.filters,
+    selectColumns: best.column ? [best.column] : [],
+    outputRequested: true,
+    transform: null,
+    showAll: Boolean(groupedOperation),
+    limit: groupedOperation ? 100 : 10,
+    localSemanticResolved: true,
+    localSemanticConfidence: best.score,
+    localSemanticEvidence: {
+      aggregateResolver: true,
+      typoTolerantMathIntent: true,
+      groupedCalculation: Boolean(groupedOperation),
+      groupingPhrase: groupingPhrase || null,
+      groupingColumn: best.grouping?.column || null,
+      groupingColumnScore: best.grouping
+        ? Number(best.grouping.phraseScore.toFixed(4))
+        : null,
+      metricColumnScore: Number(best.columnScore.toFixed(4)),
+      numericRatio: Number(best.numericRatio.toFixed(4)),
+      datasetNameScore: Number(best.datasetNameScore.toFixed(4)),
+      groundedFilterCount: best.filters.length,
+    },
+  };
+}
+
 function detectRequestedOperation(question) {
   const text = normalizeText(question);
 
@@ -237,7 +559,20 @@ function resolveStrongLocalSemanticPlan({
   datasets = {},
   context = null,
 } = {}) {
-  if (!isLikelyDataQuestion(question)) return null;
+  const detectedMathOperation = detectStandardAggregateOperation(question);
+
+  if (!detectedMathOperation && !isLikelyDataQuestion(question)) return null;
+
+  const standardAggregatePlan =
+    resolveStandardLocalAggregatePlan({
+      question,
+      schema,
+      datasets,
+    });
+
+  if (standardAggregatePlan?.route === "dataset") {
+    return standardAggregatePlan;
+  }
 
   const aggregationPlan =
     resolveLocalQuantityAggregationPlan({
@@ -480,5 +815,7 @@ module.exports = {
   detectRequestedOperation,
   isLikelyDataQuestion,
   isReferentialQuestion,
+  detectStandardAggregateOperation,
+  resolveStandardLocalAggregatePlan,
   resolveStrongLocalSemanticPlan,
 };
