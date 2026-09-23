@@ -6147,3 +6147,45 @@ test('problem2 grounded list response is preserved for Groq and local parity', (
   });
   assert.equal(keep, true);
 });
+
+test('problem3 zero-match numeric aggregate stays a valid no-data result for compound follow-up continuity', () => {
+  const { executePlan } = require('./calculationEngine');
+
+  const datasets = {
+    Main_Table_2026: [
+      { Province: 'Pangasinan', Phase: 'Phase 3', 'Total Land Area (ha)': '71.03' },
+      { Province: 'Ilocos Sur', Phase: 'Phase 3', 'Total Land Area (ha)': '32.89' },
+    ],
+  };
+
+  const result = executePlan({
+    datasets,
+    question: 'what is their total land area',
+    plan: {
+      route: 'dataset',
+      dataset: 'Main_Table_2026',
+      operation: 'sum',
+      column: 'Total Land Area (ha)',
+      filters: [
+        { column: 'Phase', operator: 'equals', value: 'Phase 3' },
+        { column: 'Province', operator: 'equals', value: 'La Union' },
+      ],
+      selectColumns: ['Total Land Area (ha)'],
+      outputRequested: true,
+      limit: 10,
+      showAll: false,
+    },
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'sum');
+  assert.equal(result.column, 'Total Land Area (ha)');
+  assert.equal(result.value, null);
+  assert.equal(result.recordsUsed, 0);
+  assert.equal(result.noData, true);
+  assert.equal(result.emptyReason, 'no_matching_rows');
+  assert.deepEqual(result.filters, [
+    { column: 'Phase', operator: 'equals', value: 'Phase 3' },
+    { column: 'Province', operator: 'equals', value: 'La Union' },
+  ]);
+});

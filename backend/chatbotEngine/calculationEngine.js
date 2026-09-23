@@ -2169,6 +2169,39 @@ function executePlan({
     .filter((item) => item.value !== null);
 
   if (!numericRows.length) {
+    const hasMatchingRows = Array.isArray(filteredRows) && filteredRows.length > 0;
+
+    // A grounded numeric question with no matching rows (or only missing
+    // numeric values) is a valid no-data result, not an ambiguity. Keeping
+    // the original operation/column/filters intact is especially important
+    // for conversational and compound follow-ups such as "what about X?".
+    // Otherwise the conversation context can accidentally replace the
+    // analytical clause with a clarify operation and lose the compound shape
+    // on the next follow-up.
+    if (["sum", "average", "median", "minimum", "maximum"].includes(operation)) {
+      const metricLabel = String(numericColumn || "value")
+        .replace(/\s*\([^)]*\)\s*$/u, "")
+        .trim();
+
+      return {
+        success: true,
+        source: "dataset",
+        dataset: datasetName,
+        operation,
+        column: numericColumn,
+        value: null,
+        recordsUsed: 0,
+        filters,
+        noData: true,
+        emptyReason: hasMatchingRows
+          ? "no_numeric_values"
+          : "no_matching_rows",
+        answer: hasMatchingRows
+          ? `The matching records have no usable ${metricLabel} values, so the ${operation} cannot be calculated.`
+          : `There are no matching records, so the ${operation} ${metricLabel} cannot be calculated.`,
+      };
+    }
+
     return {
       success: false,
       source: "router",
