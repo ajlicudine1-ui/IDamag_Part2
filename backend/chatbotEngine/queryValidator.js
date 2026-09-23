@@ -203,6 +203,13 @@ function validateFilters(
       operator === "in" ||
       operator === "not_in";
 
+    // Unary presence/absence operators intentionally do not need
+    // a filter value. They inspect the cell itself.
+    const isValueOptional =
+      operator === "empty" ||
+      operator === "empty_or_zero" ||
+      operator === "not_empty";
+
     if (isMultiValue) {
       if (
         !Array.isArray(filter.value) ||
@@ -220,9 +227,10 @@ function validateFilters(
         );
       }
     } else if (
-      filter.value === undefined ||
-      filter.value === null ||
-      String(filter.value).trim() === ""
+      !isValueOptional &&
+      (filter.value === undefined ||
+        filter.value === null ||
+        String(filter.value).trim() === "")
     ) {
       return makeError(
         "EMPTY_FILTER_VALUE",
