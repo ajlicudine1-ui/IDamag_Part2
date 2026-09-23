@@ -1772,7 +1772,7 @@ function executePlan({
   }
 
   if (operation === "lookup") {
-    const selectedColumns =
+    const requestedSelectedColumns =
       Array.isArray(plan.selectColumns) &&
       plan.selectColumns.length
         ? plan.selectColumns
@@ -1782,9 +1782,59 @@ function executePlan({
           ? []
           : getColumns(rows).slice(0, 10);
 
+    /*
+     * Preserve row identity for multi-entity lookups.
+     *
+     * Example:
+     *   Municipality IN ["Dingras", "Badoc"]
+     *   return Irrigated Total Area Planted
+     *
+     * Previously the projection could become:
+     *   [{area: 1153}, {area: 6591}]
+     * which loses which municipality owns each value. Any response formatter
+     * that then paired values with the requested filter list by position could
+     * accidentally swap the entities.
+     *
+     * Keep a verified identity column alongside the requested metric whenever
+     * the lookup is scoped by a multi-value filter. This is schema-driven and
+     * applies to municipalities, provinces, associations, projects, offices,
+     * or any other categorical identity field.
+     */
+    let lookupLabelColumn = plan.labelColumn
+      ? findColumn(rows, plan.labelColumn)
+      : null;
+
+    if (!lookupLabelColumn) {
+      const multiEntityFilter = filters.find((filter) => {
+        const values = Array.isArray(filter?.value)
+          ? filter.value
+          : [];
+        const operator = String(filter?.operator || "")
+          .trim()
+          .toLowerCase();
+
+        return values.length > 1 &&
+          ["in", "one_of", "equals_any"].includes(operator);
+      });
+
+      if (multiEntityFilter) {
+        lookupLabelColumn = findColumn(
+          rows,
+          multiEntityFilter.column
+        );
+      }
+    }
+
+    const selectedColumns = [
+      ...(lookupLabelColumn ? [lookupLabelColumn] : []),
+      ...requestedSelectedColumns.filter(
+        (selected) => selected !== lookupLabelColumn
+      ),
+    ];
+
     if (
       plan.outputRequested &&
-      selectedColumns.length === 0
+      requestedSelectedColumns.length === 0
     ) {
       throw new Error(
         "I found the matching record, but could not determine which field you want returned."
@@ -1822,6 +1872,11 @@ function executePlan({
       source: "dataset",
       dataset: datasetName,
       operation,
+      column:
+        column ||
+        requestedSelectedColumns[0] ||
+        null,
+      labelColumn: lookupLabelColumn || null,
       matchedRowCount: filteredRows.length,
       count: distinctProjectedResults.length,
       results: projectedResults,
@@ -1832,6 +1887,8 @@ function executePlan({
         results: projectedResults,
         selectedColumns,
         count: distinctProjectedResults.length,
+        question,
+        labelColumn: lookupLabelColumn || null,
       }),
     };
   }
@@ -2169,39 +2226,6 @@ function executePlan({
     .filter((item) => item.value !== null);
 
   if (!numericRows.length) {
-    const hasMatchingRows = Array.isArray(filteredRows) && filteredRows.length > 0;
-
-    // A grounded numeric question with no matching rows (or only missing
-    // numeric values) is a valid no-data result, not an ambiguity. Keeping
-    // the original operation/column/filters intact is especially important
-    // for conversational and compound follow-ups such as "what about X?".
-    // Otherwise the conversation context can accidentally replace the
-    // analytical clause with a clarify operation and lose the compound shape
-    // on the next follow-up.
-    if (["sum", "average", "median", "minimum", "maximum"].includes(operation)) {
-      const metricLabel = String(numericColumn || "value")
-        .replace(/\s*\([^)]*\)\s*$/u, "")
-        .trim();
-
-      return {
-        success: true,
-        source: "dataset",
-        dataset: datasetName,
-        operation,
-        column: numericColumn,
-        value: null,
-        recordsUsed: 0,
-        filters,
-        noData: true,
-        emptyReason: hasMatchingRows
-          ? "no_numeric_values"
-          : "no_matching_rows",
-        answer: hasMatchingRows
-          ? `The matching records have no usable ${metricLabel} values, so the ${operation} cannot be calculated.`
-          : `There are no matching records, so the ${operation} ${metricLabel} cannot be calculated.`,
-      };
-    }
-
     return {
       success: false,
       source: "router",

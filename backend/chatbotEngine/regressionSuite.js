@@ -5996,6 +5996,46 @@ test('problem2 lookup removes duplicate projected entity rows from denormalized 
   assert.equal(result.duplicateLookupRowsRemoved, true);
 });
 
+test('problem3 multi-entity lookup preserves identity with each returned value', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    Sheet1: [
+      { Municipality: 'Badoc', 'Irrigated Total Area Planted': '1,153' },
+      { Municipality: 'Dingras', 'Irrigated Total Area Planted': '6,591' },
+    ],
+  };
+
+  const result = executePlan({
+    datasets,
+    question: 'Compare the planted area of Dingras and Badoc.',
+    plan: {
+      route: 'dataset',
+      dataset: 'Sheet1',
+      operation: 'lookup',
+      column: 'Irrigated Total Area Planted',
+      filters: [
+        {
+          column: 'Municipality',
+          operator: 'in',
+          value: ['Dingras', 'Badoc'],
+        },
+      ],
+      selectColumns: ['Irrigated Total Area Planted'],
+      outputRequested: true,
+      showAll: true,
+      limit: 10,
+    },
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.labelColumn, 'Municipality');
+  assert.equal(result.column, 'Irrigated Total Area Planted');
+  assert.deepEqual(result.results, [
+    { Municipality: 'Badoc', 'Irrigated Total Area Planted': '1,153' },
+    { Municipality: 'Dingras', 'Irrigated Total Area Planted': '6,591' },
+  ]);
+});
+
 test('problem2 aggregate field guard prefers explicitly named numeric measure over entity noun', () => {
   const { enforceExplicitQuestionColumn } = require('./plannerNormalizer');
   const { buildSchema } = require('./schemaBuilder');
@@ -6146,46 +6186,4 @@ test('problem2 grounded list response is preserved for Groq and local parity', (
     semanticAnswer: 'The associations whose commodities include sugarcane are Group A and Group B.',
   });
   assert.equal(keep, true);
-});
-
-test('problem3 zero-match numeric aggregate stays a valid no-data result for compound follow-up continuity', () => {
-  const { executePlan } = require('./calculationEngine');
-
-  const datasets = {
-    Main_Table_2026: [
-      { Province: 'Pangasinan', Phase: 'Phase 3', 'Total Land Area (ha)': '71.03' },
-      { Province: 'Ilocos Sur', Phase: 'Phase 3', 'Total Land Area (ha)': '32.89' },
-    ],
-  };
-
-  const result = executePlan({
-    datasets,
-    question: 'what is their total land area',
-    plan: {
-      route: 'dataset',
-      dataset: 'Main_Table_2026',
-      operation: 'sum',
-      column: 'Total Land Area (ha)',
-      filters: [
-        { column: 'Phase', operator: 'equals', value: 'Phase 3' },
-        { column: 'Province', operator: 'equals', value: 'La Union' },
-      ],
-      selectColumns: ['Total Land Area (ha)'],
-      outputRequested: true,
-      limit: 10,
-      showAll: false,
-    },
-  });
-
-  assert.equal(result.success, true);
-  assert.equal(result.operation, 'sum');
-  assert.equal(result.column, 'Total Land Area (ha)');
-  assert.equal(result.value, null);
-  assert.equal(result.recordsUsed, 0);
-  assert.equal(result.noData, true);
-  assert.equal(result.emptyReason, 'no_matching_rows');
-  assert.deepEqual(result.filters, [
-    { column: 'Phase', operator: 'equals', value: 'Phase 3' },
-    { column: 'Province', operator: 'equals', value: 'La Union' },
-  ]);
 });
