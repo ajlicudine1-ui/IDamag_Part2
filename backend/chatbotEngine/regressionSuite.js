@@ -6187,3 +6187,31 @@ test('problem2 grounded list response is preserved for Groq and local parity', (
   });
   assert.equal(keep, true);
 });
+
+test('problem3 paired lookup keeps thousands-formatted numeric cells intact in narrative', () => {
+  const { buildLookupPairNarrative } = require('./responseNarrativeEngine');
+
+  const answer = buildLookupPairNarrative({
+    question: 'Compare the planted area of Dingras and Badoc.',
+    plan: {
+      operation: 'lookup',
+      column: 'Irrigated Total Area Planted',
+      labelColumn: 'Municipality',
+    },
+    result: {
+      operation: 'lookup',
+      column: 'Irrigated Total Area Planted',
+      labelColumn: 'Municipality',
+      results: [
+        { Municipality: 'Badoc', 'Irrigated Total Area Planted': '1,153' },
+        { Municipality: 'Dingras', 'Irrigated Total Area Planted': '6,591' },
+      ],
+    },
+  });
+
+  assert.match(answer, /1,153/);
+  assert.match(answer, /6,591/);
+  assert.doesNotMatch(answer, /include 1, 153/);
+  assert.doesNotMatch(answer, /associated with 1 and 153/);
+  assert.doesNotMatch(answer, /associated with 6 and 591/);
+});

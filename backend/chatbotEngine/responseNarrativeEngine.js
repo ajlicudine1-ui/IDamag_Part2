@@ -86,7 +86,16 @@ function splitDisplayValues(value) {
   const raw = String(value).trim();
   if (!raw) return [];
 
-  // Display-only normalization for multi-value cells.
+  // A comma inside a formatted number is not a multi-value separator.
+  // Preserve values such as 1,153 / 6,591 / 1,234.56 as one display value.
+  // This prevents paired lookups from turning a single numeric cell into
+  // multiple values (for example, "1,153" -> "1" and "153").
+  const numericWithGrouping = /^[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$/;
+  if (numericWithGrouping.test(raw)) {
+    return [raw];
+  }
+
+  // Display-only normalization for genuinely multi-value cells.
   // Keep this conservative and generic: commas, semicolons, pipes, and
   // line breaks are common separators in worksheet cells.
   return raw
