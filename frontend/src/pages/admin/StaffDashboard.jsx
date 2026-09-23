@@ -86,8 +86,11 @@ function StaffDashboard() {
   const [worksheetError, setWorksheetError] =
     useState("");
 
-  const [editingWorksheet, setEditingWorksheet] =
-    useState(null);
+  const [worksheetMode, setWorksheetMode] =
+    useState("add");
+
+  const [removedWorksheetIds, setRemovedWorksheetIds] =
+    useState([]);
 
   const [worksheetForm, setWorksheetForm] = useState({
     reportId: "",
@@ -560,48 +563,41 @@ function StaffDashboard() {
   // WORKSHEET MODAL
   // =========================================================
 
+  const emptyWorksheetRow = () => ({
+    worksheetId: null,
+    worksheetName: "",
+    gid: "",
+  });
+
   const openWorksheetModal = () => {
-    setEditingWorksheet(null);
+    setWorksheetMode("add");
+    setRemovedWorksheetIds([]);
     setWorksheetError("");
 
     setWorksheetForm({
       reportId: "",
       sheetUrl: "",
       worksheets: [
-        {
-          worksheetName: "",
-          gid: "",
-        },
+        emptyWorksheetRow(),
       ],
     });
 
     setIsWorksheetModalOpen(true);
   };
 
-  const openEditWorksheetModal = (worksheet) => {
-    const dashboardId = getWorksheetDashboardId(worksheet);
-    const report = reports.find(
-      (item) => String(item.id) === String(dashboardId)
-    );
-
-    setEditingWorksheet(worksheet);
+  const openEditWorksheetModal = async () => {
+    setWorksheetMode("edit");
+    setRemovedWorksheetIds([]);
     setWorksheetError("");
 
+    if (worksheets.length === 0) {
+      await loadWorksheets();
+    }
+
     setWorksheetForm({
-      reportId: String(dashboardId ?? ""),
-      sheetUrl:
-        worksheet.sheetUrl ||
-        worksheet.sheet_url ||
-        report?.sheetUrl ||
-        report?.sheet_url ||
-        "",
-      worksheets: [
-        {
-          worksheetName:
-            worksheet.worksheetName || worksheet.name || "",
-          gid: String(worksheet.gid ?? ""),
-        },
-      ],
+      reportId: "",
+      sheetUrl: "",
+      worksheets: [],
     });
 
     setIsWorksheetModalOpen(true);
@@ -609,19 +605,70 @@ function StaffDashboard() {
 
   const closeWorksheetModal = () => {
     setIsWorksheetModalOpen(false);
-    setEditingWorksheet(null);
     setWorksheetError("");
+    setWorksheetMode("add");
+    setRemovedWorksheetIds([]);
 
     setWorksheetForm({
       reportId: "",
       sheetUrl: "",
       worksheets: [
-        {
-          worksheetName: "",
-          gid: "",
-        },
+        emptyWorksheetRow(),
       ],
     });
+  };
+
+  const handleWorksheetDashboardChange = (reportId) => {
+    const selectedReport = reports.find(
+      (report) =>
+        String(report.id) === String(reportId)
+    );
+
+    if (worksheetMode === "edit") {
+      const existingRows = worksheets
+        .filter(
+          (worksheet) =>
+            String(
+              getWorksheetDashboardId(worksheet)
+            ) === String(reportId)
+        )
+        .map((worksheet) => ({
+          worksheetId:
+            worksheet.worksheetId ??
+            worksheet.id ??
+            null,
+          worksheetName:
+            worksheet.worksheetName ??
+            worksheet.name ??
+            "",
+          gid:
+            worksheet.gid != null
+              ? String(worksheet.gid)
+              : "",
+        }));
+
+      setRemovedWorksheetIds([]);
+
+      setWorksheetForm({
+        reportId,
+        sheetUrl:
+          selectedReport?.sheetUrl || "",
+        worksheets:
+          existingRows.length > 0
+            ? existingRows
+            : [emptyWorksheetRow()],
+      });
+
+      return;
+    }
+
+    setWorksheetForm((current) => ({
+      ...current,
+      reportId,
+      sheetUrl:
+        selectedReport?.sheetUrl ||
+        current.sheetUrl,
+    }));
   };
 
   // =========================================================
@@ -636,10 +683,7 @@ function StaffDashboard() {
         worksheets: [
           ...current.worksheets,
 
-          {
-            worksheetName: "",
-            gid: "",
-          },
+          emptyWorksheetRow(),
         ],
       })
     );
@@ -652,16 +696,35 @@ function StaffDashboard() {
   const removeWorksheetRow = (
     index
   ) => {
-    setWorksheetForm(
-      (current) => ({
-        ...current,
+    setWorksheetForm((current) => {
+      const worksheet =
+        current.worksheets[index];
 
+      if (
+        worksheetMode === "edit" &&
+        worksheet?.worksheetId
+      ) {
+        setRemovedWorksheetIds(
+          (ids) => [
+            ...ids,
+            worksheet.worksheetId,
+          ]
+        );
+      }
+
+      const nextWorksheets =
+        current.worksheets.filter(
+          (_, i) => i !== index
+        );
+
+      return {
+        ...current,
         worksheets:
-          current.worksheets.filter(
-            (_, i) => i !== index
-          ),
-      })
-    );
+          nextWorksheets.length > 0
+            ? nextWorksheets
+            : [emptyWorksheetRow()],
+      };
+    });
   };
 
   // =========================================================
@@ -773,63 +836,95 @@ function StaffDashboard() {
       try {
         setWorksheetSaving(true);
 
-        if (editingWorksheet) {
-          const worksheet = worksheetForm.worksheets[0];
-          const worksheetId = editingWorksheet.worksheetId || editingWorksheet.id;
+        if (worksheetMode === "edit") {
+          for (const worksheetId of removedWorksheetIds) {
+            const deleteResponse = await fetch(
+              `${WORKSHEET_API_URL}/${worksheetId}`,
+              {
+                method: "DELETE",
+              }
+            );
 
-          const response = await fetch(
-            `${WORKSHEET_API_URL}/${worksheetId}`,
-            {
-              method: "PUT",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                dashboardId: Number(worksheetForm.reportId),
-                sheetUrl: worksheetForm.sheetUrl.trim(),
-                worksheetName: worksheet.worksheetName.trim(),
-                gid: String(worksheet.gid).trim(),
-              }),
-            }
-          );
+            if (!deleteResponse.ok) {
+              const errorText =
+                await deleteResponse.text();
 
-          if (!response.ok) {
-            const text = await response.text();
-            throw new Error(text || "Unable to update worksheet.");
-          }
-        } else {
-          for (const worksheet of worksheetForm.worksheets) {
-            const response = await fetch(WORKSHEET_API_URL, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                dashboardId: Number(worksheetForm.reportId),
-                sheetUrl: worksheetForm.sheetUrl.trim(),
-                worksheetName: worksheet.worksheetName.trim(),
-                gid: String(worksheet.gid).trim(),
-              }),
-            });
-
-            if (!response.ok) {
-              const text = await response.text();
               throw new Error(
-                text || `Unable to save ${worksheet.worksheetName}.`
+                errorText ||
+                  "Unable to delete an existing worksheet."
               );
             }
           }
         }
 
-        closeWorksheetModal();
+        for (
+          const worksheet of
+          worksheetForm.worksheets
+        ) {
+          const isExistingWorksheet =
+            worksheetMode === "edit" &&
+            worksheet.worksheetId;
 
-        if (managementView === "worksheets") {
-          await loadWorksheets();
+          const endpoint =
+            isExistingWorksheet
+              ? `${WORKSHEET_API_URL}/${worksheet.worksheetId}`
+              : WORKSHEET_API_URL;
+
+          const response =
+            await fetch(endpoint, {
+              method:
+                isExistingWorksheet
+                  ? "PUT"
+                  : "POST",
+
+              headers: {
+                "Content-Type":
+                  "application/json",
+              },
+
+              body: JSON.stringify({
+                dashboardId:
+                  Number(
+                    worksheetForm.reportId
+                  ),
+
+                sheetUrl:
+                  worksheetForm.sheetUrl.trim(),
+
+                worksheetName:
+                  worksheet.worksheetName.trim(),
+
+                gid:
+                  String(
+                    worksheet.gid
+                  ).trim(),
+              }),
+            });
+
+          if (!response.ok) {
+            const errorText =
+              await response.text();
+
+            throw new Error(
+              errorText ||
+                `Unable to ${
+                  isExistingWorksheet
+                    ? "update"
+                    : "save"
+                } ${worksheet.worksheetName}.`
+            );
+          }
         }
 
+        const completedMode = worksheetMode;
+
+        closeWorksheetModal();
+
+        await loadWorksheets();
+
         alert(
-          editingWorksheet
-            ? "Worksheet updated successfully."
+          completedMode === "edit"
+            ? "Worksheets updated successfully."
             : "Worksheets saved successfully."
         );
       } catch (error) {
@@ -846,52 +941,6 @@ function StaffDashboard() {
         setWorksheetSaving(false);
       }
     };
-
-  // =========================================================
-  // DELETE WORKSHEET
-  // =========================================================
-
-  const handleDeleteWorksheet = (worksheet) => {
-    const worksheetId = worksheet.worksheetId || worksheet.id;
-    const worksheetName =
-      worksheet.worksheetName || worksheet.name || "this worksheet";
-
-    setConfirmConfig({
-      title: "Delete Worksheet?",
-      message: `Are you sure you want to permanently delete ${worksheetName}?`,
-      action: () => executeDeleteWorksheet(worksheetId),
-    });
-
-    setShowConfirmModal(true);
-  };
-
-  const executeDeleteWorksheet = async (worksheetId) => {
-    try {
-      const response = await fetch(
-        `${WORKSHEET_API_URL}/${worksheetId}`,
-        { method: "DELETE" }
-      );
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(text || "Unable to delete worksheet.");
-      }
-
-      setWorksheets((current) =>
-        current.filter(
-          (worksheet) =>
-            String(worksheet.worksheetId || worksheet.id) !==
-            String(worksheetId)
-        )
-      );
-
-      setShowConfirmModal(false);
-    } catch (error) {
-      console.error("Worksheet delete error:", error);
-      alert(error.message || "Unable to delete worksheet.");
-      setShowConfirmModal(false);
-    }
-  };
 
   // =========================================================
   // LOADING
@@ -1307,14 +1356,28 @@ function StaffDashboard() {
                   type="button"
                   onClick={openWorksheetModal}
                   disabled={reports.length === 0}
-                  className={`flex items-center gap-2 rounded-2xl px-5 py-3.5 text-[11px] font-black uppercase tracking-widest transition-all active:scale-95 ${
+                  className={`flex min-w-[156px] items-center justify-center gap-2 rounded-2xl px-4 py-3 text-[10px] font-black uppercase tracking-wider transition-all active:scale-95 ${
                     reports.length === 0
                       ? "cursor-not-allowed bg-slate-100 text-slate-400"
                       : "bg-moss-600 text-white shadow-lg shadow-moss-600/20 hover:bg-moss-700"
                   }`}
                 >
-                  <Plus size={18} />
+                  <Plus size={17} />
                   Add Worksheet
+                </button>
+
+                <button
+                  type="button"
+                  onClick={openEditWorksheetModal}
+                  disabled={reports.length === 0}
+                  className={`flex min-w-[156px] items-center justify-center gap-2 rounded-2xl border px-4 py-3 text-[10px] font-black uppercase tracking-wider transition-all active:scale-95 ${
+                    reports.length === 0
+                      ? "cursor-not-allowed border-slate-100 bg-slate-100 text-slate-400"
+                      : "border-moss-200 bg-moss-50 text-moss-700 hover:bg-moss-100"
+                  }`}
+                >
+                  <Edit3 size={17} />
+                  Edit Worksheet
                 </button>
               </div>
 
@@ -1351,9 +1414,6 @@ function StaffDashboard() {
                     <th className="px-6 py-4 text-center text-[10px] font-bold uppercase tracking-widest text-slate-400">
                       Updated
                     </th>
-                    <th className="px-6 py-4 text-right text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                      Actions
-                    </th>
                   </tr>
                 </thead>
 
@@ -1362,7 +1422,7 @@ function StaffDashboard() {
                   {worksheetsLoading ? (
                     <tr>
                       <td
-                        colSpan="6"
+                        colSpan="5"
                         className="px-8 py-12 text-center font-medium text-slate-400"
                       >
                         Loading worksheets...
@@ -1371,7 +1431,7 @@ function StaffDashboard() {
                   ) : visibleWorksheets.length === 0 ? (
                     <tr>
                       <td
-                        colSpan="6"
+                        colSpan="5"
                         className="px-8 py-12 text-center font-medium text-slate-400"
                       >
                         No worksheets found for the selected reports.
@@ -1422,28 +1482,6 @@ function StaffDashboard() {
                                 worksheet.updated_at
                             )}
                           </span>
-                        </td>
-
-                        <td className="px-6 py-4 text-right">
-                          <div className="flex items-center justify-end gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => openEditWorksheetModal(worksheet)}
-                              className="rounded-xl p-2 text-slate-300 transition-all hover:bg-moss-50 hover:text-moss-600"
-                              title="Edit worksheet"
-                            >
-                              <Edit3 size={16} />
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteWorksheet(worksheet)}
-                              className="rounded-xl p-2 text-slate-200 transition-all hover:bg-red-50 hover:text-red-500"
-                              title="Delete worksheet"
-                            >
-                              <Trash2 size={16} />
-                            </button>
-                          </div>
                         </td>
                       </tr>
                     ))
@@ -1714,14 +1752,16 @@ function StaffDashboard() {
 
                     <h3 className="text-xl font-black tracking-tight text-slate-900">
 
-                      {editingWorksheet ? "Edit Worksheet" : "Add Worksheets"}
+                      {worksheetMode === "edit"
+                        ? "Edit Worksheets"
+                        : "Add Worksheets"}
 
                     </h3>
 
                     <p className="mt-1 text-xs font-medium text-slate-400">
 
-                      {editingWorksheet
-                        ? "Update the selected worksheet details."
+                      {worksheetMode === "edit"
+                        ? "Choose a dashboard to load its existing worksheets, edit them, or add new ones."
                         : "Connect Google Sheet pages to a Power BI report."}
 
                     </p>
@@ -1776,15 +1816,8 @@ function StaffDashboard() {
                         worksheetForm.reportId
                       }
                       onChange={(e) =>
-                        setWorksheetForm(
-                          (current) => ({
-                            ...current,
-
-                            reportId:
-                              e
-                                .target
-                                .value,
-                          })
+                        handleWorksheetDashboardChange(
+                          e.target.value
                         )
                       }
                       className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3.5 text-sm font-bold text-slate-700 outline-none transition focus:border-moss-600 focus:ring-4 focus:ring-moss-600/10"
@@ -1816,6 +1849,13 @@ function StaffDashboard() {
                     </select>
 
                   </div>
+
+                  {worksheetMode === "edit" &&
+                    !worksheetForm.reportId && (
+                    <div className="rounded-2xl border border-moss-100 bg-moss-50 px-4 py-3 text-xs font-bold text-moss-700">
+                      Select a dashboard above to load its existing worksheets.
+                    </div>
+                  )}
 
                   {/* GOOGLE SHEET URL */}
 
@@ -1872,8 +1912,8 @@ function StaffDashboard() {
 
                         <p className="mt-1 text-[11px] font-medium text-slate-400">
 
-                          {editingWorksheet
-                            ? "Edit this worksheet's name and GID."
+                          {worksheetMode === "edit"
+                            ? "Existing worksheets are loaded automatically. You can update them or add another worksheet."
                             : "Add every worksheet used by this dashboard."}
 
                         </p>
@@ -1882,16 +1922,18 @@ function StaffDashboard() {
 
                       {/* PLUS BUTTON */}
 
-                      {!editingWorksheet && (
-                        <button
-                          type="button"
-                          onClick={addWorksheetRow}
-                          className="flex h-10 w-10 items-center justify-center rounded-xl bg-moss-600 text-white shadow-md shadow-moss-600/20 transition hover:bg-moss-700 active:scale-95"
-                          title="Add another worksheet"
-                        >
-                          <Plus size={20} />
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={
+                          addWorksheetRow
+                        }
+                        className="flex h-10 w-10 items-center justify-center rounded-xl bg-moss-600 text-white shadow-md shadow-moss-600/20 transition hover:bg-moss-700 active:scale-95"
+                        title="Add another worksheet"
+                      >
+
+                        <Plus size={20} />
+
+                      </button>
 
                     </div>
 
@@ -1914,13 +1956,20 @@ function StaffDashboard() {
                               <p className="text-[10px] font-black uppercase tracking-widest text-moss-600">
 
                                 Worksheet{" "}
-                                {index +
-                                  1}
+                                {index + 1}
+                                {worksheetMode === "edit" &&
+                                  worksheet.worksheetId
+                                  ? " · Existing"
+                                  : worksheetMode === "edit"
+                                    ? " · New"
+                                    : ""}
 
                               </p>
 
-                              {!editingWorksheet &&
-                                worksheetForm.worksheets.length > 1 && (
+                              {worksheetForm
+                                .worksheets
+                                .length >
+                                1 && (
                                 <button
                                   type="button"
                                   onClick={() =>
@@ -2086,8 +2135,8 @@ function StaffDashboard() {
 
                     {worksheetSaving
                       ? "Saving..."
-                      : editingWorksheet
-                        ? "Update Worksheet"
+                      : worksheetMode === "edit"
+                        ? "Save Changes"
                         : "Save Worksheets"}
 
                   </button>
