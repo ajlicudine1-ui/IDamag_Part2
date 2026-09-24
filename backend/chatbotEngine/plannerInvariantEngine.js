@@ -11,7 +11,6 @@ const {
 } = require('./plannerNormalizer');
 const { findColumn, rankColumns } = require('./columnMatcher');
 const { applyFilters } = require('./filterEngine');
-const { resolveSemanticContractIntentPlan } = require('./semanticContractEngine');
 
 function cloneFilter(filter) {
   if (!filter || typeof filter !== 'object') return null;
@@ -1220,17 +1219,6 @@ function removeRedundantContainsEqualsFilters(plan) {
     : { ...plan, filters: filtered, redundantExactFilterRemoved: true };
 }
 
-
-function repairSemanticContractCountIntent({ datasets, plan, question }) {
-  const repaired = resolveSemanticContractIntentPlan({
-    datasets,
-    plan,
-    question,
-  });
-
-  return repaired || plan;
-}
-
 function enforcePlannerInvariants({ datasets, schema, plan, question }) {
   let next = plan;
   next = normalizeSameColumnEqualityFilters(next);
@@ -1250,7 +1238,6 @@ function enforcePlannerInvariants({ datasets, schema, plan, question }) {
   next = repairGroupedListPlan({ datasets, schema, plan: next, question });
   next = applySimpleRowRankingInvariant({ datasets, schema, plan: next, question });
   next = removeProjectionFieldFilterArtifacts({ datasets, plan: next, question });
-  next = repairSemanticContractCountIntent({ datasets, plan: next, question });
   next = dedupePlanFilters(next);
   return next;
 }
@@ -1273,7 +1260,6 @@ module.exports = {
   repairNumericMeasureCountIntent,
   repairAggregateIntent,
   repairImplicitFilteredAdditiveAggregate,
-  repairSemanticContractCountIntent,
   isAdditiveMeasureColumn,
   buildRankingDetailRescuePlan,
   applySimpleRowRankingInvariant,

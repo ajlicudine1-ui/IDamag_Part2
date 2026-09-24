@@ -25,12 +25,6 @@ const {
 const {
   findBestRelationship,
 } = require("./relationshipEngine");
-const {
-  resolveSemanticContractIntentPlan,
-  applySemanticContractScope,
-  evaluateSemanticContractAggregation,
-  detectMissingSemanticContractRisk,
-} = require("./semanticContractEngine");
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 100;
 
@@ -81,419 +75,6 @@ function describeFilters(filters) {
       )
       .join(" and ")
   );
-}
-
-
-/**
- * Mixed-grain datasets can contain the same measure at several aggregation
- * levels (for example Province, Municipality, and Barangay). Summing all rows
- * in that situation double- or triple-counts the same underlying population.
- *
- * This layer is deliberately schema/data-driven. It does NOT know about any
- * particular dashboard, province, metric, or geography. A column is treated as
- * a grain marker only when:
- *   1) its name explicitly describes a level/grain/granularity; and
- *   2) at least two of its values map back to real columns in the same rows.
- *
- * Example of a detected hierarchy:
- *   geography_level = [Province, Municipality, Barangay]
- *   columns          = [province, municipality, barangay, ...]
- *
- * If the plan asks for a Province-scoped aggregate, Province rows are used. If
- * those rows cannot satisfy a requested grouping field, the engine falls back
- * to the nearest finer compatible level rather than mixing grains.
- */
-function normalizeGrainKey(value, { descriptor = false } = {}) {
-  let text = normalizeText(value)
-    .replace(/[_.\\/()+-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (descriptor) {
-    text = text
-      .replace(
-        /\b(?:summary|summaries|total|totals|level|grain|granularity|aggregate|aggregation|detail|details|record|records|row|rows)\b/g,
-        " "
-      )
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
-  const words = text
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((word) => {
-      if (word.length > 4 && word.endsWith("ies")) {
-        return `${word.slice(0, -3)}y`;
-      }
-      if (
-        word.length > 3 &&
-        word.endsWith("s") &&
-        !word.endsWith("ss")
-      ) {
-        return word.slice(0, -1);
-      }
-      return word;
-    });
-
-  return words.join(" ");
-}
-
-function isPotentialGrainColumn(column) {
-  const normalized = normalizeText(column)
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return (
-    normalized === "level" ||
-    normalized === "grain" ||
-    normalized === "granularity" ||
-    /(?:^| )(?:level|grain|granularity)$/.test(normalized)
-  );
-}
-
-function findDimensionForGrainValue(columns, grainColumn, value) {
-  const target = normalizeGrainKey(value, { descriptor: true });
-  if (!target) return null;
-
-  const candidates = columns
-    .filter((column) => column !== grainColumn)
-    .map((column) => ({
-      column,
-      key: normalizeGrainKey(column),
-    }))
-    .filter((item) => item.key);
-
-  const exact = candidates.find((item) => item.key === target);
-  if (exact) return exact.column;
-
-  // Controlled containment supports values such as "Province Summary" after
-  // descriptor cleanup while avoiding very short accidental matches.
-  if (target.length >= 5) {
-    const contained = candidates
-      .filter(
-        (item) =>
-          item.key.length >= 5 &&
-          (item.key.includes(target) || target.includes(item.key))
-      )
-      .sort((a, b) => Math.abs(a.key.length - target.length) - Math.abs(b.key.length - target.length))[0];
-
-    if (contained) return contained.column;
-  }
-
-  return null;
-}
-
-function detectGrainHierarchies(rows) {
-  if (!Array.isArray(rows) || rows.length < 2) return [];
-
-  const columns = getColumns(rows);
-  const hierarchies = [];
-
-  for (const grainColumn of columns.filter(isPotentialGrainColumn)) {
-    const valueMap = new Map();
-
-    for (const row of rows) {
-      const raw = String(row?.[grainColumn] ?? "").trim();
-      if (!raw) continue;
-      const key = normalizeText(raw);
-      if (!valueMap.has(key)) {
-        valueMap.set(key, {
-          value: raw,
-          count: 0,
-        });
-      }
-      valueMap.get(key).count += 1;
-    }
-
-    const distinctValues = [...valueMap.values()];
-    if (distinctValues.length < 2 || distinctValues.length > 50) {
-      continue;
-    }
-
-    const levels = distinctValues.map((entry) => ({
-      ...entry,
-      dimensionColumn: findDimensionForGrainValue(
-        columns,
-        grainColumn,
-        entry.value
-      ),
-    }));
-
-    const mapped = levels.filter((level) => level.dimensionColumn);
-    const coverage = mapped.length / distinctValues.length;
-
-    // Requiring two mapped levels prevents ordinary categorical fields from
-    // being mistaken for hierarchy/grain controls.
-    if (mapped.length < 2 || coverage < 0.5) {
-      continue;
-    }
-
-    hierarchies.push({
-      grainColumn,
-      levels,
-      mappedLevels: mapped,
-      coverage,
-    });
-  }
-
-  return hierarchies.sort((a, b) => {
-    if (b.coverage !== a.coverage) return b.coverage - a.coverage;
-    return b.mappedLevels.length - a.mappedLevels.length;
-  });
-}
-
-function rowsAtGrain(rows, grainColumn, grainValue) {
-  const wanted = normalizeText(grainValue);
-  return (rows || []).filter(
-    (row) => normalizeText(row?.[grainColumn]) === wanted
-  );
-}
-
-function nonEmptyRatio(rows, column) {
-  if (!column || !Array.isArray(rows) || !rows.length) return 0;
-  let populated = 0;
-
-  for (const row of rows) {
-    const value = row?.[column];
-    if (
-      value !== null &&
-      value !== undefined &&
-      String(value).trim() !== ""
-    ) {
-      populated += 1;
-    }
-  }
-
-  return populated / rows.length;
-}
-
-function resolveGrainSelection({
-  hierarchy,
-  allRows,
-  scopedRows,
-  plan,
-  filters,
-  operation,
-}) {
-  const mappedLevels = hierarchy.mappedLevels
-    .map((level) => ({
-      ...level,
-      globalCount: rowsAtGrain(
-        allRows,
-        hierarchy.grainColumn,
-        level.value
-      ).length,
-      scopedRows: rowsAtGrain(
-        scopedRows,
-        hierarchy.grainColumn,
-        level.value
-      ),
-    }))
-    .filter((level) => level.globalCount > 0);
-
-  if (mappedLevels.length < 2) return null;
-
-  // Coarser levels normally contain fewer rows. This data-derived ordering is
-  // intentionally independent of words such as Province/Month/Year.
-  const ordered = [...mappedLevels].sort(
-    (a, b) => a.globalCount - b.globalCount
-  );
-
-  const resolvedGroupColumn =
-    plan.groupBy && findColumn(allRows, plan.groupBy);
-  const resolvedLabelColumn =
-    plan.labelColumn && findColumn(allRows, plan.labelColumn);
-
-  const requiredColumns = [];
-  if (
-    [
-      "group_sum",
-      "group_average",
-      "group_minimum",
-      "group_maximum",
-      "rank_groups",
-    ].includes(operation)
-  ) {
-    if (resolvedGroupColumn) requiredColumns.push(resolvedGroupColumn);
-    if (
-      resolvedLabelColumn &&
-      resolvedLabelColumn !== resolvedGroupColumn
-    ) {
-      requiredColumns.push(resolvedLabelColumn);
-    }
-  }
-
-  const isCompatible = (level) => {
-    if (!level.scopedRows.length) return false;
-    return requiredColumns.every(
-      (column) => nonEmptyRatio(level.scopedRows, column) >= 0.5
-    );
-  };
-
-  const targetColumns = [];
-  if (resolvedGroupColumn) targetColumns.push(resolvedGroupColumn);
-  if (
-    resolvedLabelColumn &&
-    !targetColumns.includes(resolvedLabelColumn)
-  ) {
-    targetColumns.push(resolvedLabelColumn);
-  }
-
-  for (const filter of filters || []) {
-    const resolved = findColumn(allRows, filter?.column);
-    if (resolved && !targetColumns.includes(resolved)) {
-      targetColumns.push(resolved);
-    }
-  }
-
-  let requestedLevel = null;
-  let requestedDimension = null;
-
-  for (const targetColumn of targetColumns) {
-    const targetKey = normalizeGrainKey(targetColumn);
-    const match = ordered.find(
-      (level) =>
-        normalizeGrainKey(level.dimensionColumn) === targetKey
-    );
-
-    if (match) {
-      requestedLevel = match;
-      requestedDimension = targetColumn;
-      break;
-    }
-  }
-
-  if (requestedLevel) {
-    if (isCompatible(requestedLevel)) {
-      return {
-        level: requestedLevel,
-        strategy: "requested_level",
-        requestedDimension,
-      };
-    }
-
-    // If the exact requested summary level cannot carry another requested
-    // dimension (for example grouping by Commodity), move only toward finer
-    // levels until one can answer the question. This avoids mixing levels and
-    // avoids discarding necessary detail columns.
-    const requestedIndex = ordered.indexOf(requestedLevel);
-    for (let index = requestedIndex + 1; index < ordered.length; index += 1) {
-      if (isCompatible(ordered[index])) {
-        return {
-          level: ordered[index],
-          strategy: "nearest_finer_compatible_level",
-          requestedDimension,
-        };
-      }
-    }
-
-    return null;
-  }
-
-  // With no explicit hierarchy level in the plan, use the coarsest compatible
-  // level. Summing one complete level is safe; summing all levels is not.
-  const coarsestCompatible = ordered.find(isCompatible);
-  if (!coarsestCompatible) return null;
-
-  return {
-    level: coarsestCompatible,
-    strategy: "coarsest_compatible_level",
-    requestedDimension: null,
-  };
-}
-
-function applyGrainAwareAggregation({
-  rows,
-  filteredRows,
-  plan,
-  filters,
-  operation,
-}) {
-  const supportedOperations = new Set([
-    "sum",
-    "average",
-    "median",
-    "minimum",
-    "maximum",
-    "group_sum",
-    "group_average",
-    "group_minimum",
-    "group_maximum",
-    "rank_groups",
-  ]);
-
-  if (!supportedOperations.has(operation)) {
-    return {
-      rows: filteredRows,
-      metadata: null,
-    };
-  }
-
-  const hierarchies = detectGrainHierarchies(rows);
-  if (!hierarchies.length) {
-    return {
-      rows: filteredRows,
-      metadata: null,
-    };
-  }
-
-  let scopedRows = filteredRows;
-  const selections = [];
-
-  for (const hierarchy of hierarchies) {
-    const selection = resolveGrainSelection({
-      hierarchy,
-      allRows: rows,
-      scopedRows,
-      plan,
-      filters,
-      operation,
-    });
-
-    if (!selection?.level) continue;
-
-    const before = scopedRows.length;
-    const nextRows = selection.level.scopedRows;
-
-    if (!nextRows.length) continue;
-
-    scopedRows = nextRows;
-    selections.push({
-      column: hierarchy.grainColumn,
-      value: selection.level.value,
-      dimensionColumn: selection.level.dimensionColumn,
-      strategy: selection.strategy,
-      requestedDimension: selection.requestedDimension,
-      rowsBefore: before,
-      rowsAfter: scopedRows.length,
-    });
-  }
-
-  const applied =
-    selections.length > 0 &&
-    scopedRows.length < filteredRows.length;
-
-  if (!applied) {
-    return {
-      rows: filteredRows,
-      metadata: null,
-    };
-  }
-
-  return {
-    rows: scopedRows,
-    metadata: {
-      grainAwareAggregation: true,
-      grainColumn: selections[0].column,
-      grainValue: selections[0].value,
-      grainStrategy: selections[0].strategy,
-      grainSelections: selections,
-      rowsBeforeGrainSelection: filteredRows.length,
-      rowsAfterGrainSelection: scopedRows.length,
-    },
-  };
 }
 
 
@@ -2040,38 +1621,13 @@ function inferListDisambiguationContext({ rows, selectedColumn }) {
 
 function buildDataQualitySummary({ datasets, plan }) {
   if (!plan || plan.route !== "dataset" || !plan.dataset || !plan.column) return null;
-
-  const datasetName = findDatasetName(datasets || {}, plan.dataset) || plan.dataset;
-  const rows = datasets?.[datasetName];
+  const rows = datasets?.[plan.dataset];
   if (!Array.isArray(rows) || !rows.length) return null;
 
   const column = findColumn(rows, plan.column);
   if (!column) return null;
-
   const filters = resolveFilters(rows, Array.isArray(plan.filters) ? plan.filters : []);
-  const baseScopedRows = applyFilters(rows, filters);
-  const operation = String(plan.operation || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "_");
-
-  const contractResolution = applySemanticContractScope({
-    datasets,
-    datasetName,
-    rows,
-    filteredRows: baseScopedRows,
-    plan,
-  });
-
-  const grainResolution = applyGrainAwareAggregation({
-    rows: contractResolution.allRows,
-    filteredRows: contractResolution.rows,
-    plan,
-    filters,
-    operation,
-  });
-
-  const scopedRows = grainResolution.rows;
+  const scopedRows = applyFilters(rows, filters);
   if (!scopedRows.length) {
     return { totalRows: 0, missingCount: 0, nonMissingCount: 0, missingRate: 0 };
   }
@@ -2094,23 +1650,6 @@ function executePlan({
   plan,
   question,
 }) {
-  // Last-mile semantic-contract repair. Planner invariants normally resolve
-  // this earlier, but deployed runtimes can still arrive here with a physical
-  // row_count plan for a contract-defined scalar metric. Repair again at the
-  // execution boundary so Groq, local fallback, and any later planner rewrite
-  // cannot turn "how many <stored metric>" into a row count.
-  const executionContractRepair = resolveSemanticContractIntentPlan({
-    datasets,
-    plan,
-    question,
-  });
-
-  if (executionContractRepair?.semanticContractIntentRepaired) {
-    Object.assign(plan, executionContractRepair, {
-      semanticContractExecutionIntentRepairApplied: true,
-    });
-  }
-
   const crossDatasetGroupedResult =
     executeCrossDatasetGroupedAggregation({
       datasets,
@@ -2200,78 +1739,12 @@ function executePlan({
     implicitFilters
   );
 
+  const filteredRows = applyFilters(rows, filters);
+  const filterText = describeFilters(filters);
   const operation = String(plan.operation || "")
     .trim()
     .toLowerCase()
     .replace(/\s+/g, "_");
-
-  const baseFilteredRows = applyFilters(rows, filters);
-
-  const missingSemanticContractRisk = detectMissingSemanticContractRisk({
-    datasets,
-    rows,
-    plan,
-    question,
-  });
-
-  if (missingSemanticContractRisk) {
-    return {
-      success: false,
-      source: "router",
-      operation: "clarify",
-      dataset: datasetName,
-      filters,
-      semanticContractViolation: true,
-      semanticContractDiagnostic: missingSemanticContractRisk.diagnostic,
-      semanticContractViolationReason: missingSemanticContractRisk.reason,
-      semanticContextColumns: missingSemanticContractRisk.contextColumns,
-      answer:
-        "This worksheet contains semantic result contexts, but the semantic contract was not loaded with the dataset. I did not convert the matching rows into a count because that could combine or misread authorized result contexts.",
-    };
-  }
-
-  // Dataset-provided semantic contracts take precedence over arithmetic
-  // guesses. A contract can identify the authoritative record family, source
-  // table, result type, and filter profile for a metric. This keeps evaluated
-  // parent values separate from alternate visual/summary surfaces before any
-  // grain selection or numeric aggregation occurs.
-  const semanticContractResolution = applySemanticContractScope({
-    datasets,
-    datasetName,
-    rows,
-    filteredRows: baseFilteredRows,
-    plan,
-  });
-
-  const grainResolution = applyGrainAwareAggregation({
-    rows: semanticContractResolution.allRows,
-    filteredRows: semanticContractResolution.rows,
-    plan,
-    filters,
-    operation,
-  });
-  const filteredRows = grainResolution.rows;
-  const grainMetadata = grainResolution.metadata;
-  const semanticContractMetadata = semanticContractResolution.metadata;
-
-  const semanticContractAggregation = evaluateSemanticContractAggregation({
-    policy: semanticContractResolution.policy,
-    rows: filteredRows,
-    plan,
-    operation,
-    parseNumber,
-  });
-
-  const executionMetadata = {
-    ...(semanticContractMetadata || {}),
-    ...(grainMetadata || {}),
-    ...(semanticContractAggregation?.mode
-      ? { semanticContractExecutionMode: semanticContractAggregation.mode }
-      : {}),
-  };
-
-  const hasExecutionMetadata = Object.keys(executionMetadata).length > 0;
-  const filterText = describeFilters(filters);
   const limit = getLimit(plan);
 
   /*
@@ -2310,29 +1783,6 @@ function executePlan({
 
       if (crossResult) return crossResult;
     }
-  }
-
-  if (semanticContractAggregation?.allowed === false) {
-    const diagnostic = semanticContractAggregation.diagnostic || null;
-    return {
-      success: false,
-      source: "router",
-      operation: "clarify",
-      dataset: datasetName,
-      column: plan.column || null,
-      filters,
-      ...(hasExecutionMetadata ? executionMetadata : {}),
-      semanticContractViolation: true,
-      semanticContractDiagnostic: diagnostic,
-      semanticContractViolationReason:
-        semanticContractAggregation.reason || "recomputation_not_authorized",
-      answer:
-        diagnostic === "NO_SCALAR_MATCH"
-          ? "That authoritative stored result is unavailable for the requested scope."
-          : diagnostic === "MULTIPLE_SCALAR_MATCH" || diagnostic === "MULTIPLE_SEMANTIC_CONTEXT_MATCH"
-            ? "The request matched more than one authoritative semantic result, so I did not combine them. Please use a more specific supported scope."
-            : "This dataset provides that metric as an authoritative stored/evaluated result rather than a recalculable measure across multiple represented rows. Please ask for a single represented scope, or use an output whose dataset contract allows aggregation.",
-    };
   }
 
   if (operation === "row_count") {
@@ -2968,7 +2418,6 @@ function executePlan({
       direction,
       results: ranked,
       filters,
-      ...(hasExecutionMetadata ? executionMetadata : {}),
       answer:
         `${direction === "desc" ? "Top" : "Bottom"} ${ranked.length} ` +
         `${labelColumn} by ${aggregation} ${metricColumn} in ${datasetName}${filterText}:\n` +
@@ -3035,7 +2484,6 @@ function executePlan({
       value,
       recordsUsed: values.length,
       filters,
-      ...(hasExecutionMetadata ? executionMetadata : {}),
 
       /**
        * TEMPORARY DIAGNOSTIC ONLY
@@ -3092,7 +2540,6 @@ function executePlan({
       value: results[0]?.value,
       results,
       filters,
-      ...(hasExecutionMetadata ? executionMetadata : {}),
       answer:
         `${operation === "maximum" ? "Highest" : "Lowest"} ` +
         `${numericColumn} in ${datasetName}${filterText}:\n` +
@@ -3226,7 +2673,6 @@ function executePlan({
       groupBy: groupColumn,
       results,
       filters,
-      ...(hasExecutionMetadata ? executionMetadata : {}),
       answer:
         `${operation.replace("group_", "")} ${numericColumn} by ` +
         `${groupColumn} in ${datasetName}${filterText}:\n` +

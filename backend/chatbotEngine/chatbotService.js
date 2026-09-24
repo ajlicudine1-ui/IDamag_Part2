@@ -244,7 +244,6 @@ const {
 const {
   enforcePlannerInvariants,
   buildRankingDetailRescuePlan,
-  repairSemanticContractCountIntent,
 } = require("./plannerInvariantEngine");
 
 
@@ -5403,16 +5402,6 @@ async function answerQuestion(
         );
       }
 
-      // Contract-defined count metrics are authoritative enough to rescue a
-      // stale row-count/non-empty-count/clarify plan before route-specific
-      // processing begins. This shared boundary is used by Groq, local
-      // fallback, conversation, and forced plans alike.
-      plan = repairSemanticContractCountIntent({
-        datasets,
-        plan,
-        question: cleanQuestion,
-      });
-
       // Some shared semantic-rescue plans are already fully grounded from
       // the live schema. Preserve their structural intent across later
       // generic repair passes (which may otherwise reinterpret phrases like
@@ -6054,7 +6043,6 @@ async function answerQuestion(
 
       if (
         result &&
-        result.success !== false &&
         plan.route !==
           "clarify"
       ) {
@@ -7277,102 +7265,6 @@ async function answerQuestion(
 
   const GROQ_PRIMARY_THRESHOLD =
     0.85;
-
-  /**
-   * ========================================================
-   * DETERMINISTIC SEMANTIC-CONTRACT PRIMARY ROUTE
-   * ========================================================
-   *
-   * A self-contained question that strongly matches a declared semantic
-   * contract must not depend on which planner answers first. The contract is
-   * the authoritative routing source for stored metrics, so resolve it before
-   * Groq/local planning whenever the current turn is not referential.
-   *
-   * This is intentionally generic: the contract chooses the worksheet, metric,
-   * execution context, and allowed operation. Geography/entity filters are
-   * inferred only from values that exist in that chosen live worksheet.
-   */
-  // Route any SELF-CONTAINED semantic-contract count deterministically even
-  // when conversation state happens to mark the session as a follow-up. The
-  // current wording, not stale session state, decides whether this turn may use
-  // the authoritative contract. Truly referential wording (those/them/same,
-  // "what about", etc.) still remains on the conversation-aware path.
-  if (!looksLikeContinuousFollowUp(cleanQuestion)) {
-    const semanticSeedPlan = {
-      route: "clarify",
-      operation: "clarify",
-      dataset: null,
-      column: null,
-      labelColumn: null,
-      groupBy: null,
-      aggregation: null,
-      direction: null,
-      filters: [],
-      filterGroups: [],
-      filterGroupLogic: null,
-      selectColumns: [],
-      outputRequested: true,
-      transform: null,
-      limit: 10,
-      showAll: false,
-    };
-
-    let deterministicContractPlan =
-      repairSemanticContractCountIntent({
-        datasets,
-        plan: semanticSeedPlan,
-        question: cleanQuestion,
-      });
-
-    if (
-      deterministicContractPlan?.semanticContractIntentRepaired === true &&
-      deterministicContractPlan?.dataset &&
-      Array.isArray(datasets?.[deterministicContractPlan.dataset])
-    ) {
-      const contractRows = datasets[deterministicContractPlan.dataset];
-      const inferredContractFilters = inferCoherentFilters(
-        contractRows,
-        cleanQuestion
-      );
-
-      if (
-        (!Array.isArray(deterministicContractPlan.filters) ||
-          deterministicContractPlan.filters.length === 0) &&
-        Array.isArray(inferredContractFilters) &&
-        inferredContractFilters.length
-      ) {
-        deterministicContractPlan = {
-          ...deterministicContractPlan,
-          filters: inferredContractFilters,
-        };
-      }
-
-      deterministicContractPlan = {
-        ...deterministicContractPlan,
-        deterministicSemanticContractRoute: true,
-      };
-
-      try {
-        const deterministicContractResult =
-          await executeResolvedPlan(deterministicContractPlan);
-
-        if (deterministicContractResult?.success !== false) {
-          return {
-            ...deterministicContractResult,
-            plannerSource: "semantic-contract",
-            deterministicSemanticContractRoute: true,
-          };
-        }
-      } catch (semanticContractError) {
-        if (process.env.NODE_ENV !== "production") {
-          console.warn(
-            "Deterministic semantic-contract route deferred to planners:",
-            semanticContractError?.message || semanticContractError
-          );
-        }
-      }
-    }
-  }
 
   try {
     groqPrimaryAttempted =

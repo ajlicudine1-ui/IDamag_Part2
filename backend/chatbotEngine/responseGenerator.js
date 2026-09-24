@@ -144,16 +144,6 @@ function shouldPreserveDeterministicSemanticAnswer({
     ""
   ).trim().toLowerCase();
 
-  // Authoritative semantic-contract scalars are already exact stored values.
-  // Keep their deterministic formatter output so an optional language-model
-  // polish step can never alter a verified number on a repeated request.
-  if (
-    result?.semanticContractExecutionMode === "authoritative_stored_value" ||
-    plan?.deterministicSemanticContractRoute === true
-  ) {
-    return true;
-  }
-
   // Rankings are already rendered from verified row labels, metrics, and
   // details by the deterministic formatter. Preserve that wording so an LLM
   // cannot relabel a schema entity (for example, calling an association a
