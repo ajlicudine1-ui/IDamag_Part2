@@ -29,6 +29,7 @@ const {
   resolveSemanticContractIntentPlan,
   applySemanticContractScope,
   evaluateSemanticContractAggregation,
+  detectMissingSemanticContractRisk,
 } = require("./semanticContractEngine");
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 100;
@@ -2205,6 +2206,29 @@ function executePlan({
     .replace(/\s+/g, "_");
 
   const baseFilteredRows = applyFilters(rows, filters);
+
+  const missingSemanticContractRisk = detectMissingSemanticContractRisk({
+    datasets,
+    rows,
+    plan,
+    question,
+  });
+
+  if (missingSemanticContractRisk) {
+    return {
+      success: false,
+      source: "router",
+      operation: "clarify",
+      dataset: datasetName,
+      filters,
+      semanticContractViolation: true,
+      semanticContractDiagnostic: missingSemanticContractRisk.diagnostic,
+      semanticContractViolationReason: missingSemanticContractRisk.reason,
+      semanticContextColumns: missingSemanticContractRisk.contextColumns,
+      answer:
+        "This worksheet contains semantic result contexts, but the semantic contract was not loaded with the dataset. I did not convert the matching rows into a count because that could combine or misread authorized result contexts.",
+    };
+  }
 
   // Dataset-provided semantic contracts take precedence over arithmetic
   // guesses. A contract can identify the authoritative record family, source

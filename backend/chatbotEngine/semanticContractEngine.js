@@ -432,8 +432,22 @@ function numericCoverage(rows, column) {
  * invariants, so this repair gives the two planners the same behavior.
  */
 function resolveSemanticContractIntentPlan({ datasets, plan, question }) {
-  if (!plan || plan.route !== 'dataset' || !plan.dataset) return null;
-  if (normalizeContractKey(plan.operation) !== 'row count') return null;
+  if (!plan || typeof plan !== 'object') return null;
+
+  const operationKey = normalizeContractKey(plan.operation);
+  const repairableOperations = new Set([
+    '',
+    'row count',
+    'non empty count',
+    'distinct count',
+    'clarify',
+  ]);
+
+  // Semantic-contract recovery is deliberately narrow: it only activates for
+  // explicit count-style questions that strongly match a declared metric.
+  // This lets the contract rescue a stale row-count or low-confidence clarify
+  // plan without stealing ordinary list/lookups/aggregations.
+  if (!repairableOperations.has(operationKey)) return null;
 
   const questionText = normalizeContractKey(question);
   if (!/\b(?:how many|number of|count of|count)\b/.test(questionText)) return null;
@@ -443,18 +457,25 @@ function resolveSemanticContractIntentPlan({ datasets, plan, question }) {
   // attempting to bind the question to a contract metric below.
   if (/\b(?:rows?|entries?)\b/.test(questionText)) return null;
 
-  const targetRows = datasets?.[plan.dataset];
-  if (!Array.isArray(targetRows) || !targetRows.length) return null;
-
   const contracts = detectSemanticContractDatasets(datasets);
   if (!contracts.length) return null;
 
+  const requestedDataset = String(plan.dataset || '').trim();
   const candidates = [];
 
   for (const contract of contracts) {
     for (const row of contract.rows) {
       if (isBlockedContractRow(row, contract.columns)) continue;
-      if (!rowMatchesTargetDataset(row, contract.columns, plan.dataset)) continue;
+
+      const representedDataset = contractRowValue(row, contract.columns, 'resultTable');
+      if (!representedDataset) continue;
+      if (requestedDataset && !rowMatchesTargetDataset(row, contract.columns, requestedDataset)) continue;
+
+      const targetDatasetName = Object.keys(datasets || {}).find(
+        (name) => normalizeContractKey(name) === normalizeContractKey(representedDataset)
+      );
+      const targetRows = targetDatasetName ? datasets?.[targetDatasetName] : null;
+      if (!targetDatasetName || !Array.isArray(targetRows) || !targetRows.length) continue;
 
       const semanticLabels = [
         contract.columns.outputName ? row?.[contract.columns.outputName] : '',
@@ -489,6 +510,7 @@ function resolveSemanticContractIntentPlan({ datasets, plan, question }) {
 
       candidates.push({
         contractDataset: contract.datasetName,
+        targetDataset: targetDatasetName,
         row,
         columns: contract.columns,
         metricColumn: metric.column,
@@ -544,11 +566,14 @@ function resolveSemanticContractIntentPlan({ datasets, plan, question }) {
     if (physicalContext && best.labelCoverage < 0.99) return null;
   }
 
-  const groupBy = plan.groupBy ? findColumn(targetRows, plan.groupBy) : null;
+  const bestRows = datasets?.[best.targetDataset] || [];
+  const groupBy = plan.groupBy ? findColumn(bestRows, plan.groupBy) : null;
   const operation = groupBy ? 'group_sum' : 'sum';
 
   return {
     ...plan,
+    route: 'dataset',
+    dataset: best.targetDataset,
     operation,
     column: best.metricColumn,
     groupBy: groupBy || null,
@@ -722,6 +747,42 @@ function applySemanticContractScope({
   };
 }
 
+function hasPhysicalRowCountWording(question) {
+  const text = normalizeContractKey(question);
+  return /\b(?:rows?|entries?|dataset|table|sheet|worksheet)\b/.test(text);
+}
+
+function detectMissingSemanticContractRisk({ datasets, rows, plan, question }) {
+  if (!Array.isArray(rows) || !rows.length || !plan) return null;
+  if (detectSemanticContractDatasets(datasets).length) return null;
+
+  const operation = normalizeContractKey(plan.operation);
+  if (!['row count', 'non empty count', 'distinct count'].includes(operation)) return null;
+
+  const questionText = normalizeContractKey(question);
+  if (!/\b(?:how many|number of|count of|count)\b/.test(questionText)) return null;
+  if (hasPhysicalRowCountWording(question)) return null;
+
+  const contextColumns = [
+    findContractColumn(rows, ['source_table']),
+    findContractColumn(rows, ['record_type']),
+    findContractColumn(rows, ['result_type']),
+    findContractColumn(rows, ['filter_profile_id']),
+  ].filter(Boolean);
+
+  // These fields are strong evidence that the worksheet is a materialized
+  // semantic-results table rather than a raw fact table. Without the contract
+  // the engine cannot safely know which represented context authorizes a
+  // business metric, so fail closed instead of returning a physical row count.
+  if (contextColumns.length < 2) return null;
+
+  return {
+    diagnostic: 'SEMANTIC_CONTRACT_NOT_LOADED',
+    contextColumns,
+    reason: 'semantic_result_context_present_without_contract',
+  };
+}
+
 function countNonEmptyNumericRows(rows, column, parseNumber) {
   if (!column) return 0;
   return (rows || []).reduce((count, row) => {
@@ -851,5 +912,6 @@ module.exports = {
   resolveSemanticContractIntentPlan,
   applySemanticContractScope,
   evaluateSemanticContractAggregation,
+  detectMissingSemanticContractRisk,
   safeJsonArray,
 };

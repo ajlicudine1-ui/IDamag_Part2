@@ -244,6 +244,7 @@ const {
 const {
   enforcePlannerInvariants,
   buildRankingDetailRescuePlan,
+  repairSemanticContractCountIntent,
 } = require("./plannerInvariantEngine");
 
 
@@ -5401,6 +5402,16 @@ async function answerQuestion(
           "The query planner returned an invalid plan."
         );
       }
+
+      // Contract-defined count metrics are authoritative enough to rescue a
+      // stale row-count/non-empty-count/clarify plan before route-specific
+      // processing begins. This shared boundary is used by Groq, local
+      // fallback, conversation, and forced plans alike.
+      plan = repairSemanticContractCountIntent({
+        datasets,
+        plan,
+        question: cleanQuestion,
+      });
 
       // Some shared semantic-rescue plans are already fully grounded from
       // the live schema. Preserve their structural intent across later
