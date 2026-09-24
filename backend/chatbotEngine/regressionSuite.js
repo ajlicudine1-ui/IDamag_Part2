@@ -2346,6 +2346,64 @@ test('ordinal alias grounding is generic for other numbered dimensions', () => {
   );
 });
 
+test('ordinal alias grounding resolves roman-labeled categories from arabic wording', () => {
+  const {
+    inferCoherentFilters,
+  } = require('./filterEngine');
+
+  const rows = [
+    { region: 'REGION I (ILOCOS REGION)', value: '603501' },
+    { region: 'REGION II (CAGAYAN VALLEY)', value: '100' },
+  ];
+
+  const filters =
+    inferCoherentFilters(
+      rows,
+      'How many registered individuals are in Region 1?'
+    );
+
+  const region =
+    filters.find(
+      (filter) =>
+        filter.column === 'region'
+    );
+
+  assert(region);
+  assert.strictEqual(
+    region.value,
+    'REGION I (ILOCOS REGION)'
+  );
+});
+
+test('ordinal alias grounding resolves arabic-labeled categories from roman wording', () => {
+  const {
+    inferCoherentFilters,
+  } = require('./filterEngine');
+
+  const rows = [
+    { Phase: 'Phase 1', Name: 'A' },
+    { Phase: 'Phase 2', Name: 'B' },
+  ];
+
+  const filters =
+    inferCoherentFilters(
+      rows,
+      'show names in Phase II'
+    );
+
+  const phase =
+    filters.find(
+      (filter) =>
+        filter.column === 'Phase'
+    );
+
+  assert(phase);
+  assert.strictEqual(
+    phase.value,
+    'Phase 2'
+  );
+});
+
 test('ordinal alias grounding does not reinterpret arbitrary numeric identifiers', () => {
   const {
     buildOrdinalValueAliases,
@@ -7490,6 +7548,51 @@ test('authoritative semantic scalar response bypasses optional LLM rewriting', (
     }),
     true
   );
+});
+
+test('semantic-contract route accepts arabic wording for roman-labeled live category', async () => {
+  const input = {
+    worksheets: [
+      {
+        name: 'overview',
+        rows: [
+          { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Province', region: 'REGION I (ILOCOS REGION)', province: 'LA UNION', municipality: '', barangay: '', registry_registration_count: '97731' },
+          { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Region', region: 'REGION I (ILOCOS REGION)', province: '', municipality: '', barangay: '', registry_registration_count: '603501' },
+        ],
+      },
+      {
+        name: 'contract',
+        rows: [
+          { output_id: 'audit_output_001', output_name: 'Total Registered Individuals', public_terminology: 'registered registry records', result_table: 'overview', result_record_type: 'overview_summary', result_type: 'overview_summary', result_fields_json: '["registry_registration_count"]', original_result_fields_json: '["registered_registry_rows"]', allowed_operations_json: '["retrieve_stored_value"]', filter_profile_id: 'overview_fixed_v1', source_table: 'overview', exposure_status: 'PASS' },
+        ],
+      },
+    ],
+  };
+
+  const previousKey = process.env.GROQ_API_KEY;
+  delete process.env.GROQ_API_KEY;
+  const sessionId = `roman-category-${Date.now()}-${Math.random()}`;
+  clearConversation(sessionId);
+  try {
+    const result = await answerQuestion(
+      input,
+      'How many registered individuals are in Region 1?',
+      sessionId
+    );
+
+    assert.equal(result.success, true);
+    assert.equal(result.value, 603501);
+    assert.equal(result.operation, 'sum');
+    assert.equal(result.plannerSource, 'semantic-contract');
+    assert.equal(result.deterministicSemanticContractRoute, true);
+    assert.deepStrictEqual(result.debugPlan?.filters, [
+      { column: 'region', operator: 'equals', value: 'REGION I (ILOCOS REGION)' },
+    ]);
+  } finally {
+    clearConversation(sessionId);
+    if (previousKey === undefined) delete process.env.GROQ_API_KEY;
+    else process.env.GROQ_API_KEY = previousKey;
+  }
 });
 
 test('repeating the same semantic-contract question is deterministic in one session', async () => {

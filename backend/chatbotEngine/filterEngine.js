@@ -653,6 +653,71 @@ function numberWordFromMap(map, number) {
   return null;
 }
 
+function romanToSmallInteger(value) {
+  const roman =
+    String(value || "")
+      .trim()
+      .toUpperCase();
+
+  if (!/^[IVXLCDM]+$/.test(roman)) {
+    return null;
+  }
+
+  const values = {
+    I: 1,
+    V: 5,
+    X: 10,
+    L: 50,
+    C: 100,
+    D: 500,
+    M: 1000,
+  };
+
+  let total = 0;
+  let previous = 0;
+
+  for (let index = roman.length - 1; index >= 0; index -= 1) {
+    const current = values[roman[index]];
+    if (!current) return null;
+
+    if (current < previous) {
+      total -= current;
+    } else {
+      total += current;
+      previous = current;
+    }
+  }
+
+  return Number.isInteger(total) && total >= 1 && total <= 20
+    ? total
+    : null;
+}
+
+function smallIntegerToRoman(number) {
+  let remaining = Number(number);
+  if (!Number.isInteger(remaining) || remaining < 1 || remaining > 20) {
+    return null;
+  }
+
+  const pairs = [
+    [10, "X"],
+    [9, "IX"],
+    [5, "V"],
+    [4, "IV"],
+    [1, "I"],
+  ];
+
+  let output = "";
+  for (const [value, symbol] of pairs) {
+    while (remaining >= value) {
+      output += symbol;
+      remaining -= value;
+    }
+  }
+
+  return output.toLowerCase();
+}
+
 function buildOrdinalValueAliases({
   column,
   displayValue,
@@ -684,26 +749,38 @@ function buildOrdinalValueAliases({
    *   Level 3  <-> third level / level three / 3rd level
    *   Quarter 1 <-> first quarter / quarter one / 1st quarter
    */
-  const match =
+  const numericMatch =
     valueText.match(
-      /^(.*?)(?:\s+)(\d{1,2})$/
+      /^(.*?)(?:\s+)(\d{1,2})(?:\s*\([^)]*\))?$/
     );
 
+  const romanMatch =
+    numericMatch
+      ? null
+      : valueText.match(
+          /^(.*?)(?:\s+)([ivxlcdm]+)(?:\s*\([^)]*\))?$/i
+        );
+
+  const prefix =
+    String(
+      numericMatch?.[1] ||
+      romanMatch?.[1] ||
+      ""
+    ).trim();
+
+  const number =
+    numericMatch?.[2]
+      ? Number(numericMatch[2])
+      : romanToSmallInteger(
+          romanMatch?.[2]
+        );
+
   if (
-    !match?.[1] ||
-    !match?.[2]
+    !prefix ||
+    !Number.isInteger(number)
   ) {
     return [];
   }
-
-  const prefix =
-    match[1]
-      .trim();
-
-  const number =
-    Number(
-      match[2]
-    );
 
   if (
     !Number.isInteger(number) ||
@@ -752,10 +829,19 @@ function buildOrdinalValueAliases({
   const ordinalNumeric =
     `${number}${ordinalSuffix(number)}`;
 
+  const romanNumeric =
+    smallIntegerToRoman(number);
+
   const aliases =
     [
       `${prefix} ${number}`,
       `${number} ${prefix}`,
+      romanNumeric
+        ? `${prefix} ${romanNumeric}`
+        : null,
+      romanNumeric
+        ? `${romanNumeric} ${prefix}`
+        : null,
       `${prefix} ${ordinalNumeric}`,
       `${ordinalNumeric} ${prefix}`,
       ordinalWord
