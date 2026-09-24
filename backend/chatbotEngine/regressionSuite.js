@@ -5279,6 +5279,144 @@ test('problem3 aggregate metric repair replaces nonnumeric entity column with se
   ]);
 });
 
+
+
+test('FMR-style generic entity list prefers human title over identifier and repairs misbound scope filter', () => {
+  const { enforcePlannerInvariants } = require('./plannerInvariantEngine');
+  const datasets = {
+    Data: [
+      { Province: 'Pangasinan', 'Project ID': 'P-1', 'Project Title': 'Road Alpha' },
+      { Province: 'Pangasinan', 'Project ID': '', 'Project Title': 'Road Beta' },
+      { Province: 'La Union', 'Project ID': 'P-3', 'Project Title': 'Road Gamma' },
+    ],
+  };
+  const schema = buildSchema(datasets);
+  const plan = enforcePlannerInvariants({
+    datasets,
+    schema,
+    question: 'What FMR projects are in Pangasinan?',
+    plan: {
+      route: 'dataset',
+      dataset: 'Data',
+      operation: 'list',
+      column: 'Project ID',
+      labelColumn: 'Project ID',
+      filters: [
+        { column: 'Project Title', operator: 'equals', value: 'Pangasinan' },
+        { column: 'Province', operator: 'equals', value: 'Pangasinan' },
+      ],
+      selectColumns: ['Project ID'],
+      showAll: true,
+    },
+  });
+
+  assert.equal(plan.operation, 'list');
+  assert.equal(plan.column, 'Project Title');
+  assert.equal(plan.labelColumn, 'Project Title');
+  assert.deepEqual(plan.selectColumns, ['Project Title']);
+  assert.deepEqual(plan.filters, [
+    { column: 'Province', operator: 'equals', value: 'Pangasinan' },
+  ]);
+});
+
+
+test('referential each/the entity phrases are grounded through live schema fields', () => {
+  const { enforceUniversalGrounding } = require('./universalGroundingEngine');
+  const rows = [
+    { 'Project Title': 'Road Alpha', 'Allocated Amount': '100' },
+    { 'Project Title': 'Road Beta', 'Allocated Amount': '200' },
+  ];
+
+  for (const question of [
+    'What is the allocated amount of each project?',
+    'Who are the contractors of the projects?',
+  ]) {
+    const out = enforceUniversalGrounding({
+      plan: {
+        route: 'dataset',
+        dataset: 'Data',
+        operation: 'lookup',
+        column: 'Allocated Amount',
+        filters: [],
+      },
+      question,
+      rows,
+      columns: Object.keys(rows[0]),
+    });
+    assert.equal(out.valid, true);
+    assert.equal(out.plan.route, 'dataset');
+  }
+});
+
+
+test('generic allocated amount of each entity groups by human title instead of ID', async () => {
+  const input = {
+    Data: [
+      { 'Project ID': 'P-1', 'Project Title': 'Road Alpha', 'Allocated Amount': '100' },
+      { 'Project ID': 'P-2', 'Project Title': 'Road Beta', 'Allocated Amount': '200' },
+    ],
+  };
+
+  const result = await answerQuestion(
+    input,
+    'What is the allocated amount of each project?',
+    `fmr-amount-${Date.now()}`
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'group_sum');
+  assert.equal(result.column, 'Allocated Amount');
+  assert.equal(result.groupBy, 'Project Title');
+  assert.equal(result.results.length, 2);
+});
+
+
+test('generic categorical attribute of entities maps attribute by human title and preserves missing values', async () => {
+  const input = {
+    Data: [
+      { 'Project ID': 'P-1', 'Project Title': 'Road Alpha', Contractor: 'Builder A' },
+      { 'Project ID': 'P-2', 'Project Title': 'Road Beta', Contractor: '' },
+    ],
+  };
+
+  const result = await answerQuestion(
+    input,
+    'Who are the contractors of the projects?',
+    `fmr-contractors-${Date.now()}`
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'group_list');
+  assert.equal(result.column, 'Contractor');
+  assert.equal(result.groupBy, 'Project Title');
+  assert.equal(result.results.length, 2);
+  assert.match(result.answer, /Road Alpha.*Builder A/s);
+  assert.match(result.answer, /Road Beta.*No value recorded/s);
+});
+
+
+test('generic multiple attributes of each entity stay paired in one lookup', async () => {
+  const input = {
+    Data: [
+      { 'Project ID': 'P-1', 'Project Title': 'Road Alpha', Quantity: '1', 'Quantity Unit': 'km' },
+      { 'Project ID': 'P-2', 'Project Title': 'Road Beta', Quantity: '2', 'Quantity Unit': 'km' },
+    ],
+  };
+
+  const result = await answerQuestion(
+    input,
+    'What is the quantity and quantity unit of each project?',
+    `fmr-quantity-${Date.now()}`
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'lookup');
+  assert.equal(result.labelColumn, 'Project Title');
+  assert.deepEqual(result.debugPlan.selectColumns, ['Project Title', 'Quantity', 'Quantity Unit']);
+  assert.match(result.answer, /Road Alpha.*Quantity: 1; Quantity Unit: km/s);
+  assert.match(result.answer, /Road Beta.*Quantity: 2; Quantity Unit: km/s);
+});
+
 async function run() {
   let passed = 0;
   const failures = [];

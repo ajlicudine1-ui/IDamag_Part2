@@ -302,12 +302,21 @@ function planContainsGroundedFilter(
 
 function stripReferentialGroundingTail(phrase) {
   return String(phrase || "")
+    // Determiners and quantifiers describe how a schema entity is referenced;
+    // they are not part of the field/value itself.  Keeping them caused safe
+    // schema-backed phrases such as "each project" and "the projects" to be
+    // rejected even when Project Title / Project ID existed in the live data.
+    // This is grammar-only normalization and does not name any dashboard field.
+    .replace(
+      /^(?:(?:each|every|the|these|those|this|that|all|any)\s+)+/i,
+      ""
+    )
     .replace(
       /\s+\b(?:among|for|of|within|from)\s+(?:them|those|these|that|this|the same|the previous|the above)\b.*$/i,
       ""
     )
     .replace(
-      /\s+\b(?:among|for|of|within)\s+(?:the|these|those)\s+(?:ones|records|rows|entries|results|associations|items)\b.*$/i,
+      /\s+\b(?:among|for|of|within)\s+(?:the|these|those)\s+(?:ones|records|rows|entries|results|items)\b.*$/i,
       ""
     )
     .trim();

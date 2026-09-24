@@ -9,7 +9,7 @@ const {
   findStrongMorphologicalQuestionColumn,
   inferRequestedColumnFromQuestion,
 } = require('./plannerNormalizer');
-const { findColumn } = require('./columnMatcher');
+const { findColumn, rankColumns } = require('./columnMatcher');
 const { applyFilters } = require('./filterEngine');
 
 function cloneFilter(filter) {
@@ -148,6 +148,342 @@ function isAdditiveMeasureColumn(column) {
   // Common area units embedded in a metric header (for example "(...ha)")
   // are reliable evidence that the field is an additive physical measure.
   return /(?:\(|\b)(?:ha|hectare|hectares)(?:\)|\b)/i.test(raw);
+}
+
+function isIdentifierLikeColumn(column) {
+  const name = normalizeText(column);
+  if (!name) return false;
+  return /\b(?:id|identifier|code|reference|ref|serial)\b/.test(name) ||
+    /^(?:id|no|number)(?:\s|$)/.test(name) ||
+    /\b(?:id|code|number|no)\s*$/.test(name);
+}
+
+function isHumanLabelColumn(column) {
+  const name = normalizeText(column);
+  return Boolean(name) && /\b(?:name|title|label)\b/.test(name);
+}
+
+function hasExplicitIdentifierCue(text) {
+  return /\b(?:id|identifier|code|reference|ref|serial|number)\b/.test(
+    normalizeText(text)
+  );
+}
+
+function nonEmptyDistinctRatio(rows, column) {
+  if (!Array.isArray(rows) || !rows.length || !column) return 0;
+  const values = [];
+  for (const row of rows) {
+    const value = String(row?.[column] ?? '').trim();
+    if (value) values.push(normalizeText(value));
+  }
+  if (!values.length) return 0;
+  return new Set(values).size / values.length;
+}
+
+/**
+ * Resolve the display identity for a business entity.  When a generic noun
+ * such as "project" matches Project ID, Project Cost and Project Title, prefer
+ * a human-readable Name/Title/Label field unless the user explicitly asked for
+ * an identifier.  The preference is derived entirely from live schema shape.
+ */
+function resolveEntityLabelColumn({ rows, target, current = null }) {
+  if (!Array.isArray(rows) || !rows.length || !target) return null;
+
+  const columns = Object.keys(rows[0] || {}).filter(Boolean);
+  const nonNumeric = columns.filter((column) => !isNumericColumn(rows, column));
+  if (!nonNumeric.length) return null;
+
+  const explicitIdentifier = hasExplicitIdentifierCue(target);
+  const ranked = rankColumns(rows, target)
+    .filter((item) => nonNumeric.includes(item.column));
+
+  let best = ranked[0]?.score >= 0.75 ? ranked[0].column : null;
+  const currentColumn = current ? (findColumn(rows, current) || current) : null;
+
+  if (explicitIdentifier) {
+    return best || (currentColumn && nonNumeric.includes(currentColumn) ? currentColumn : null);
+  }
+
+  const humanCandidates = ranked.filter(
+    (item) =>
+      isHumanLabelColumn(item.column) &&
+      !isIdentifierLikeColumn(item.column) &&
+      item.score >= 0.5
+  );
+
+  if (humanCandidates.length) {
+    const human = humanCandidates[0];
+    const bestScore = ranked[0]?.score || 0;
+    const currentLooksIdentifier = currentColumn && isIdentifierLikeColumn(currentColumn);
+    const bestLooksIdentifier = best && isIdentifierLikeColumn(best);
+
+    // A title/name within a modest score margin is the safer display identity
+    // for a generic entity noun.  Unique/near-unique labels get an additional
+    // preference because they behave like row identities rather than attrs.
+    const humanUnique = nonEmptyDistinctRatio(rows, human.column) >= 0.75;
+    if (
+      currentLooksIdentifier ||
+      bestLooksIdentifier ||
+      human.score >= bestScore - 0.25 ||
+      humanUnique
+    ) {
+      return human.column;
+    }
+  }
+
+  if (best) return best;
+  if (currentColumn && nonNumeric.includes(currentColumn)) return currentColumn;
+
+  const fallbackLabels = nonNumeric.filter(
+    (column) => isHumanLabelColumn(column) && !isIdentifierLikeColumn(column)
+  );
+  return fallbackLabels.length === 1 ? fallbackLabels[0] : null;
+}
+
+function exactValueColumns(rows, value) {
+  const target = normalizeText(value);
+  if (!target || !Array.isArray(rows) || !rows.length) return [];
+  const columns = Object.keys(rows[0] || {}).filter(Boolean);
+  return columns.filter((column) =>
+    rows.some((row) => normalizeText(row?.[column]) === target)
+  );
+}
+
+/**
+ * Fix an equality filter that was attached to a descriptive output field even
+ * though the value exists exactly in a different live column.  Example shape:
+ * a location value embedded in a Project Title plus the same value in Province.
+ * Rebinding only occurs when the exact live column is unambiguous.
+ */
+function repairMisboundEqualityFilters({ datasets, plan }) {
+  if (!plan || plan.route !== 'dataset' || !plan.dataset || !Array.isArray(plan.filters)) return plan;
+  const rows = datasets?.[plan.dataset];
+  if (!Array.isArray(rows) || !rows.length || !plan.filters.length) return plan;
+
+  let changed = false;
+  const repaired = plan.filters.map((filter) => {
+    if (!filter?.column || !['equals', 'equal', '='].includes(normalizeText(filter.operator || 'equals'))) {
+      return cloneFilter(filter);
+    }
+
+    const values = Array.isArray(filter.value) ? filter.value : [filter.value];
+    if (values.length !== 1) return cloneFilter(filter);
+    const value = values[0];
+    const currentColumn = findColumn(rows, filter.column) || filter.column;
+    const currentHasExact = rows.some(
+      (row) => normalizeText(row?.[currentColumn]) === normalizeText(value)
+    );
+    if (currentHasExact) return cloneFilter(filter);
+
+    const candidates = exactValueColumns(rows, value);
+    if (candidates.length !== 1) return cloneFilter(filter);
+    changed = true;
+    return { ...filter, column: candidates[0] };
+  });
+
+  return changed
+    ? { ...plan, filters: repaired, misboundEqualityFilterRepaired: true }
+    : plan;
+}
+
+function extractListedEntityTarget(question) {
+  const raw = String(question || '').replace(/[?!.]+$/g, ' ').trim();
+  const patterns = [
+    /^(?:what|which)\s+(.+?)\s+(?:are|were|have|has|had|exist|exists|appear|appears|occur|occurs)\b/i,
+    /^(?:list|show|display|name|enumerate|give(?:\s+me)?)\s+(?:all\s+|the\s+)?(.+?)(?=\s+(?:in|from|under|with|where|that|which|who)\b|[,;]|$)/i,
+  ];
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    if (match?.[1]) {
+      const target = match[1]
+        .replace(/^(?:all|every|each|the)\s+/i, '')
+        .replace(/\b(?:records?|rows?|entries?)$/i, '')
+        .trim();
+      if (target) return target;
+    }
+  }
+  return null;
+}
+
+function repairGenericEntityListProjection({ datasets, plan, question }) {
+  if (!plan || plan.route !== 'dataset' || !plan.dataset) return plan;
+  if (normalizeText(plan.operation) !== 'list') return plan;
+  const rows = datasets?.[plan.dataset];
+  if (!Array.isArray(rows) || !rows.length) return plan;
+
+  const target = extractListedEntityTarget(question);
+  if (!target || hasExplicitIdentifierCue(target)) return plan;
+
+  const current = plan.column ? (findColumn(rows, plan.column) || plan.column) : null;
+  const label = resolveEntityLabelColumn({ rows, target, current });
+  if (!label || isNumericColumn(rows, label)) return plan;
+  if (current && normalizeText(current) === normalizeText(label)) return plan;
+
+  return {
+    ...plan,
+    column: label,
+    labelColumn: label,
+    groupBy: null,
+    selectColumns: [label],
+    outputRequested: true,
+    showAll: true,
+    entityDisplayLabelRepaired: true,
+  };
+}
+
+function extractRelationalEntityTarget(question) {
+  const grouped = extractGroupingTarget(question);
+  if (grouped) return grouped;
+
+  // Scalar aggregates such as "total land area of the associations" are not
+  // per-entity projections, so plain "of the ..." must not create grouping.
+  if (detectQuestionAggregation(question) || detectRankingDirection(question)) return null;
+
+  const raw = String(question || '').replace(/[?!.]+$/g, ' ').trim();
+  const match = raw.match(/\bof\s+(?:the|these|those)\s+(.+?)(?=\s+(?:with|where|that|which|who)\b|[,;]|$)/i);
+  return match?.[1] ? match[1].replace(/\s+/g, ' ').trim() : null;
+}
+
+function relationalValueClause(question, entityTarget) {
+  const raw = String(question || '').replace(/[?!.]+$/g, ' ').trim();
+  let value = groupingValueQuestion(raw);
+
+  if (entityTarget && value === raw) {
+    const escaped = String(entityTarget).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    value = raw.replace(new RegExp(`\\s+of\\s+(?:the|these|those)\\s+${escaped}\\s*$`, 'i'), '').trim();
+  }
+
+  return value
+    .replace(/^(?:what|which|who)\s+(?:is|are|was|were|does|do|did)?\s*/i, '')
+    .replace(/^(?:is|are|was|were|the)\s+/i, '')
+    .replace(/^the\s+/i, '')
+    .trim();
+}
+
+function inferRequestedAttributeColumns({ schema, dataset, rows, question, groupColumn, entityTarget }) {
+  const valueClause = relationalValueClause(question, entityTarget);
+  const pieces = valueClause
+    .split(/\s*(?:,|\band\b)\s*/i)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  const columns = [];
+  for (const piece of pieces) {
+    const column = inferQuestionColumn({
+      schema,
+      dataset,
+      rows,
+      question: piece,
+      excludedColumns: [groupColumn],
+    });
+    if (column && normalizeText(column) !== normalizeText(groupColumn) && !columns.includes(column)) {
+      columns.push(column);
+    }
+  }
+
+  if (!columns.length && valueClause) {
+    const column = inferQuestionColumn({
+      schema,
+      dataset,
+      rows,
+      question: valueClause,
+      excludedColumns: [groupColumn],
+    });
+    if (column && normalizeText(column) !== normalizeText(groupColumn)) columns.push(column);
+  }
+
+  return columns;
+}
+
+/**
+ * Preserve multiple requested attributes for each entity, e.g. Quantity +
+ * Quantity Unit.  Group aggregation is intentionally bypassed because these
+ * are stored row attributes, not a request to combine them mathematically.
+ */
+function repairMultiAttributeEntityProjection({ datasets, schema, plan, question }) {
+  if (!plan || plan.route !== 'dataset' || !plan.dataset) return plan;
+  if (detectQuestionAggregation(question) || detectRankingDirection(question)) return plan;
+  const rows = datasets?.[plan.dataset];
+  if (!Array.isArray(rows) || !rows.length) return plan;
+
+  const entityTarget = extractRelationalEntityTarget(question);
+  if (!entityTarget) return plan;
+  const groupColumn = resolveEntityLabelColumn({
+    rows,
+    target: entityTarget,
+    current: plan.labelColumn || plan.groupBy,
+  });
+  if (!groupColumn) return plan;
+
+  const attributes = inferRequestedAttributeColumns({
+    schema,
+    dataset: plan.dataset,
+    rows,
+    question,
+    groupColumn,
+    entityTarget,
+  });
+  if (attributes.length < 2) return plan;
+
+  return {
+    ...plan,
+    operation: 'lookup',
+    column: attributes[0],
+    labelColumn: groupColumn,
+    groupBy: null,
+    aggregation: null,
+    selectColumns: [groupColumn, ...attributes],
+    outputRequested: true,
+    showAll: true,
+    multiAttributeEntityProjectionApplied: true,
+  };
+}
+
+/**
+ * Resolve a single categorical attribute "of the <entities>" to a grouped
+ * mapping and preserve entities whose attribute is blank.  This covers
+ * relation wording that does not literally contain "each".
+ */
+function repairRelationalCategoricalProjection({ datasets, schema, plan, question }) {
+  if (!plan || plan.route !== 'dataset' || !plan.dataset) return plan;
+  if (plan.multiAttributeEntityProjectionApplied) return plan;
+  if (detectQuestionAggregation(question) || detectRankingDirection(question)) return plan;
+  const rows = datasets?.[plan.dataset];
+  if (!Array.isArray(rows) || !rows.length) return plan;
+
+  const entityTarget = extractRelationalEntityTarget(question);
+  if (!entityTarget || extractGroupingTarget(question)) return plan;
+  const groupColumn = resolveEntityLabelColumn({
+    rows,
+    target: entityTarget,
+    current: plan.labelColumn || plan.groupBy,
+  });
+  if (!groupColumn) return plan;
+
+  const attributes = inferRequestedAttributeColumns({
+    schema,
+    dataset: plan.dataset,
+    rows,
+    question,
+    groupColumn,
+    entityTarget,
+  });
+  if (attributes.length !== 1) return plan;
+  const valueColumn = attributes[0];
+  if (isNumericColumn(rows, valueColumn)) return plan;
+
+  return {
+    ...plan,
+    operation: 'group_list',
+    column: valueColumn,
+    labelColumn: groupColumn,
+    groupBy: groupColumn,
+    aggregation: null,
+    selectColumns: [groupColumn, valueColumn],
+    outputRequested: true,
+    showAll: true,
+    relationalCategoricalProjectionApplied: true,
+  };
 }
 
 function hasExplicitCountCue(question) {
@@ -414,7 +750,11 @@ function repairGroupedListPlan({ datasets, schema, plan, question }) {
   const rows = datasets?.[plan.dataset];
   if (!Array.isArray(rows) || !rows.length) return plan;
 
-  const group = inferQuestionColumn({
+  const group = resolveEntityLabelColumn({
+    rows,
+    target: groupingTarget,
+    current: plan.groupBy || plan.labelColumn,
+  }) || inferQuestionColumn({
     schema,
     dataset: plan.dataset,
     rows,
@@ -477,12 +817,19 @@ function repairGroupedListPlan({ datasets, schema, plan, question }) {
 
 function repairGroupedAggregatePlan({ datasets, schema, plan, question }) {
   if (!plan || plan.route !== 'dataset' || !plan.dataset || !hasGroupingCue(question)) return plan;
+  if (plan.multiAttributeEntityProjectionApplied) return plan;
   let aggregation = detectQuestionAggregation(question);
   const rows = datasets?.[plan.dataset];
   if (!Array.isArray(rows) || !rows.length) return plan;
 
   const groupingTarget = extractGroupingTarget(question);
-  const group = groupingTarget ? findColumn(rows, groupingTarget) : null;
+  const group = groupingTarget
+    ? (resolveEntityLabelColumn({
+        rows,
+        target: groupingTarget,
+        current: plan.groupBy || plan.labelColumn,
+      }) || findColumn(rows, groupingTarget))
+    : null;
   if (!group) return plan;
 
   const explicit = [...new Set(explicitColumnsForDataset(schema, question, plan.dataset))];
@@ -875,13 +1222,18 @@ function removeRedundantContainsEqualsFilters(plan) {
 function enforcePlannerInvariants({ datasets, schema, plan, question }) {
   let next = plan;
   next = normalizeSameColumnEqualityFilters(next);
+  next = repairMisboundEqualityFilters({ datasets, plan: next });
+  next = dedupePlanFilters(next);
   next = repairListProjectionIntent({ datasets, plan: next, question });
+  next = repairGenericEntityListProjection({ datasets, plan: next, question });
   next = removeRedundantContainsEqualsFilters(next);
   next = repairEntityListIntent({ datasets, schema, plan: next, question });
   next = repairCategoricalCountIntent({ datasets, plan: next, question });
   next = repairNumericMeasureCountIntent({ datasets, plan: next, question });
   next = repairAggregateIntent({ datasets, schema, plan: next, question });
   next = repairImplicitFilteredAdditiveAggregate({ datasets, plan: next, question });
+  next = repairMultiAttributeEntityProjection({ datasets, schema, plan: next, question });
+  next = repairRelationalCategoricalProjection({ datasets, schema, plan: next, question });
   next = repairGroupedAggregatePlan({ datasets, schema, plan: next, question });
   next = repairGroupedListPlan({ datasets, schema, plan: next, question });
   next = applySimpleRowRankingInvariant({ datasets, schema, plan: next, question });
@@ -895,6 +1247,11 @@ module.exports = {
   dedupePlanFilters,
   removeProjectionFieldFilterArtifacts,
   repairListProjectionIntent,
+  repairGenericEntityListProjection,
+  repairMisboundEqualityFilters,
+  repairMultiAttributeEntityProjection,
+  repairRelationalCategoricalProjection,
+  resolveEntityLabelColumn,
   removeRedundantContainsEqualsFilters,
   repairGroupedAggregatePlan,
   repairGroupedListPlan,

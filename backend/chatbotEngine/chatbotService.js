@@ -10755,6 +10755,23 @@ async function answerQuestion(
      * natural narrative rather than raw repeated "<label> - <value>" lines.
      * No external language-model call is required here.
      */
+    const effectiveLocalResultPlan =
+      result?.debugPlan && typeof result.debugPlan === "object"
+        ? result.debugPlan
+        : localPlan;
+
+    const effectiveLocalSelectColumns =
+      Array.isArray(effectiveLocalResultPlan?.selectColumns)
+        ? effectiveLocalResultPlan.selectColumns.filter(Boolean)
+        : [];
+
+    const effectiveLocalOutputColumns =
+      effectiveLocalSelectColumns.filter(
+        (column) =>
+          normalizeText(column) !==
+          normalizeText(effectiveLocalResultPlan?.labelColumn)
+      );
+
     if (
       String(
         localPlan.operation ||
@@ -10770,7 +10787,9 @@ async function answerQuestion(
       ) !==
       normalizeText(
         localPlan.labelColumn
-      )
+      ) &&
+      effectiveLocalResultPlan?.multiAttributeEntityProjectionApplied !== true &&
+      effectiveLocalOutputColumns.length < 2
     ) {
       const semanticLocalAnswer =
         buildSemanticVerifiedAnswer({
@@ -10780,7 +10799,7 @@ async function answerQuestion(
             ) ||
             cleanQuestion,
           plan:
-            localPlan,
+            effectiveLocalResultPlan,
           result,
         });
 

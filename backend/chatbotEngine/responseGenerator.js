@@ -91,6 +91,30 @@ function decorateVerifiedAnswer(answer, plan, result) {
   return text;
 }
 
+function shouldPreferStructuredLookupFormatter({ plan, result } = {}) {
+  const operation = String(result?.operation || plan?.operation || '')
+    .trim()
+    .toLowerCase();
+  if (!['lookup', 'list', 'value'].includes(operation)) return false;
+
+  const rows = Array.isArray(result?.results) ? result.results : [];
+  if (!rows.length || !rows.some((row) => row && typeof row === 'object' && !Array.isArray(row))) {
+    return false;
+  }
+
+  const labelColumn = result?.labelColumn || plan?.labelColumn || null;
+  if (!labelColumn) return false;
+
+  const selected = Array.isArray(plan?.selectColumns)
+    ? plan.selectColumns.filter(Boolean)
+    : Object.keys(rows[0] || {});
+  const outputColumns = selected.filter((column) => column !== labelColumn);
+
+  // Multiple requested fields must stay paired row-by-row with their entity.
+  // A narrative summary can accidentally separate unique values from labels.
+  return outputColumns.length >= 2;
+}
+
 function buildLocalNaturalAnswer({
   question,
   plan,
@@ -317,10 +341,16 @@ async function generateNaturalResponse({
       result,
     });
 
+  const structuredLookupAnswer =
+    shouldPreferStructuredLookupFormatter({ plan, result })
+      ? formatVerifiedResultAnswer({ question, plan, result })
+      : null;
+
   const fallback =
     finalizeUserFacingGrammar(
       decorateVerifiedAnswer(
-        semanticAnswer ||
+        structuredLookupAnswer ||
+          semanticAnswer ||
           formatVerifiedResultAnswer({
             question,
             plan,
@@ -461,4 +491,5 @@ The LOCAL ANSWER is already fact-safe. Prefer making only small stylistic improv
 module.exports = {
   generateNaturalResponse,
   shouldPreserveDeterministicSemanticAnswer,
+  shouldPreferStructuredLookupFormatter,
 };
