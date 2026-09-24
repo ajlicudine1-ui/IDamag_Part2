@@ -1167,29 +1167,33 @@ function getRelevantContext(
   return {
     isFollowUp,
 
+    // Self-contained turns must be planned from the current question and
+    // current data only. Exposing stale dataset/intent/filter state here can
+    // make identical repeated questions take different planner paths. True
+    // referential turns still receive the full verified conversation context.
     lastEntity:
-      context.lastEntity,
+      isFollowUp ? context.lastEntity : null,
 
     lastDataset:
-      context.lastDataset,
+      isFollowUp ? context.lastDataset : null,
 
     lastIntent:
-      context.lastIntent,
+      isFollowUp ? context.lastIntent : null,
 
     lastQuestion:
-      context.lastQuestion,
+      isFollowUp ? context.lastQuestion : null,
 
     lastSubjectQuestion:
-      context.lastSubjectQuestion,
+      isFollowUp ? context.lastSubjectQuestion : null,
 
     lastMetric:
-      context.lastMetric,
+      isFollowUp ? context.lastMetric : null,
 
     lastSubjectColumn:
-      context.lastSubjectColumn,
+      isFollowUp ? context.lastSubjectColumn : null,
 
     lastFilters:
-      context.lastFilters,
+      isFollowUp ? context.lastFilters : [],
 
     lastPlan:
       isFollowUp
