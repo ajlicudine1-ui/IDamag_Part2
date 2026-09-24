@@ -1,5 +1,6 @@
 const { parseNumber, normalizeText } = require("./utils");
 const { compare } = require("./filterEngine");
+const { applySemanticContractScope } = require("./semanticContractEngine");
 
 /**
  * RESULT VALIDATOR
@@ -356,6 +357,48 @@ function getPlanRows({ datasets, plan }) {
   ));
 }
 
+function getValidationRows({ datasets, plan, result }) {
+  const allRows = datasets?.[plan?.dataset];
+  if (!Array.isArray(allRows)) return null;
+
+  let rows = getPlanRows({ datasets, plan });
+  if (!Array.isArray(rows)) return null;
+
+  // The calculation engine may intentionally narrow the raw geography/filter
+  // scope to a contract-authorized semantic result family before arithmetic.
+  // The validator must verify against that SAME authorized scope rather than
+  // recomputing from every raw row that happened to match the geography.
+  if (result?.semanticContractAware || plan?.semanticContractIntentRepaired) {
+    const contractResolution = applySemanticContractScope({
+      datasets,
+      datasetName: plan.dataset,
+      rows: allRows,
+      filteredRows: rows,
+      plan,
+    });
+
+    rows = contractResolution?.rows || rows;
+  }
+
+  // Grain-aware execution can further narrow the authorized context to one
+  // hierarchy level (for example Province instead of Province+Municipality+
+  // Barangay). Reuse the execution metadata instead of independently guessing
+  // the hierarchy a second time inside validation.
+  if (
+    result?.grainAwareAggregation === true &&
+    result?.grainColumn &&
+    result?.grainValue !== undefined &&
+    result?.grainValue !== null
+  ) {
+    const wanted = normalizeText(result.grainValue);
+    rows = rows.filter(
+      (row) => normalizeText(row?.[result.grainColumn]) === wanted
+    );
+  }
+
+  return rows;
+}
+
 function median(values) {
   const sorted = [...values].sort((a, b) => a - b);
   if (!sorted.length) return null;
@@ -371,7 +414,7 @@ function nearlyEqual(a, b) {
 
 function validateAgainstLiveRows({ datasets, plan, result, operation }) {
   if (!datasets || !plan?.dataset || result?.success === false) return null;
-  const rows = getPlanRows({ datasets, plan });
+  const rows = getValidationRows({ datasets, plan, result });
   if (!rows) return null;
 
   if (operation === "row_count" && typeof result.value === "number") {

@@ -72,8 +72,103 @@ function normalizeRows(value) {
   return [];
 }
 
+const DATASET_CONTAINER_KEYS = new Set([
+  "datasets",
+  "worksheets",
+  "sheets",
+  "tables",
+]);
+
+const DATASET_NAME_KEYS = [
+  "name",
+  "sheetName",
+  "worksheetName",
+  "datasetName",
+  "tableName",
+  "title",
+];
+
+const DATASET_ROW_KEYS = [
+  "rows",
+  "records",
+  "items",
+  "data",
+  "values",
+];
+
+function getDatasetDescriptorName(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  for (const key of DATASET_NAME_KEYS) {
+    const name = String(value?.[key] ?? "").trim();
+    if (name) return name;
+  }
+
+  return null;
+}
+
+function getDatasetDescriptorRows(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return [];
+  }
+
+  for (const key of DATASET_ROW_KEYS) {
+    const rows = normalizeRows(value?.[key]);
+    if (rows.length) return rows;
+  }
+
+  return [];
+}
+
+function normalizeDatasetContainer(container, result) {
+  if (!container) return;
+
+  if (Array.isArray(container)) {
+    for (const item of container) {
+      const name = getDatasetDescriptorName(item);
+      const rows = getDatasetDescriptorRows(item);
+
+      if (name && rows.length) {
+        result[name] = rows;
+      }
+    }
+    return;
+  }
+
+  if (typeof container !== "object") return;
+
+  for (const [name, value] of Object.entries(container)) {
+    // Wrapper keys hold dataset descriptors/maps, not rows belonging to a
+    // worksheet literally named "worksheets"/"datasets"/etc.
+    if (DATASET_CONTAINER_KEYS.has(String(name))) {
+      continue;
+    }
+
+    const directRows = normalizeRows(value);
+    if (directRows.length) {
+      result[String(name)] = directRows;
+      continue;
+    }
+
+    const descriptorName = getDatasetDescriptorName(value);
+    const descriptorRows = getDatasetDescriptorRows(value);
+    if (descriptorName && descriptorRows.length) {
+      result[descriptorName] = descriptorRows;
+    }
+  }
+}
+
 function normalizeDatasets(input) {
   if (Array.isArray(input)) {
+    const descriptorResult = {};
+    normalizeDatasetContainer(input, descriptorResult);
+
+    if (Object.keys(descriptorResult).length) {
+      return descriptorResult;
+    }
+
     return {
       Dataset: normalizeRows(input),
     };
@@ -85,12 +180,20 @@ function normalizeDatasets(input) {
 
   const result = {};
 
-  for (const [name, value] of Object.entries(input)) {
-    const rows = normalizeRows(value);
+  // Preserve the historical direct object-map shape first:
+  //   { overview: [...], contract: [...] }
+  //
+  // Then also accept common backend wrapper shapes such as:
+  //   { datasets: { overview: [...], contract: [...] } }
+  //   { worksheets: [{ name: "overview", rows: [...] }, ...] }
+  //
+  // This is intentionally structural. It does not depend on any worksheet
+  // name, report, dashboard, or semantic-contract field.
+  normalizeDatasetContainer(input, result);
 
-    if (rows.length) {
-      result[String(name)] = rows;
-    }
+  for (const [key, value] of Object.entries(input)) {
+    if (!DATASET_CONTAINER_KEYS.has(String(key))) continue;
+    normalizeDatasetContainer(value, result);
   }
 
   return result;
