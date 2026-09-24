@@ -5417,6 +5417,39 @@ test('generic multiple attributes of each entity stay paired in one lookup', asy
   assert.match(result.answer, /Road Beta.*Quantity: 2; Quantity Unit: km/s);
 });
 
+
+test('semantic lookup narrative preserves multiple requested attributes row by row', () => {
+  const plan = {
+    route: 'dataset',
+    operation: 'lookup',
+    column: 'Measure',
+    labelColumn: 'Entity Name',
+    selectColumns: ['Entity Name', 'Measure', 'Measure Unit'],
+  };
+
+  const result = {
+    success: true,
+    operation: 'lookup',
+    column: 'Measure',
+    labelColumn: 'Entity Name',
+    results: [
+      { 'Entity Name': 'Alpha', Measure: '1', 'Measure Unit': 'km' },
+      { 'Entity Name': 'Beta', Measure: '2', 'Measure Unit': 'ha' },
+    ],
+  };
+
+  const answer = buildSemanticVerifiedAnswer({
+    question: 'Show the measure and measure unit of each entity.',
+    plan,
+    result,
+  });
+
+  assert.match(answer, /Alpha.*Measure: 1; Measure Unit: km/s);
+  assert.match(answer, /Beta.*Measure: 2; Measure Unit: ha/s);
+  assert.doesNotMatch(answer, /associated with/i);
+});
+
+
 async function run() {
   let passed = 0;
   const failures = [];

@@ -260,6 +260,49 @@ function buildLookupPairNarrative({ question, plan, result } = {}) {
 
   if (!rows.length || !labelColumn || !valueColumn) return null;
 
+  /**
+   * Multi-attribute relationship projections must stay row-aligned.
+   *
+   * Example shape (schema-driven, not field-specific):
+   *   Entity -> Attribute A + Attribute B
+   *
+   * The ordinary paired-lookup narrative below intentionally groups labels
+   * that share the same single value. That compression is useful for one
+   * attribute, but it is lossy when two or more requested attributes belong
+   * to the same entity row. Preserve every requested attribute beside its
+   * entity before any value clustering can occur.
+   */
+  const selectedColumns = Array.isArray(plan?.selectColumns)
+    ? plan.selectColumns.filter(Boolean)
+    : [];
+
+  const requestedAttributeColumns = selectedColumns
+    .filter((column) => normalizeText(column) !== normalizeText(labelColumn));
+
+  if (requestedAttributeColumns.length >= 2) {
+    const lines = rows
+      .filter((row) => row && typeof row === 'object' && !Array.isArray(row))
+      .map((row, index) => {
+        const labelRaw = row?.[labelColumn];
+        const label = labelRaw === null || labelRaw === undefined || String(labelRaw).trim() === ''
+          ? `Item ${index + 1}`
+          : String(labelRaw).trim();
+
+        const fields = requestedAttributeColumns.map((column) => {
+          const raw = row?.[column];
+          const display = raw === null || raw === undefined || String(raw).trim() === ''
+            ? 'No value recorded'
+            : String(raw).trim();
+
+          return `${humanizeFieldName(column)}: ${display}`;
+        });
+
+        return `${index + 1}. ${label} — ${fields.join('; ')}`;
+      });
+
+    if (lines.length) return lines.join('\n');
+  }
+
   const normalizedLabel = normalizeText(labelColumn);
   const normalizedValue = normalizeText(valueColumn);
   if (!normalizedLabel || !normalizedValue || normalizedLabel === normalizedValue) return null;
