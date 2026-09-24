@@ -3660,6 +3660,7 @@ function operationUsesMetricColumn(
     "group_average",
     "group_minimum",
     "group_maximum",
+    "group_list",
   ]).has(
     String(operation || "")
       .trim()
@@ -3707,7 +3708,8 @@ function enforceExplicitQuestionColumn({
     normalizedOperation === "group_average" ||
     normalizedOperation === "group_minimum" ||
     normalizedOperation === "group_maximum" ||
-    normalizedOperation === "group_count"
+    normalizedOperation === "group_count" ||
+    normalizedOperation === "group_list"
   ) {
     return plan;
   }

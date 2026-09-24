@@ -993,13 +993,20 @@ function formatGroupedAggregateAnswer({
     ) ||
     "group";
 
+  const displayGroupValue = (item) =>
+    item?.value === null ||
+    item?.value === undefined ||
+    item?.missing === true
+      ? "No value recorded"
+      : formatVerifiedValue(
+          item.value
+        );
+
   const lines =
     results.map(
       (item) =>
         `${item.label}: ` +
-        `${formatVerifiedValue(
-          item.value
-        )}`
+        `${displayGroupValue(item)}`
     );
 
   if (
@@ -1008,9 +1015,7 @@ function formatGroupedAggregateAnswer({
     return (
       `The ${aggregation} ${metric} for ` +
       `${results[0].label} is ` +
-      `${formatVerifiedValue(
-        results[0].value
-      )}.`
+      `${displayGroupValue(results[0])}.`
     );
   }
 
@@ -1024,14 +1029,10 @@ function formatGroupedAggregateAnswer({
       results[1];
 
     const firstValue =
-      formatVerifiedValue(
-        first.value
-      );
+      displayGroupValue(first);
 
     const secondValue =
-      formatVerifiedValue(
-        second.value
-      );
+      displayGroupValue(second);
 
     if (
       operation ===
@@ -1095,9 +1096,7 @@ function formatGroupedAggregateAnswer({
       .map(
         (item, index) =>
           `${index + 1}. ${item.label}: ` +
-          `${formatVerifiedValue(
-            item.value
-          )}`
+          `${displayGroupValue(item)}`
       )
       .join("\n")
   );

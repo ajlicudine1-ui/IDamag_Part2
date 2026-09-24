@@ -1237,7 +1237,7 @@ Dataset:
 {
   "route":"dataset",
   "dataset":"exact worksheet name",
-  "operation":"sum|average|median|minimum|maximum|row_count|non_empty_count|distinct_count|list|lookup|group_count|group_sum|group_average|group_minimum|group_maximum|rank_rows|rank_groups",
+  "operation":"sum|average|median|minimum|maximum|row_count|non_empty_count|distinct_count|list|lookup|group_count|group_sum|group_average|group_minimum|group_maximum|group_list|rank_rows|rank_groups",
   "column":"exact metric/output column or null",
   "labelColumn":"exact label column or null",
   "groupBy":"exact grouping column or null",
@@ -1334,6 +1334,11 @@ RULES
 17. Every explicit requested object/category/value must be grounded to the
     live schema or RETRIEVED REAL DATA. If it cannot be grounded, return
     route "clarify" instead of broadening the query.
+18. For a categorical relationship requested per/by/for each parent entity,
+    use group_list with column=the requested child/output field and
+    groupBy/labelColumn=the parent field. For an additive numeric measure per
+    parent, use the matching grouped numeric operation instead. Do not answer
+    "X for each Y" by merely listing Y.
 
 Return JSON only.
 `;

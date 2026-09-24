@@ -7,6 +7,7 @@ const {
   parseRankingTargets,
   scoreTargetToColumn,
   findStrongMorphologicalQuestionColumn,
+  inferRequestedColumnFromQuestion,
 } = require('./plannerNormalizer');
 const { findColumn } = require('./columnMatcher');
 const { applyFilters } = require('./filterEngine');
@@ -277,8 +278,7 @@ function repairImplicitFilteredAdditiveAggregate({ datasets, plan, question }) {
 }
 
 function hasGroupingCue(question) {
-  const text = normalizeText(question);
-  return /\b(?:for\s+each|for\s+every|per|by|grouped\s+by|broken\s+down\s+by)\b/.test(text);
+  return Boolean(extractGroupingTarget(question));
 }
 
 function explicitColumnsForDataset(schema, question, dataset) {
@@ -289,9 +289,190 @@ function explicitColumnsForDataset(schema, question, dataset) {
 
 function extractGroupingTarget(question) {
   const raw = String(question || '').replace(/[?!.]+$/g, ' ').trim();
-  const match = raw.match(/\b(?:for\s+each|for\s+every|per|by|grouped\s+by|broken\s+down\s+by)\s+(?:the\s+)?(.+?)(?=\s+(?:with|where|that|which|who|and\s+then|then)\b|[,;]|$)/i);
-  if (!match?.[1]) return null;
-  return match[1].replace(/\b(?:respectively|separately)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+
+  // These patterns describe generic grouping grammar only. The captured noun
+  // is still resolved against the live worksheet schema, so no dashboard
+  // field or business value is hardcoded here.
+  const patterns = [
+    /\b(?:for\s+each|for\s+every|per|by|grouped\s+by|broken\s+down\s+by)\s+(?:the\s+)?(.+?)(?=\s+(?:with|where|that|which|who|and\s+then|then)\b|[,;]|$)/i,
+    /\bof\s+each\s+(?:the\s+)?(.+?)(?=\s+(?:with|where|that|which|who|and\s+then|then)\b|[,;]|$)/i,
+    /\b(?:does|do|did)\s+each\s+(?:the\s+)?(.+?)\s+(?:have|has|contain|contains|include|includes|receive|receives|use|uses)\b/i,
+    /\beach\s+(?:the\s+)?(.+?)\s+(?:has|have|contains|includes|receives|uses)\b/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    if (!match?.[1]) continue;
+    const target = match[1]
+      .replace(/\b(?:respectively|separately)\b/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (target) return target;
+  }
+
+  return null;
+}
+
+function inferQuestionColumn({ schema, dataset, rows, question, excludedColumns = [] }) {
+  const excluded = new Set(
+    (excludedColumns || []).map((item) => normalizeText(item)).filter(Boolean)
+  );
+
+  const direct = findColumn(rows, question);
+  if (direct && !excluded.has(normalizeText(direct))) return direct;
+
+  const inferred = inferRequestedColumnFromQuestion({
+    schema,
+    question,
+    preferredDataset: dataset,
+    excludedColumns,
+  });
+
+  const column = inferred?.column
+    ? (findColumn(rows, inferred.column) || inferred.column)
+    : null;
+
+  return column && !excluded.has(normalizeText(column))
+    ? column
+    : null;
+}
+
+function inferNumericQuestionColumn({
+  schema,
+  dataset,
+  rows,
+  question,
+  excludedColumns = [],
+}) {
+  const excluded = new Set(
+    (excludedColumns || []).map((item) => normalizeText(item)).filter(Boolean)
+  );
+
+  const explicit = explicitColumnsForDataset(schema, question, dataset)
+    .filter(
+      (column) =>
+        !excluded.has(normalizeText(column)) &&
+        isNumericColumn(rows, column)
+    );
+
+  if (explicit.length) {
+    return explicit
+      .map((column) => ({
+        column,
+        score: scoreTargetToColumn(question, column),
+      }))
+      .sort((a, b) => b.score - a.score)[0].column;
+  }
+
+  const candidates = Object.keys(rows?.[0] || {})
+    .filter(
+      (column) =>
+        !excluded.has(normalizeText(column)) &&
+        isNumericColumn(rows, column)
+    )
+    .map((column) => ({
+      column,
+      score: scoreTargetToColumn(question, column),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  return candidates[0]?.score >= 0.72
+    ? candidates[0].column
+    : null;
+}
+
+function groupingValueQuestion(question) {
+  const raw = String(question || '').replace(/[?!.]+$/g, ' ').trim();
+  const cuts = [
+    /\b(?:for\s+each|for\s+every|per|grouped\s+by|broken\s+down\s+by)\b/i,
+    /\bof\s+each\b/i,
+    /\b(?:does|do|did)\s+each\b/i,
+    /\beach\b/i,
+  ];
+
+  for (const cut of cuts) {
+    const index = raw.search(cut);
+    if (index > 0) return raw.slice(0, index).trim();
+  }
+
+  return raw;
+}
+
+/**
+ * Repair schema-backed categorical parent/child requests such as
+ * "What enterprises are listed for each association?".
+ *
+ * The relationship is inferred from question grammar plus the live schema;
+ * no dashboard-specific field name or value is encoded.
+ */
+function repairGroupedListPlan({ datasets, schema, plan, question }) {
+  if (!plan || plan.route !== 'dataset' || !plan.dataset) return plan;
+
+  const groupingTarget = extractGroupingTarget(question);
+  if (!groupingTarget) return plan;
+
+  const rows = datasets?.[plan.dataset];
+  if (!Array.isArray(rows) || !rows.length) return plan;
+
+  const group = inferQuestionColumn({
+    schema,
+    dataset: plan.dataset,
+    rows,
+    question: groupingTarget,
+  });
+
+  if (!group || isNumericColumn(rows, group)) return plan;
+
+  const currentOp = String(plan.operation || '').toLowerCase();
+  if (
+    [
+      'group_sum',
+      'group_average',
+      'group_minimum',
+      'group_maximum',
+      'group_count',
+      'rank_groups',
+    ].includes(currentOp)
+  ) {
+    return plan;
+  }
+
+  const valueText = groupingValueQuestion(question);
+  let valueColumn = inferQuestionColumn({
+    schema,
+    dataset: plan.dataset,
+    rows,
+    question: valueText,
+    excludedColumns: [group],
+  });
+
+  if (!valueColumn && plan.column) {
+    const candidate = findColumn(rows, plan.column) || plan.column;
+    if (normalizeText(candidate) !== normalizeText(group)) {
+      valueColumn = candidate;
+    }
+  }
+
+  if (
+    !valueColumn ||
+    normalizeText(valueColumn) === normalizeText(group) ||
+    isNumericColumn(rows, valueColumn)
+  ) {
+    return plan;
+  }
+
+  return {
+    ...plan,
+    operation: 'group_list',
+    column: valueColumn,
+    labelColumn: group,
+    groupBy: group,
+    aggregation: null,
+    selectColumns: [group, valueColumn],
+    outputRequested: true,
+    showAll: true,
+    groupedListParityApplied: true,
+  };
 }
 
 function repairGroupedAggregatePlan({ datasets, schema, plan, question }) {
@@ -310,10 +491,19 @@ function repairGroupedAggregatePlan({ datasets, schema, plan, question }) {
   if (!metric && plan.column && isNumericColumn(rows, findColumn(rows, plan.column) || plan.column)) {
     metric = findColumn(rows, plan.column) || plan.column;
   }
-  if (!metric && aggregation !== 'count') {
-    const beforeGrouping = String(question || '').split(/\b(?:for\s+each|for\s+every|per|by)\b/i)[0];
-    metric = findColumn(rows, beforeGrouping);
-    if (metric && !isNumericColumn(rows, metric)) metric = null;
+  if (!metric) {
+    const valueText = groupingValueQuestion(question);
+    const inferredMetric = inferQuestionColumn({
+      schema,
+      dataset: plan.dataset,
+      rows,
+      question: valueText,
+      excludedColumns: [group],
+    });
+
+    if (inferredMetric && isNumericColumn(rows, inferredMetric)) {
+      metric = inferredMetric;
+    }
   }
 
   /**
@@ -354,6 +544,8 @@ function repairGroupedAggregatePlan({ datasets, schema, plan, question }) {
     groupBy: group,
     aggregation: aggregation === 'count' ? 'count' : aggregation,
     selectColumns: aggregation === 'count' ? [group] : [group, metric],
+    showAll: !/\b(?:top|bottom|first|last)\s+\d+\b/i.test(String(question || '')),
+    preserveEmptyGroups: /\b(?:each|every)\b/i.test(String(question || '')),
     groupedSemanticParityApplied: true,
   };
 }
@@ -518,7 +710,7 @@ function questionExplicitlyNamesNumericRankingMetric({ datasets, schema, questio
   return false;
 }
 
-function repairAggregateIntent({ datasets, plan, question }) {
+function repairAggregateIntent({ datasets, schema, plan, question }) {
   if (!plan || plan.route !== 'dataset' || !plan.dataset) return plan;
 
   // Ranking words take precedence over aggregation words. This avoids
@@ -532,20 +724,50 @@ function repairAggregateIntent({ datasets, plan, question }) {
   const rows = datasets?.[plan.dataset];
   if (!Array.isArray(rows) || !rows.length) return plan;
 
-  const column = plan.column ? (findColumn(rows, plan.column) || plan.column) : null;
+  let column = plan.column
+    ? (findColumn(rows, plan.column) || plan.column)
+    : null;
+
+  if (!column || !isNumericColumn(rows, column)) {
+    column = inferNumericQuestionColumn({
+      schema,
+      dataset: plan.dataset,
+      rows,
+      question,
+    });
+  }
+
   if (!column || !isNumericColumn(rows, column)) return plan;
 
   const operation = aggregation === 'sum' ? 'sum' : 'average';
-  if (plan.operation === operation) return plan;
+  if (
+    plan.operation === operation &&
+    normalizeText(plan.column) === normalizeText(column)
+  ) {
+    return plan;
+  }
 
-  // Only repair value-returning plans. Count/group/rank operations carry
-  // distinct semantics and must not be silently converted.
-  const repairable = new Set(['lookup', 'list', 'value', 'select', 'get', null, undefined]);
+  // Only repair scalar/value plans. Count/group/rank operations carry
+  // distinct semantics and must not be silently converted. An already-correct
+  // aggregate operation is also repairable when only its metric was wrong.
+  const repairable = new Set([
+    'lookup',
+    'list',
+    'value',
+    'select',
+    'get',
+    'sum',
+    'average',
+    null,
+    undefined,
+  ]);
+
   if (!repairable.has(plan.operation)) return plan;
 
   return {
     ...plan,
     operation,
+    column,
     groupBy: null,
     aggregation: null,
     labelColumn: null,
@@ -658,9 +880,10 @@ function enforcePlannerInvariants({ datasets, schema, plan, question }) {
   next = repairEntityListIntent({ datasets, schema, plan: next, question });
   next = repairCategoricalCountIntent({ datasets, plan: next, question });
   next = repairNumericMeasureCountIntent({ datasets, plan: next, question });
-  next = repairAggregateIntent({ datasets, plan: next, question });
+  next = repairAggregateIntent({ datasets, schema, plan: next, question });
   next = repairImplicitFilteredAdditiveAggregate({ datasets, plan: next, question });
   next = repairGroupedAggregatePlan({ datasets, schema, plan: next, question });
+  next = repairGroupedListPlan({ datasets, schema, plan: next, question });
   next = applySimpleRowRankingInvariant({ datasets, schema, plan: next, question });
   next = removeProjectionFieldFilterArtifacts({ datasets, plan: next, question });
   next = dedupePlanFilters(next);
@@ -674,6 +897,7 @@ module.exports = {
   repairListProjectionIntent,
   removeRedundantContainsEqualsFilters,
   repairGroupedAggregatePlan,
+  repairGroupedListPlan,
   repairEntityListIntent,
   repairCategoricalCountIntent,
   repairNumericMeasureCountIntent,

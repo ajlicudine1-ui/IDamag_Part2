@@ -6111,6 +6111,22 @@ async function answerQuestion(
                 "object"
           );
 
+        const isGroupedListResult =
+          String(
+            plan?.operation ||
+            result?.operation ||
+            ""
+          )
+            .trim()
+            .toLowerCase() ===
+            "group_list" &&
+          Array.isArray(result?.results);
+
+        const groupedListAnswer =
+          isGroupedListResult
+            ? result.answer
+            : null;
+
         const primitiveListAnswer =
           isPrimitiveListResult &&
           plan?.listProjectionGrounded !== true
@@ -6176,6 +6192,7 @@ async function answerQuestion(
           result?.answer
             ? result.answer
             : (
+                groupedListAnswer ||
                 groundedListAnswer ||
                 primitiveListAnswer ||
                 await generateNaturalResponse({

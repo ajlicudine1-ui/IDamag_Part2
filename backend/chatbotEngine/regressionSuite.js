@@ -1569,6 +1569,7 @@ test('local planner parity exposes the same executable operation surface as Groq
       'group_average',
       'group_minimum',
       'group_maximum',
+      'group_list',
       'rank_rows',
       'rank_groups',
     ].sort()
@@ -6524,4 +6525,100 @@ test('generic list disambiguation does not turn wide many-to-many attributes int
   assert.equal(result.contextualizedList, undefined);
   assert.equal(result.count, 2);
   assert.deepEqual(result.results, ['Alpha', 'Beta']);
+});
+
+
+test('generic each-entity numeric measure returns every group and preserves a missing value', async () => {
+  const input = {
+    Data: [
+      { Association: 'Alpha Group', 'No. of members': '10' },
+      { Association: 'Beta Group', 'No. of members': '20' },
+      { Association: 'Gamma Group', 'No. of members': '' },
+    ],
+  };
+
+  const result = await answerQuestion(
+    input,
+    'How many members does each association have?',
+    `each-numeric-${Date.now()}`
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'group_sum');
+  assert.equal(result.column, 'No. of members');
+  assert.equal(result.groupBy, 'Association');
+  assert.equal(result.results.length, 3);
+
+  const values = Object.fromEntries(
+    result.results.map((item) => [item.label, item.value])
+  );
+
+  assert.equal(values['Alpha Group'], 10);
+  assert.equal(values['Beta Group'], 20);
+  assert.equal(values['Gamma Group'], null);
+  assert.match(result.answer, /Gamma Group: No value recorded/i);
+});
+
+
+test('generic categorical field for each entity returns grouped values instead of entity names', async () => {
+  const input = {
+    Data: [
+      { Association: 'Alpha Group', Enterprises: 'Milling' },
+      { Association: 'Beta Group', Enterprises: 'Trading' },
+      { Association: 'Gamma Group', Enterprises: '' },
+    ],
+  };
+
+  const result = await answerQuestion(
+    input,
+    'What enterprises are listed for each association?',
+    `each-list-${Date.now()}`
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'group_list');
+  assert.equal(result.column, 'Enterprises');
+  assert.equal(result.groupBy, 'Association');
+  assert.equal(result.results.length, 3);
+
+  const values = Object.fromEntries(
+    result.results.map((item) => [item.label, item.values])
+  );
+
+  assert.deepEqual(values['Alpha Group'], ['Milling']);
+  assert.deepEqual(values['Beta Group'], ['Trading']);
+  assert.deepEqual(values['Gamma Group'], []);
+  assert.match(result.answer, /Alpha Group — Milling/);
+  assert.match(result.answer, /Gamma Group — No value recorded/);
+});
+
+
+test('plain distinct lists do not use near one-to-one descriptive text as identity context', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    Data: [
+      { Place: 'One', Description: 'rice' },
+      { Place: 'Two', Description: 'corn' },
+      { Place: 'Three', Description: 'vegetables' },
+      { Place: 'Shared', Description: 'rice and vegetables' },
+      { Place: 'Shared', Description: 'rice and fish' },
+    ],
+  };
+
+  const result = executePlan({
+    datasets,
+    plan: {
+      route: 'dataset',
+      dataset: 'Data',
+      operation: 'list',
+      column: 'Place',
+      filters: [],
+      showAll: true,
+    },
+    question: 'What places are listed?',
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.contextualizedList, undefined);
+  assert.deepEqual(result.results, ['One', 'Shared', 'Three', 'Two']);
 });

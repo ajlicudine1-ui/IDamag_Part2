@@ -969,7 +969,12 @@ function buildSemanticVerifiedAnswer({ question, plan, result } = {}) {
               : op === 'median'
                 ? 'median '
                 : '';
-    const noun = meaning === 'price' ? 'price' : metric;
+    let noun = meaning === 'price' ? 'price' : metric;
+    if (op === 'sum') {
+      noun = String(noun || '').replace(/^(?:total|sum of|sum)\s+/i, '').trim() || noun;
+    } else if (op === 'average') {
+      noun = String(noun || '').replace(/^(?:average|avg|mean)\s+/i, '').trim() || noun;
+    }
     return `The ${operationLabel}${noun} is ${formatValue(result.value, displayUnit)}.`;
   }
 

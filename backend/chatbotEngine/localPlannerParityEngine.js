@@ -37,6 +37,7 @@ const DATASET_OPERATIONS = new Set([
   "group_average",
   "group_minimum",
   "group_maximum",
+  "group_list",
   "rank_rows",
   "rank_groups",
 ]);
@@ -378,15 +379,31 @@ function mapGroupedOperation(baseOperation) {
     average: "group_average",
     minimum: "group_minimum",
     maximum: "group_maximum",
+    list: "group_list",
+    lookup: "group_list",
   };
 
   return map[baseOperation] || null;
 }
 
+function extractGroupingTarget(question) {
+  const raw = String(question || "").replace(/[?!.]+$/g, " ").trim();
+  const patterns = [
+    /\b(?:for\s+each|for\s+every|per|by|grouped\s+by|broken\s+down\s+by)\s+(?:the\s+)?(.+?)(?=\s+(?:with|where|that|which|who|and\s+then|then)\b|[,;]|$)/i,
+    /\bof\s+each\s+(?:the\s+)?(.+?)(?=\s+(?:with|where|that|which|who|and\s+then|then)\b|[,;]|$)/i,
+    /\b(?:does|do|did)\s+each\s+(?:the\s+)?(.+?)\s+(?:have|has|contain|contains|include|includes|receive|receives|use|uses)\b/i,
+    /\beach\s+(?:the\s+)?(.+?)\s+(?:has|have|contains|includes|receives|uses)\b/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    if (match?.[1]) return match[1].replace(/\s+/g, " ").trim();
+  }
+  return null;
+}
+
 function detectGroupingCue(question) {
-  return /\b(?:by|per|for each|grouped by|each)\b/.test(
-    normalizeText(question)
-  );
+  return Boolean(extractGroupingTarget(question));
 }
 
 function inferGroupingColumn({
@@ -395,25 +412,14 @@ function inferGroupingColumn({
   datasetName,
   excludedColumns = [],
 }) {
-  const text =
-    normalizeText(question);
-
-  const match =
-    text.match(
-      /\b(?:by|per|for each|grouped by|each)\s+(.+?)(?:[?.]|$)/
-    );
-
-  if (!match?.[1]) {
-    return null;
-  }
+  const target = extractGroupingTarget(question);
+  if (!target) return null;
 
   const inferred =
     inferRequestedColumnFromQuestion({
       schema,
-      question:
-        match[1],
-      preferredDataset:
-        datasetName,
+      question: target,
+      preferredDataset: datasetName,
       excludedColumns,
     });
 
@@ -1207,9 +1213,7 @@ function ensureLocalPlannerParity({
       question,
       schema,
       datasetName,
-      excludedColumns: [
-        repaired.column,
-      ].filter(Boolean),
+      excludedColumns: [],
     });
 
   const requestedColumn =
@@ -1290,6 +1294,18 @@ function ensureLocalPlannerParity({
         groupingColumn;
       repaired.aggregation =
         "count";
+    } else if (
+      repaired.operation ===
+        "group_list"
+    ) {
+      repaired.column =
+        requestedColumn;
+      repaired.labelColumn =
+        groupingColumn;
+      repaired.groupBy =
+        groupingColumn;
+      repaired.aggregation =
+        null;
     } else if (
       /^group_/.test(
         repaired.operation

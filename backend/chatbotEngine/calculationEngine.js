@@ -1534,11 +1534,18 @@ function inferListDisambiguationContext({ rows, selectedColumn }) {
     if (expandedSelectedCount === 0) continue;
 
     const averageContextsPerSelected = pairCount / selectedUniqueCount;
+    const averageSelectedPerContext = pairCount / distinctCandidateCount;
 
     // A parent/context field should be close to a function of the listed
     // value. Wide many-to-many fields (category, commodity, status history,
     // etc.) are attributes, not safe identity context.
     if (averageContextsPerSelected > 1.6 || maxContextsForOneSelected > 4) continue;
+
+    // A useful parent/context is normally shared by multiple child labels.
+    // Near one-to-one descriptive attributes should not become identity
+    // context just because one repeated label happens to have different text.
+    // This relies on relationship shape rather than any specific column name.
+    if (averageSelectedPerContext < 1.5) continue;
 
     // Prefer the most specific stable context. Higher cardinality usually
     // means "closer parent" (e.g. municipality over province for barangays),
@@ -1554,6 +1561,7 @@ function inferListDisambiguationContext({ rows, selectedColumn }) {
       pairCount,
       distinctCandidateCount,
       averageContextsPerSelected,
+      averageSelectedPerContext,
       expandedSelectedCount,
       contextsBySelected,
     });
@@ -2117,7 +2125,7 @@ function executePlan({
         row?.[valueColumn] ?? ""
       ).trim();
 
-      if (!groupLabel || !rawValue) {
+      if (!groupLabel) {
         continue;
       }
 
@@ -2126,6 +2134,10 @@ function executePlan({
           values: [],
           seen: new Set(),
         });
+      }
+
+      if (!rawValue) {
+        continue;
       }
 
       const group = groups.get(groupLabel);
@@ -2165,8 +2177,16 @@ function executePlan({
       answer:
         results.length
           ? results
-              .map(
-                (item) =>
+              .map((item) => {
+                if (item.values.length === 0) {
+                  return `${item.label} — No value recorded`;
+                }
+
+                if (item.values.length === 1) {
+                  return `${item.label} — ${item.values[0]}`;
+                }
+
+                return (
                   `${item.label}:\n` +
                   item.values
                     .map(
@@ -2174,7 +2194,8 @@ function executePlan({
                         `${index + 1}. ${value}`
                     )
                     .join("\n")
-              )
+                );
+              })
               .join("\n\n")
           : `No ${valueColumn} values were found grouped by ${groupColumn}.`,
     };
@@ -2555,6 +2576,23 @@ function executePlan({
 
     const groups = new Map();
 
+    if (plan.preserveEmptyGroups === true) {
+      for (const row of filteredRows) {
+        const label = String(
+          row?.[groupColumn] ?? ""
+        ).trim();
+
+        if (!label || groups.has(label)) continue;
+
+        groups.set(label, {
+          sum: 0,
+          count: 0,
+          minimum: null,
+          maximum: null,
+        });
+      }
+    }
+
     for (const item of numericRows) {
       const label = String(
         item.row?.[groupColumn] ?? ""
@@ -2566,40 +2604,65 @@ function executePlan({
         groups.set(label, {
           sum: 0,
           count: 0,
-          minimum: item.value,
-          maximum: item.value,
+          minimum: null,
+          maximum: null,
         });
       }
 
       const group = groups.get(label);
       group.sum += item.value;
       group.count += 1;
-      group.minimum = Math.min(group.minimum, item.value);
-      group.maximum = Math.max(group.maximum, item.value);
+      group.minimum =
+        group.minimum === null
+          ? item.value
+          : Math.min(group.minimum, item.value);
+      group.maximum =
+        group.maximum === null
+          ? item.value
+          : Math.max(group.maximum, item.value);
     }
 
-    const results = [...groups.entries()]
+    const allResults = [...groups.entries()]
       .map(([label, group]) => {
-        let value;
+        let value = null;
 
-        if (operation === "group_average") {
-          value = group.sum / group.count;
-        } else if (operation === "group_minimum") {
-          value = group.minimum;
-        } else if (operation === "group_maximum") {
-          value = group.maximum;
-        } else {
-          value = group.sum;
+        if (group.count > 0) {
+          if (operation === "group_average") {
+            value = group.sum / group.count;
+          } else if (operation === "group_minimum") {
+            value = group.minimum;
+          } else if (operation === "group_maximum") {
+            value = group.maximum;
+          } else {
+            value = group.sum;
+          }
         }
 
         return {
           label,
           value,
           recordsUsed: group.count,
+          ...(group.count === 0 ? { missing: true } : {}),
         };
       })
-      .sort((a, b) => b.value - a.value)
-      .slice(0, limit);
+      .filter(
+        (item) =>
+          item.value !== null ||
+          plan.preserveEmptyGroups === true
+      )
+      .sort((a, b) => {
+        if (a.value === null && b.value === null) {
+          return a.label.localeCompare(b.label);
+        }
+        if (a.value === null) return 1;
+        if (b.value === null) return -1;
+        return b.value - a.value;
+      });
+
+    const results =
+      plan.showAll === true
+        ? allResults
+        : allResults.slice(0, limit);
 
     return {
       success: true,
@@ -2616,7 +2679,12 @@ function executePlan({
         results
           .map(
             (item, index) =>
-              `${index + 1}. ${item.label}: ${formatNumber(item.value)}`
+              `${index + 1}. ${item.label}: ` +
+              (
+                item.value === null
+                  ? "No value recorded"
+                  : formatNumber(item.value)
+              )
           )
           .join("\n"),
     };

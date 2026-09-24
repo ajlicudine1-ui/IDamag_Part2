@@ -3,7 +3,7 @@ const { normalizeText } = require('./utils');
 const SUPPORTED_OPERATIONS = new Set([
   'lookup','list','row_count','count','non_empty_count','distinct_count',
   'sum','average','median','minimum','maximum','group_sum','group_average',
-  'group_minimum','group_maximum','group_count','rank_rows','rank_groups',
+  'group_minimum','group_maximum','group_count','group_list','rank_rows','rank_groups',
   'rank_worksheets','multi_worksheet','rank_across_worksheets'
 ]);
 
@@ -53,7 +53,7 @@ function evaluateLocalPlanConfidence({ plan, datasets = {}, schema = [] } = {}) 
   breakdown.column = !operationNeedsColumn ? 1 : (sharedColumnExists(plan.column) ? 1 : 0);
   if (!breakdown.column && operationNeedsColumn) issues.push('metric-column-not-resolved');
 
-  const groupNeeded = ['rank_groups','group_sum','group_average','group_minimum','group_maximum','group_count','rank_across_worksheets'].includes(normalizeText(plan.operation));
+  const groupNeeded = ['rank_groups','group_sum','group_average','group_minimum','group_maximum','group_count','group_list','rank_across_worksheets'].includes(normalizeText(plan.operation));
   if (groupNeeded) {
     const groupName = plan.groupBy || plan.labelColumn;
     breakdown.group = sharedColumnExists(groupName) ? 1 : 0;
