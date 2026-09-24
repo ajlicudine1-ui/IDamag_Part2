@@ -7595,6 +7595,116 @@ test('semantic-contract route accepts arabic wording for roman-labeled live cate
   }
 });
 
+test('semantic-contract repair overrides a planner lookup for an explicit count metric', async () => {
+  const input = {
+    worksheets: [
+      {
+        name: 'overview',
+        rows: [
+          { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Barangay', region: 'REGION I (ILOCOS REGION)', province: 'ILOCOS NORTE', municipality: 'ADAMS', barangay: 'ADAMS POB', registered_registry_rows: '1853' },
+          { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Province', region: 'REGION I (ILOCOS REGION)', province: 'LA UNION', municipality: '', barangay: '', registered_registry_rows: '97731' },
+          { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Region', region: 'REGION I (ILOCOS REGION)', province: '', municipality: '', barangay: '', registered_registry_rows: '603501' },
+        ],
+      },
+      {
+        name: 'contract',
+        rows: [
+          { output_id: 'audit_output_001', output_name: 'Total Registered Individuals', public_terminology: 'registered registry records', result_table: 'overview', result_record_type: 'overview_summary', result_type: 'overview_summary', result_fields_json: '["registry_registration_count"]', original_result_fields_json: '["registered_registry_rows"]', allowed_operations_json: '["retrieve_stored_value"]', filter_profile_id: 'overview_fixed_v1', source_table: 'overview', exposure_status: 'PASS' },
+        ],
+      },
+    ],
+  };
+
+  const previousKey = process.env.GROQ_API_KEY;
+  delete process.env.GROQ_API_KEY;
+  const sessionId = `forced-lookup-contract-${Date.now()}-${Math.random()}`;
+  clearConversation(sessionId);
+  try {
+    const result = await answerQuestion(
+      input,
+      'How many registered individuals are in Region I?',
+      sessionId,
+      {
+        forcedPlan: {
+          route: 'dataset',
+          dataset: 'overview',
+          operation: 'lookup',
+          column: 'registered_registry_rows',
+          labelColumn: null,
+          groupBy: null,
+          aggregation: null,
+          direction: null,
+          filters: [
+            { column: 'region', operator: 'equals', value: 'REGION I (ILOCOS REGION)' },
+          ],
+          filterGroups: [],
+          filterGroupLogic: null,
+          selectColumns: ['registered_registry_rows'],
+          outputRequested: true,
+          transform: null,
+          limit: 1,
+          showAll: false,
+        },
+      }
+    );
+
+    assert.equal(result.success, true);
+    assert.equal(result.value, 603501);
+    assert.equal(result.operation, 'sum');
+    assert.equal(result.debugPlan?.semanticContractIntentRepaired, true);
+    assert.equal(result.debugPlan?.column, 'registered_registry_rows');
+  } finally {
+    clearConversation(sessionId);
+    if (previousKey === undefined) delete process.env.GROQ_API_KEY;
+    else process.env.GROQ_API_KEY = previousKey;
+  }
+});
+
+test('semantic-contract repeat is stable when target data uses the contract original field name', async () => {
+  const input = {
+    worksheets: [
+      {
+        name: 'overview',
+        rows: [
+          { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Barangay', region: 'REGION I (ILOCOS REGION)', province: 'ILOCOS NORTE', municipality: 'ADAMS', barangay: 'ADAMS POB', registered_registry_rows: '1853' },
+          { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Province', region: 'REGION I (ILOCOS REGION)', province: 'LA UNION', municipality: '', barangay: '', registered_registry_rows: '97731' },
+          { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Region', region: 'REGION I (ILOCOS REGION)', province: '', municipality: '', barangay: '', registered_registry_rows: '603501' },
+        ],
+      },
+      {
+        name: 'contract',
+        rows: [
+          { output_id: 'audit_output_001', output_name: 'Total Registered Individuals', public_terminology: 'registered registry records', result_table: 'overview', result_record_type: 'overview_summary', result_type: 'overview_summary', result_fields_json: '["registry_registration_count"]', original_result_fields_json: '["registered_registry_rows"]', allowed_operations_json: '["retrieve_stored_value"]', filter_profile_id: 'overview_fixed_v1', source_table: 'overview', exposure_status: 'PASS' },
+        ],
+      },
+    ],
+  };
+
+  const previousKey = process.env.GROQ_API_KEY;
+  delete process.env.GROQ_API_KEY;
+  const sessionId = `repeat-original-field-${Date.now()}-${Math.random()}`;
+  clearConversation(sessionId);
+  try {
+    for (let index = 0; index < 4; index += 1) {
+      const result = await answerQuestion(
+        input,
+        'How many registered individuals are in Region I?',
+        sessionId
+      );
+      assert.equal(result.success, true);
+      assert.equal(result.value, 603501);
+      assert.equal(result.operation, 'sum');
+      assert.equal(result.plannerSource, 'semantic-contract');
+      assert.equal(result.deterministicSemanticContractRoute, true);
+      assert.equal(result.debugPlan?.semanticContractIntentRepaired, true);
+    }
+  } finally {
+    clearConversation(sessionId);
+    if (previousKey === undefined) delete process.env.GROQ_API_KEY;
+    else process.env.GROQ_API_KEY = previousKey;
+  }
+});
+
 test('repeating the same semantic-contract question is deterministic in one session', async () => {
   const input = {
     worksheets: [

@@ -7292,7 +7292,12 @@ async function answerQuestion(
    * execution context, and allowed operation. Geography/entity filters are
    * inferred only from values that exist in that chosen live worksheet.
    */
-  if (conversationContext?.isFollowUp !== true) {
+  // Route any SELF-CONTAINED semantic-contract count deterministically even
+  // when conversation state happens to mark the session as a follow-up. The
+  // current wording, not stale session state, decides whether this turn may use
+  // the authoritative contract. Truly referential wording (those/them/same,
+  // "what about", etc.) still remains on the conversation-aware path.
+  if (!looksLikeContinuousFollowUp(cleanQuestion)) {
     const semanticSeedPlan = {
       route: "clarify",
       operation: "clarify",

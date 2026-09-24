@@ -441,12 +441,19 @@ function resolveSemanticContractIntentPlan({ datasets, plan, question }) {
     'non empty count',
     'distinct count',
     'clarify',
+    'lookup',
+    'value',
+    'select',
+    'get',
+    'list',
   ]);
 
-  // Semantic-contract recovery is deliberately narrow: it only activates for
-  // explicit count-style questions that strongly match a declared metric.
-  // This lets the contract rescue a stale row-count or low-confidence clarify
-  // plan without stealing ordinary list/lookups/aggregations.
+  // Semantic-contract recovery is deliberately narrow by QUESTION intent, not
+  // by whatever operation a planner happened to emit. An explicit count-style
+  // question that strongly matches a declared numeric contract metric must be
+  // repaired even when Groq/local planning mislabeled it as lookup/list/value.
+  // The strong contract-label match + real numeric field requirement below
+  // prevents this from stealing ordinary non-count lookups.
   if (!repairableOperations.has(operationKey)) return null;
 
   const questionText = normalizeContractKey(question);
