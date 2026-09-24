@@ -1432,6 +1432,185 @@ function executeCrossDatasetGroupedAggregation({
 
 
 
+
+/**
+ * Infer a compact categorical context column for list results when the same
+ * displayed value can refer to more than one entity in the current scope.
+ *
+ * This is intentionally data-driven. No geography, office, project, or other
+ * dashboard-specific field names are hardcoded. A useful context column is:
+ *   - mostly populated,
+ *   - non-numeric / non-date-like,
+ *   - lower-cardinality than the requested list field, and
+ *   - nearly functionally dependent on the requested field.
+ *
+ * Example shape (field names are arbitrary):
+ *   Parent=A, Child=Shared
+ *   Parent=B, Child=Shared
+ *
+ * Listing Child alone would collapse two real entities into one label. The
+ * inferred Parent column lets the renderer preserve both as
+ * "Shared — A" and "Shared — B".
+ */
+function inferListDisambiguationContext({ rows, selectedColumn }) {
+  const scopedRows = (rows || []).filter((row) => {
+    const value = row?.[selectedColumn];
+    return value !== null && value !== undefined && String(value).trim() !== "";
+  });
+
+  if (scopedRows.length < 2) return null;
+
+  const selectedDisplays = new Map();
+  for (const row of scopedRows) {
+    const display = String(row?.[selectedColumn] ?? "").trim();
+    const key = normalizeText(display);
+    if (key && !selectedDisplays.has(key)) selectedDisplays.set(key, display);
+  }
+
+  const selectedUniqueCount = selectedDisplays.size;
+  if (selectedUniqueCount < 2) return null;
+
+  const candidates = [];
+
+  for (const candidateColumn of getColumns(scopedRows)) {
+    if (normalizeText(candidateColumn) === normalizeText(selectedColumn)) continue;
+
+    const nonEmpty = [];
+    let numericCount = 0;
+    let dateLikeCount = 0;
+    const candidateValues = new Set();
+    const contextsBySelected = new Map();
+
+    for (const row of scopedRows) {
+      const rawSelected = row?.[selectedColumn];
+      const rawCandidate = row?.[candidateColumn];
+      const selectedDisplay = String(rawSelected ?? "").trim();
+      const candidateDisplay = String(rawCandidate ?? "").trim();
+      if (!selectedDisplay || !candidateDisplay) continue;
+
+      nonEmpty.push(candidateDisplay);
+      if (parseNumber(rawCandidate) !== null) numericCount += 1;
+      if (/[/-]/.test(candidateDisplay) && !Number.isNaN(Date.parse(candidateDisplay))) {
+        dateLikeCount += 1;
+      }
+
+      const selectedKey = normalizeText(selectedDisplay);
+      const candidateKey = normalizeText(candidateDisplay);
+      if (!selectedKey || !candidateKey) continue;
+
+      candidateValues.add(candidateKey);
+      if (!contextsBySelected.has(selectedKey)) contextsBySelected.set(selectedKey, new Map());
+      const valueMap = contextsBySelected.get(selectedKey);
+      if (!valueMap.has(candidateKey)) valueMap.set(candidateKey, candidateDisplay);
+    }
+
+    if (!nonEmpty.length) continue;
+
+    const populationRate = nonEmpty.length / scopedRows.length;
+    if (populationRate < 0.85) continue;
+
+    const numericRatio = numericCount / nonEmpty.length;
+    const dateRatio = dateLikeCount / nonEmpty.length;
+    if (numericRatio >= 0.7 || dateRatio >= 0.7) continue;
+
+    const distinctCandidateCount = candidateValues.size;
+    if (distinctCandidateCount < 2 || distinctCandidateCount >= selectedUniqueCount) continue;
+
+    // Require the context to exist for every distinct displayed child value.
+    // This prevents sparse descriptive fields from becoming accidental labels.
+    if (contextsBySelected.size !== selectedUniqueCount) continue;
+
+    let pairCount = 0;
+    let expandedSelectedCount = 0;
+    let maxContextsForOneSelected = 0;
+
+    for (const valueMap of contextsBySelected.values()) {
+      const size = valueMap.size;
+      pairCount += size;
+      if (size > 1) expandedSelectedCount += 1;
+      maxContextsForOneSelected = Math.max(maxContextsForOneSelected, size);
+    }
+
+    if (expandedSelectedCount === 0) continue;
+
+    const averageContextsPerSelected = pairCount / selectedUniqueCount;
+
+    // A parent/context field should be close to a function of the listed
+    // value. Wide many-to-many fields (category, commodity, status history,
+    // etc.) are attributes, not safe identity context.
+    if (averageContextsPerSelected > 1.6 || maxContextsForOneSelected > 4) continue;
+
+    // Prefer the most specific stable context. Higher cardinality usually
+    // means "closer parent" (e.g. municipality over province for barangays),
+    // while the stability penalty rejects fields that fan out too much.
+    const specificity = Math.log1p(distinctCandidateCount);
+    const stabilityPenalty = (averageContextsPerSelected - 1) * 4;
+    const expansionRate = expandedSelectedCount / selectedUniqueCount;
+    const score = specificity - stabilityPenalty + populationRate + expansionRate * 0.25;
+
+    candidates.push({
+      column: candidateColumn,
+      score,
+      pairCount,
+      distinctCandidateCount,
+      averageContextsPerSelected,
+      expandedSelectedCount,
+      contextsBySelected,
+    });
+  }
+
+  if (!candidates.length) return null;
+
+  candidates.sort((left, right) => {
+    if (right.score !== left.score) return right.score - left.score;
+    if (right.distinctCandidateCount !== left.distinctCandidateCount) {
+      return right.distinctCandidateCount - left.distinctCandidateCount;
+    }
+    return left.averageContextsPerSelected - right.averageContextsPerSelected;
+  });
+
+  const best = candidates[0];
+  const values = [];
+  const seenPairs = new Set();
+
+  for (const row of scopedRows) {
+    const selectedDisplay = String(row?.[selectedColumn] ?? "").trim();
+    const contextDisplay = String(row?.[best.column] ?? "").trim();
+    if (!selectedDisplay) continue;
+
+    const selectedKey = normalizeText(selectedDisplay);
+    const contextKey = normalizeText(contextDisplay);
+    const pairKey = `${selectedKey}::${contextKey}`;
+    if (seenPairs.has(pairKey)) continue;
+    seenPairs.add(pairKey);
+
+    values.push({
+      selected: selectedDisplay,
+      context: contextDisplay,
+      display: contextDisplay
+        ? `${selectedDisplay} — ${contextDisplay}`
+        : selectedDisplay,
+    });
+  }
+
+  values.sort((left, right) => {
+    const selectedOrder = left.selected.localeCompare(right.selected);
+    return selectedOrder || left.context.localeCompare(right.context);
+  });
+
+  return {
+    column: best.column,
+    values: values.map((item) => item.display),
+    entityCount: values.length,
+    labelCount: selectedUniqueCount,
+    ambiguousLabelCount: best.expandedSelectedCount,
+    confidence: Math.max(
+      0,
+      Math.min(1, 1 - (best.averageContextsPerSelected - 1) / 0.6)
+    ),
+  };
+}
+
 function buildDataQualitySummary({ datasets, plan }) {
   if (!plan || plan.route !== "dataset" || !plan.dataset || !plan.column) return null;
   const rows = datasets?.[plan.dataset];
@@ -1733,13 +1912,24 @@ function executePlan({
       }
     }
 
+    const disambiguation =
+      inferListDisambiguationContext({
+        rows: filteredRows,
+        selectedColumn,
+      });
+
+    const listValues =
+      disambiguation?.values?.length
+        ? disambiguation.values
+        : unique;
+
     const shouldShowAll =
       plan.showAll === true ||
       explicitListLimit === null;
 
     const shown = shouldShowAll
-      ? unique
-      : unique.slice(0, explicitListLimit);
+      ? listValues
+      : listValues.slice(0, explicitListLimit);
 
     return {
       success: true,
@@ -1747,13 +1937,22 @@ function executePlan({
       dataset: datasetName,
       operation,
       column: selectedColumn,
-      count: unique.length,
+      count: listValues.length,
       results: shown,
       filters,
+      ...(disambiguation
+        ? {
+            contextualizedList: true,
+            disambiguationColumn: disambiguation.column,
+            distinctLabelCount: disambiguation.labelCount,
+            ambiguousLabelCount: disambiguation.ambiguousLabelCount,
+            disambiguationConfidence: disambiguation.confidence,
+          }
+        : {}),
       answer:
       filters.length > 0
         ? `I found ${formatNumber(
-            unique.length
+            listValues.length
           )} ${selectedColumn} value(s) matching your request:\n\n` +
           shown
             .map(

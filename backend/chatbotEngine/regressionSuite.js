@@ -6422,3 +6422,106 @@ test('grouped additive metric request uses group sum without requiring the liter
   assert.equal(values.Rice, 25);
   assert.equal(values.Corn, 7);
 });
+
+
+test('generic list disambiguation preserves repeated labels across stable parent contexts', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    Data: [
+      { ParentBucket: 'North', ChildLabel: 'Shared', Attribute: 'Red' },
+      { ParentBucket: 'North', ChildLabel: 'Alpha', Attribute: 'Red' },
+      { ParentBucket: 'North', ChildLabel: 'Alpha', Attribute: 'Blue' },
+      { ParentBucket: 'South', ChildLabel: 'Shared', Attribute: 'Blue' },
+      { ParentBucket: 'South', ChildLabel: 'Beta', Attribute: 'Red' },
+      { ParentBucket: 'South', ChildLabel: 'Beta', Attribute: 'Blue' },
+    ],
+  };
+
+  const result = executePlan({
+    datasets,
+    plan: {
+      route: 'dataset',
+      dataset: 'Data',
+      operation: 'list',
+      column: 'ChildLabel',
+      filters: [],
+      showAll: true,
+    },
+    question: 'What child labels have records?',
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.contextualizedList, true);
+  assert.equal(result.disambiguationColumn, 'ParentBucket');
+  assert.equal(result.distinctLabelCount, 3);
+  assert.equal(result.count, 4);
+  assert.deepEqual(result.results, [
+    'Alpha — North',
+    'Beta — South',
+    'Shared — North',
+    'Shared — South',
+  ]);
+});
+
+
+test('generic list disambiguation is unnecessary after a parent filter removes ambiguity', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    Data: [
+      { ParentBucket: 'North', ChildLabel: 'Shared', Attribute: 'Red' },
+      { ParentBucket: 'North', ChildLabel: 'Alpha', Attribute: 'Red' },
+      { ParentBucket: 'North', ChildLabel: 'Alpha', Attribute: 'Blue' },
+      { ParentBucket: 'South', ChildLabel: 'Shared', Attribute: 'Blue' },
+      { ParentBucket: 'South', ChildLabel: 'Beta', Attribute: 'Red' },
+    ],
+  };
+
+  const result = executePlan({
+    datasets,
+    plan: {
+      route: 'dataset',
+      dataset: 'Data',
+      operation: 'list',
+      column: 'ChildLabel',
+      filters: [{ column: 'ParentBucket', operator: 'equals', value: 'North' }],
+      showAll: true,
+    },
+    question: 'What child labels are in North?',
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.contextualizedList, undefined);
+  assert.equal(result.count, 2);
+  assert.deepEqual(result.results, ['Alpha', 'Shared']);
+});
+
+
+test('generic list disambiguation does not turn wide many-to-many attributes into identity context', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    Data: [
+      { ParentBucket: 'Only', ChildLabel: 'Alpha', Attribute: 'Red' },
+      { ParentBucket: 'Only', ChildLabel: 'Alpha', Attribute: 'Blue' },
+      { ParentBucket: 'Only', ChildLabel: 'Beta', Attribute: 'Red' },
+      { ParentBucket: 'Only', ChildLabel: 'Beta', Attribute: 'Blue' },
+    ],
+  };
+
+  const result = executePlan({
+    datasets,
+    plan: {
+      route: 'dataset',
+      dataset: 'Data',
+      operation: 'list',
+      column: 'ChildLabel',
+      filters: [],
+      showAll: true,
+    },
+    question: 'List the child labels.',
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.contextualizedList, undefined);
+  assert.equal(result.count, 2);
+  assert.deepEqual(result.results, ['Alpha', 'Beta']);
+});
