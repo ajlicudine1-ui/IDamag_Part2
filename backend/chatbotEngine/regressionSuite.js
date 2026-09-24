@@ -7103,3 +7103,146 @@ test('semantic contract does not block aggregation when the contract explicitly 
   assert.equal(result.semanticContractAware, true);
   assert.equal(result.semanticContractAuthoritativeOnly, false);
 });
+
+
+test('semantic contract repairs Groq-style row_count into authoritative stored metric retrieval', () => {
+  const { enforcePlannerInvariants } = require('./plannerInvariantEngine');
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    SummaryData: [
+      { source_table: 'SummaryData', record_type: 'summary', filter_profile_id: 'fixed_v1', geography_level: 'Detail', region: 'AREA X', province: 'NORTH', detail: 'A', registration_total: '40' },
+      { source_table: 'SummaryData', record_type: 'summary', filter_profile_id: 'fixed_v1', geography_level: 'Detail', region: 'AREA X', province: 'NORTH', detail: 'B', registration_total: '60' },
+      { source_table: 'SummaryData', record_type: 'summary', filter_profile_id: 'fixed_v1', geography_level: 'Province', region: 'AREA X', province: 'NORTH', detail: '', registration_total: '100' },
+      { source_table: 'SummaryData', record_type: 'summary', filter_profile_id: 'fixed_v1', geography_level: 'Region', region: 'AREA X', province: '', detail: '', registration_total: '100' },
+    ],
+    SemanticMap: [
+      {
+        output_name: 'Total Registered Individuals',
+        public_terminology: 'registered individuals',
+        result_table: 'SummaryData',
+        result_record_type: 'summary',
+        result_fields_json: '["registration_total"]',
+        allowed_operations_json: '["retrieve_stored_value"]',
+        filter_profile_id: 'fixed_v1',
+        source_table: 'SummaryData',
+        exposure_status: 'PASS',
+      },
+    ],
+  };
+
+  const repaired = enforcePlannerInvariants({
+    datasets,
+    schema: [],
+    plan: {
+      route: 'dataset',
+      dataset: 'SummaryData',
+      operation: 'row_count',
+      column: null,
+      filters: [
+        { column: 'region', operator: 'equals', value: 'AREA X' },
+        { column: 'geography_level', operator: 'equals', value: 'Region' },
+      ],
+      selectColumns: [],
+      outputRequested: true,
+    },
+    question: 'How many registered individuals are in Area X?',
+  });
+
+  assert.equal(repaired.operation, 'sum');
+  assert.equal(repaired.column, 'registration_total');
+  assert.equal(repaired.semanticContractIntentRepaired, true);
+
+  const result = executePlan({ datasets, plan: repaired, question: 'How many registered individuals are in Area X?' });
+  assert.equal(result.success, true);
+  assert.equal(result.value, 100);
+  assert.equal(result.recordsUsed, 1);
+});
+
+
+test('semantic contract repairs local-fallback row_count with only parent filter', () => {
+  const { enforcePlannerInvariants } = require('./plannerInvariantEngine');
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    SummaryData: [
+      { source_table: 'SummaryData', record_type: 'summary', filter_profile_id: 'fixed_v1', geography_level: 'Detail', region: 'AREA X', province: 'NORTH', detail: 'A', registration_total: '40' },
+      { source_table: 'SummaryData', record_type: 'summary', filter_profile_id: 'fixed_v1', geography_level: 'Detail', region: 'AREA X', province: 'NORTH', detail: 'B', registration_total: '60' },
+      { source_table: 'SummaryData', record_type: 'summary', filter_profile_id: 'fixed_v1', geography_level: 'Province', region: 'AREA X', province: 'NORTH', detail: '', registration_total: '100' },
+      { source_table: 'SummaryData', record_type: 'summary', filter_profile_id: 'fixed_v1', geography_level: 'Region', region: 'AREA X', province: '', detail: '', registration_total: '100' },
+    ],
+    SemanticMap: [
+      {
+        output_name: 'Total Registered Individuals',
+        public_terminology: 'registered individuals',
+        result_table: 'SummaryData',
+        result_record_type: 'summary',
+        result_fields_json: '["registration_total"]',
+        allowed_operations_json: '["retrieve_stored_value"]',
+        filter_profile_id: 'fixed_v1',
+        source_table: 'SummaryData',
+      },
+    ],
+  };
+
+  const repaired = enforcePlannerInvariants({
+    datasets,
+    schema: [],
+    plan: {
+      route: 'dataset',
+      dataset: 'SummaryData',
+      operation: 'row_count',
+      column: null,
+      filters: [{ column: 'province', operator: 'equals', value: 'NORTH' }],
+      selectColumns: [],
+      outputRequested: true,
+    },
+    question: 'How many registered individuals are in North?',
+  });
+
+  assert.equal(repaired.operation, 'sum');
+  assert.equal(repaired.column, 'registration_total');
+  assert.equal(repaired.semanticContractIntentRepaired, true);
+
+  const result = executePlan({ datasets, plan: repaired, question: 'How many registered individuals are in North?' });
+  assert.equal(result.success, true);
+  assert.equal(result.value, 100);
+  assert.equal(result.recordsUsed, 1);
+  assert.equal(result.grainValue, 'Province');
+});
+
+
+test('semantic contract count repair preserves explicit physical row-count questions', () => {
+  const { enforcePlannerInvariants } = require('./plannerInvariantEngine');
+  const datasets = {
+    SummaryData: [
+      { registration_total: '10' },
+      { registration_total: '20' },
+    ],
+    SemanticMap: [
+      {
+        output_name: 'Total Registered Individuals',
+        public_terminology: 'registered individuals',
+        result_table: 'SummaryData',
+        result_fields_json: '["registration_total"]',
+        allowed_operations_json: '["retrieve_stored_value"]',
+      },
+    ],
+  };
+
+  const repaired = enforcePlannerInvariants({
+    datasets,
+    schema: [],
+    plan: {
+      route: 'dataset',
+      dataset: 'SummaryData',
+      operation: 'row_count',
+      column: null,
+      filters: [],
+      selectColumns: [],
+      outputRequested: true,
+    },
+    question: 'How many records are in this dataset?',
+  });
+
+  assert.equal(repaired.operation, 'row_count');
+  assert.equal(repaired.semanticContractIntentRepaired, undefined);
+});

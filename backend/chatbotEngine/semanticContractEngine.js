@@ -258,6 +258,198 @@ function resolveSemanticContractPolicy({
   };
 }
 
+
+function singularizeContractToken(token) {
+  const word = String(token || '').trim();
+  if (!word) return '';
+  if (word.length > 4 && word.endsWith('ies')) return `${word.slice(0, -3)}y`;
+  if (word.length > 3 && word.endsWith('s') && !word.endsWith('ss')) {
+    return word.slice(0, -1);
+  }
+  return word;
+}
+
+const CONTRACT_INTENT_STOPWORDS = new Set([
+  'a', 'an', 'the', 'of', 'in', 'on', 'at', 'to', 'for', 'from', 'by',
+  'with', 'without', 'and', 'or', 'is', 'are', 'was', 'were', 'be', 'been',
+  'being', 'how', 'many', 'much', 'what', 'which', 'who', 'whom', 'whose',
+  'show', 'give', 'tell', 'list', 'number', 'count', 'total', 'overall',
+  'each', 'every', 'all', 'per', 'value', 'values', 'result', 'results',
+]);
+
+function semanticContractTokens(value) {
+  return normalizeContractKey(value)
+    .split(/\s+/)
+    .map(singularizeContractToken)
+    .filter((token) => token && !CONTRACT_INTENT_STOPWORDS.has(token));
+}
+
+function scoreContractIntentLabel(question, label) {
+  const questionTokens = new Set(semanticContractTokens(question));
+  const labelTokens = [...new Set(semanticContractTokens(label))];
+  if (!questionTokens.size || !labelTokens.length) return null;
+
+  const overlap = labelTokens.filter((token) => questionTokens.has(token));
+  const overlapCount = overlap.length;
+  const labelCoverage = overlapCount / labelTokens.length;
+
+  // Multi-token semantic labels require at least two independently matching
+  // concepts. One-token labels can still be decisive (for example a stored
+  // metric whose public name is simply "Farmers").
+  const strong = labelTokens.length === 1
+    ? overlapCount === 1 && labelTokens[0].length >= 4
+    : overlapCount >= 2 && labelCoverage >= 0.66;
+
+  if (!strong) return null;
+
+  const normalizedQuestion = normalizeContractKey(question);
+  const normalizedLabel = normalizeContractKey(label);
+  const phraseBonus = normalizedLabel && normalizedQuestion.includes(normalizedLabel) ? 2 : 0;
+
+  return {
+    score: overlapCount * 2 + labelCoverage + phraseBonus,
+    overlapCount,
+    labelCoverage,
+    labelTokens,
+  };
+}
+
+function numericCoverage(rows, column) {
+  if (!column || !Array.isArray(rows) || !rows.length) return 0;
+  let numeric = 0;
+  let populated = 0;
+
+  for (const row of rows) {
+    const raw = row?.[column];
+    if (raw === null || raw === undefined || String(raw).trim() === '') continue;
+    populated += 1;
+    const value = Number(String(raw).replace(/,/g, '').trim());
+    if (Number.isFinite(value)) numeric += 1;
+  }
+
+  return populated ? numeric / populated : 0;
+}
+
+/**
+ * Recover a metric-bearing plan from a dataset-declared semantic contract
+ * when a planner interpreted "how many <metric>" as a physical row count.
+ *
+ * This is intentionally conservative and generic:
+ *   - explicit requests to count rows/records/entries are never changed;
+ *   - the contract row must structurally target the already selected dataset;
+ *   - a public/output semantic label must strongly match the question;
+ *   - the contract must expose a real numeric result field in that dataset.
+ *
+ * Both Groq and local-fallback plans pass through the shared planner
+ * invariants, so this repair gives the two planners the same behavior.
+ */
+function resolveSemanticContractIntentPlan({ datasets, plan, question }) {
+  if (!plan || plan.route !== 'dataset' || !plan.dataset) return null;
+  if (normalizeContractKey(plan.operation) !== 'row count') return null;
+
+  const questionText = normalizeContractKey(question);
+  if (!/\b(?:how many|number of|count of|count)\b/.test(questionText)) return null;
+  if (/\b(?:rows?|records?|entries?)\b/.test(questionText)) return null;
+
+  const targetRows = datasets?.[plan.dataset];
+  if (!Array.isArray(targetRows) || !targetRows.length) return null;
+
+  const contracts = detectSemanticContractDatasets(datasets);
+  if (!contracts.length) return null;
+
+  const candidates = [];
+
+  for (const contract of contracts) {
+    for (const row of contract.rows) {
+      if (isBlockedContractRow(row, contract.columns)) continue;
+      if (!rowMatchesTargetDataset(row, contract.columns, plan.dataset)) continue;
+
+      const semanticLabels = [
+        contract.columns.outputName ? row?.[contract.columns.outputName] : '',
+        contract.columns.publicTerminology ? row?.[contract.columns.publicTerminology] : '',
+      ].filter(Boolean);
+
+      let bestLabel = null;
+      let bestMatch = null;
+      for (const label of semanticLabels) {
+        const match = scoreContractIntentLabel(question, label);
+        if (!match) continue;
+        if (!bestMatch || match.score > bestMatch.score) {
+          bestLabel = String(label).trim();
+          bestMatch = match;
+        }
+      }
+      if (!bestMatch) continue;
+
+      const metricFields = getContractMetricFields(row, contract.columns);
+      const resolvedMetricCandidates = uniqueStrings(metricFields)
+        .map((field) => findColumn(targetRows, field))
+        .filter(Boolean)
+        .map((column) => ({ column, numericCoverage: numericCoverage(targetRows, column) }))
+        .filter((item) => item.numericCoverage >= 0.5)
+        .sort((a, b) => b.numericCoverage - a.numericCoverage);
+
+      const metric = resolvedMetricCandidates[0];
+      if (!metric) continue;
+
+      const allowedOperations = safeJsonArray(row?.[contract.columns.allowedOperations]);
+      if (!allowedOperations.length) continue;
+
+      candidates.push({
+        contractDataset: contract.datasetName,
+        row,
+        columns: contract.columns,
+        metricColumn: metric.column,
+        numericCoverage: metric.numericCoverage,
+        label: bestLabel,
+        semanticScore: bestMatch.score,
+        overlapCount: bestMatch.overlapCount,
+        labelCoverage: bestMatch.labelCoverage,
+        allowedOperations,
+      });
+    }
+  }
+
+  if (!candidates.length) return null;
+
+  candidates.sort((left, right) => {
+    if (right.semanticScore !== left.semanticScore) return right.semanticScore - left.semanticScore;
+    if (right.labelCoverage !== left.labelCoverage) return right.labelCoverage - left.labelCoverage;
+    if (right.overlapCount !== left.overlapCount) return right.overlapCount - left.overlapCount;
+    return right.numericCoverage - left.numericCoverage;
+  });
+
+  const best = candidates[0];
+  const runnerUp = candidates[1];
+
+  // Do not make an arbitrary choice when two different metrics have equally
+  // strong semantic evidence. Duplicate contract rows for the same metric are
+  // harmless and intentionally allowed.
+  if (runnerUp &&
+      runnerUp.metricColumn !== best.metricColumn &&
+      Math.abs(runnerUp.semanticScore - best.semanticScore) < 0.25) {
+    return null;
+  }
+
+  const groupBy = plan.groupBy ? findColumn(targetRows, plan.groupBy) : null;
+  const operation = groupBy ? 'group_sum' : 'sum';
+
+  return {
+    ...plan,
+    operation,
+    column: best.metricColumn,
+    groupBy: groupBy || null,
+    aggregation: groupBy ? 'sum' : null,
+    labelColumn: groupBy || null,
+    selectColumns: groupBy ? [groupBy, best.metricColumn] : [best.metricColumn],
+    outputRequested: true,
+    semanticContractIntentRepaired: true,
+    semanticContractIntentDataset: best.contractDataset,
+    semanticContractIntentLabel: best.label,
+    semanticContractIntentAllowedOperations: best.allowedOperations,
+  };
+}
+
 function applyAllowedValuesConstraint(rows, column, allowedValues) {
   if (!column || !Array.isArray(rows) || !rows.length || !allowedValues?.length) {
     return { rows, applied: false };
@@ -499,6 +691,7 @@ function evaluateSemanticContractAggregation({
 module.exports = {
   detectSemanticContractDatasets,
   resolveSemanticContractPolicy,
+  resolveSemanticContractIntentPlan,
   applySemanticContractScope,
   evaluateSemanticContractAggregation,
   safeJsonArray,
