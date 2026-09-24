@@ -6793,3 +6793,313 @@ test('plain distinct lists do not use near one-to-one descriptive text as identi
   assert.equal(result.contextualizedList, undefined);
   assert.deepEqual(result.results, ['One', 'Shared', 'Three', 'Two']);
 });
+
+
+test('generic grain-aware sum uses the requested hierarchy level instead of mixing detail and summary rows', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    overview: [
+      { geography_level: 'Barangay', province: 'LA UNION', municipality: 'Alpha', barangay: 'A1', registered_registry_rows: '40' },
+      { geography_level: 'Barangay', province: 'LA UNION', municipality: 'Alpha', barangay: 'A2', registered_registry_rows: '60' },
+      { geography_level: 'Municipality', province: 'LA UNION', municipality: 'Alpha', barangay: '', registered_registry_rows: '100' },
+      { geography_level: 'Province', province: 'LA UNION', municipality: '', barangay: '', registered_registry_rows: '100' },
+      { geography_level: 'Barangay', province: 'OTHER', municipality: 'Beta', barangay: 'B1', registered_registry_rows: '25' },
+      { geography_level: 'Municipality', province: 'OTHER', municipality: 'Beta', barangay: '', registered_registry_rows: '25' },
+      { geography_level: 'Province', province: 'OTHER', municipality: '', barangay: '', registered_registry_rows: '25' },
+    ],
+  };
+
+  const result = executePlan({
+    datasets,
+    plan: {
+      route: 'dataset',
+      dataset: 'overview',
+      operation: 'sum',
+      column: 'registered_registry_rows',
+      filters: [{ column: 'province', operator: 'equals', value: 'LA UNION' }],
+    },
+    question: 'How many registered individuals are in La Union?',
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.value, 100);
+  assert.equal(result.recordsUsed, 1);
+  assert.equal(result.grainAwareAggregation, true);
+  assert.equal(result.grainColumn, 'geography_level');
+  assert.equal(result.grainValue, 'Province');
+  assert.equal(result.grainStrategy, 'requested_level');
+  assert.equal(result.rowsBeforeGrainSelection, 4);
+  assert.equal(result.rowsAfterGrainSelection, 1);
+});
+
+
+test('generic grain-aware grouping falls to a finer compatible level when a summary row lacks the requested group field', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    Data: [
+      { geography_level: 'Barangay', province: 'North', municipality: 'Town A', barangay: 'A1', Commodity: 'Rice', Amount: '10' },
+      { geography_level: 'Barangay', province: 'North', municipality: 'Town A', barangay: 'A2', Commodity: 'Rice', Amount: '15' },
+      { geography_level: 'Barangay', province: 'North', municipality: 'Town A', barangay: 'A1', Commodity: 'Corn', Amount: '7' },
+      { geography_level: 'Municipality', province: 'North', municipality: 'Town A', barangay: '', Commodity: '', Amount: '32' },
+      { geography_level: 'Province', province: 'North', municipality: '', barangay: '', Commodity: '', Amount: '32' },
+    ],
+  };
+
+  const result = executePlan({
+    datasets,
+    plan: {
+      route: 'dataset',
+      dataset: 'Data',
+      operation: 'group_sum',
+      column: 'Amount',
+      groupBy: 'Commodity',
+      filters: [{ column: 'province', operator: 'equals', value: 'North' }],
+      showAll: true,
+    },
+    question: 'What is the amount for each commodity in North?',
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.grainAwareAggregation, true);
+  assert.equal(result.grainValue, 'Barangay');
+  assert.equal(result.grainStrategy, 'nearest_finer_compatible_level');
+  const values = Object.fromEntries(result.results.map((item) => [item.label, item.value]));
+  assert.equal(values.Rice, 25);
+  assert.equal(values.Corn, 7);
+});
+
+
+test('generic grain-aware grouping uses matching group hierarchy level when available', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    Data: [
+      { geography_level: 'Barangay', province: 'North', municipality: 'Town A', barangay: 'A1', Amount: '10' },
+      { geography_level: 'Barangay', province: 'North', municipality: 'Town A', barangay: 'A2', Amount: '15' },
+      { geography_level: 'Barangay', province: 'North', municipality: 'Town B', barangay: 'B1', Amount: '8' },
+      { geography_level: 'Municipality', province: 'North', municipality: 'Town A', barangay: '', Amount: '25' },
+      { geography_level: 'Municipality', province: 'North', municipality: 'Town B', barangay: '', Amount: '8' },
+      { geography_level: 'Province', province: 'North', municipality: '', barangay: '', Amount: '33' },
+    ],
+  };
+
+  const result = executePlan({
+    datasets,
+    plan: {
+      route: 'dataset',
+      dataset: 'Data',
+      operation: 'group_sum',
+      column: 'Amount',
+      groupBy: 'municipality',
+      filters: [{ column: 'province', operator: 'equals', value: 'North' }],
+      showAll: true,
+    },
+    question: 'What is the amount for each municipality in North?',
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.grainValue, 'Municipality');
+  const values = Object.fromEntries(result.results.map((item) => [item.label, item.value]));
+  assert.deepEqual(values, { 'Town A': 25, 'Town B': 8 });
+});
+
+
+test('generic grain-aware layer leaves ordinary single-grain datasets unchanged', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    Data: [
+      { Province: 'North', Commodity: 'Rice', Amount: '10' },
+      { Province: 'North', Commodity: 'Rice', Amount: '15' },
+      { Province: 'North', Commodity: 'Corn', Amount: '7' },
+    ],
+  };
+
+  const result = executePlan({
+    datasets,
+    plan: {
+      route: 'dataset',
+      dataset: 'Data',
+      operation: 'sum',
+      column: 'Amount',
+      filters: [{ column: 'Province', operator: 'equals', value: 'North' }],
+    },
+    question: 'What is the total amount in North?',
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.value, 32);
+  assert.equal(result.recordsUsed, 3);
+  assert.equal(result.grainAwareAggregation, undefined);
+});
+
+
+test('semantic contract retrieves one authoritative stored parent value before aggregation', () => {
+  const { executePlan, buildDataQualitySummary } = require('./calculationEngine');
+  const datasets = {
+    overview: [
+      { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Barangay', region: 'REGION I', province: 'LA UNION', municipality: 'Town A', barangay: 'A1', registry_registration_count: '40' },
+      { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Barangay', region: 'REGION I', province: 'LA UNION', municipality: 'Town A', barangay: 'A2', registry_registration_count: '60' },
+      { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Municipality', region: 'REGION I', province: 'LA UNION', municipality: 'Town A', barangay: '', registry_registration_count: '100' },
+      { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Province', region: 'REGION I', province: 'LA UNION', municipality: '', barangay: '', registry_registration_count: '100' },
+      // Same represented province appears on another exported visual surface.
+      { source_table: 'pbi_overview_province_visual', record_type: 'overview_province_visual', result_type: 'overview_province_visual', filter_profile_id: 'overview_province_visual_live_v1', geography_level: 'Province', region: 'REGION I', province: 'LA UNION', municipality: '', barangay: '', registry_registration_count: '100' },
+      { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Region', region: 'REGION I', province: '', municipality: '', barangay: '', registry_registration_count: '100' },
+    ],
+    Rules: [
+      {
+        output_id: 'output_1',
+        output_name: 'Registered individuals',
+        result_table: 'overview',
+        result_record_type: 'overview_summary',
+        result_type: 'overview_summary',
+        result_fields_json: '["registry_registration_count"]',
+        allowed_operations_json: '["retrieve_stored_value"]',
+        filter_profile_id: 'overview_fixed_v1',
+        source_table: 'overview',
+        exposure_status: 'PASS',
+      },
+    ],
+  };
+
+  const plan = {
+    route: 'dataset',
+    dataset: 'overview',
+    operation: 'sum',
+    column: 'registry_registration_count',
+    filters: [{ column: 'province', operator: 'equals', value: 'LA UNION' }],
+  };
+
+  const result = executePlan({
+    datasets,
+    plan,
+    question: 'How many registered individuals are in La Union?',
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.value, 100);
+  assert.equal(result.recordsUsed, 1);
+  assert.equal(result.semanticContractAware, true);
+  assert.equal(result.semanticContractDataset, 'Rules');
+  assert.equal(result.semanticContractAuthoritativeOnly, true);
+  assert.equal(result.semanticContractExecutionMode, 'authoritative_stored_value');
+  assert.equal(result.grainValue, 'Province');
+  assert.equal(result.rowsBeforeSemanticContractScope, 5);
+  assert.equal(result.rowsAfterSemanticContractScope, 4);
+
+  const quality = buildDataQualitySummary({ datasets, plan });
+  assert.equal(quality.totalRows, 1);
+  assert.equal(quality.nonMissingCount, 1);
+});
+
+
+test('semantic contract matches legacy/original field names without dashboard-specific aliases', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    overview: [
+      { source_table: 'overview', record_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Barangay', province: 'LA UNION', municipality: 'Town A', barangay: 'A1', registered_registry_rows: '40' },
+      { source_table: 'overview', record_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Barangay', province: 'LA UNION', municipality: 'Town A', barangay: 'A2', registered_registry_rows: '60' },
+      { source_table: 'overview', record_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Municipality', province: 'LA UNION', municipality: 'Town A', barangay: '', registered_registry_rows: '100' },
+      { source_table: 'overview', record_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Province', province: 'LA UNION', municipality: '', barangay: '', registered_registry_rows: '100' },
+    ],
+    semantic_rules: [
+      {
+        result_table: 'overview',
+        result_record_type: 'overview_summary',
+        result_fields_json: '["registry_registration_count"]',
+        original_result_fields_json: '["registered_registry_rows"]',
+        allowed_operations_json: '["retrieve_stored_value"]',
+        filter_profile_id: 'overview_fixed_v1',
+        source_table: 'overview',
+      },
+    ],
+  };
+
+  const result = executePlan({
+    datasets,
+    plan: {
+      route: 'dataset',
+      dataset: 'overview',
+      operation: 'sum',
+      column: 'registered_registry_rows',
+      filters: [{ column: 'province', operator: 'equals', value: 'LA UNION' }],
+    },
+    question: 'How many registered individuals are in La Union?',
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.value, 100);
+  assert.equal(result.recordsUsed, 1);
+  assert.ok(result.semanticContractMetricFields.includes('registered_registry_rows'));
+});
+
+
+test('semantic contract blocks recomputation when multiple authoritative stored rows remain', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    Data: [
+      { source_table: 'Data', Amount: '10' },
+      { source_table: 'Data', Amount: '20' },
+    ],
+    Rules: [
+      {
+        result_table: 'Data',
+        result_fields_json: '["Amount"]',
+        allowed_operations_json: '["retrieve_stored_value"]',
+        source_table: 'Data',
+      },
+    ],
+  };
+
+  const result = executePlan({
+    datasets,
+    plan: {
+      route: 'dataset',
+      dataset: 'Data',
+      operation: 'sum',
+      column: 'Amount',
+      filters: [],
+    },
+    question: 'What is the total amount?',
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.semanticContractViolation, true);
+  assert.equal(result.semanticContractExecutionMode, 'recomputation_blocked');
+  assert.equal(result.semanticContractViolationReason, 'multiple_authoritative_rows');
+});
+
+
+test('semantic contract does not block aggregation when the contract explicitly allows it', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    Data: [
+      { source_table: 'Data', Amount: '10' },
+      { source_table: 'Data', Amount: '20' },
+    ],
+    Rules: [
+      {
+        result_table: 'Data',
+        result_fields_json: '["Amount"]',
+        allowed_operations_json: '["sum"]',
+        source_table: 'Data',
+      },
+    ],
+  };
+
+  const result = executePlan({
+    datasets,
+    plan: {
+      route: 'dataset',
+      dataset: 'Data',
+      operation: 'sum',
+      column: 'Amount',
+      filters: [],
+    },
+    question: 'What is the total amount?',
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.value, 30);
+  assert.equal(result.recordsUsed, 2);
+  assert.equal(result.semanticContractAware, true);
+  assert.equal(result.semanticContractAuthoritativeOnly, false);
+});
