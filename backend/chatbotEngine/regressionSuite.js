@@ -6323,3 +6323,102 @@ test('problem3 local entity-list planner resolves a filtered descriptive entity 
     { column: 'Province', operator: 'equals', value: 'Pangasinan' },
   ]);
 });
+
+// ---------------------------------------------------------------------------
+// Disaster-style generic parity regressions (schema-driven; no dashboard data
+// is hardcoded into the engine itself).
+// ---------------------------------------------------------------------------
+
+test('entity-list wording with records lists the requested categorical field instead of counting rows', async () => {
+  const input = {
+    Data: [
+      { Municipality: 'Town A', Category: 'X', Amount: 10 },
+      { Municipality: 'Town B', Category: 'Y', Amount: 20 },
+      { Municipality: 'Town A', Category: 'Z', Amount: 30 },
+    ],
+  };
+
+  const result = await answerQuestion(
+    input,
+    'What municipalities have damage records?',
+    `records-list-${Date.now()}`
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'list');
+  assert.equal(result.column, 'Municipality');
+  assert.deepEqual(result.results, ['Town A', 'Town B']);
+});
+
+
+test('coordinated numeric how-many request is decomposed once and sums both additive metrics', async () => {
+  const input = {
+    Data: [
+      { Province: 'North', Male: 10, Female: 4 },
+      { Province: 'North', Male: 7, Female: 6 },
+      { Province: 'South', Male: 100, Female: 100 },
+    ],
+  };
+
+  const result = await answerQuestion(
+    input,
+    'How many males and females were affected in North?',
+    `coordinated-count-${Date.now()}`
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'compound');
+  assert.equal(result.results.length, 2);
+  assert.equal(result.results[0].operation, 'sum');
+  assert.equal(result.results[0].value, 17);
+  assert.equal(result.results[1].operation, 'sum');
+  assert.equal(result.results[1].value, 10);
+});
+
+
+test('filtered additive metric request sums repeated matching rows without requiring the literal word total', async () => {
+  const input = {
+    Data: [
+      { Commodity: 'Rice', 'Damaged Area (ha)': 2.5 },
+      { Commodity: 'Rice', 'Damaged Area (ha)': 3.5 },
+      { Commodity: 'Corn', 'Damaged Area (ha)': 9 },
+    ],
+  };
+
+  const result = await answerQuestion(
+    input,
+    'What is the damaged area for Rice?',
+    `implicit-filtered-sum-${Date.now()}`
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'sum');
+  assert.equal(result.column, 'Damaged Area (ha)');
+  assert.equal(result.value, 6);
+});
+
+
+test('grouped additive metric request uses group sum without requiring the literal word total', async () => {
+  const input = {
+    Data: [
+      { Commodity: 'Rice', 'Value Loss': 10 },
+      { Commodity: 'Rice', 'Value Loss': 15 },
+      { Commodity: 'Corn', 'Value Loss': 7 },
+    ],
+  };
+
+  const result = await answerQuestion(
+    input,
+    'What is the value loss for each commodity?',
+    `implicit-group-sum-${Date.now()}`
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(result.operation, 'group_sum');
+  assert.equal(result.column, 'Value Loss');
+  assert.equal(result.groupBy, 'Commodity');
+
+  const values = Object.fromEntries(result.results.map((item) => [item.label, item.value]));
+  assert.equal(values.Rice, 25);
+  assert.equal(values.Corn, 7);
+});

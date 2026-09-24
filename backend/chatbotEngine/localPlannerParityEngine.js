@@ -305,7 +305,7 @@ function detectBaseOperation(question, {
   }
 
   if (
-    /\b(?:how many rows|number of rows|row count|records|entries)\b/.test(text)
+    /\b(?:how many\s+(?:rows|records|entries)|number of\s+(?:rows|records|entries)|(?:row|record|entry)\s+count|count of\s+(?:rows|records|entries))\b/.test(text)
   ) {
     return "row_count";
   }
@@ -337,6 +337,25 @@ function detectBaseOperation(question, {
 
   if (
     /\b(?:list|show all|display all|enumerate|what are|which are|give me all|name all)\b/.test(text)
+  ) {
+    return "list";
+  }
+
+  /**
+   * Entity-list wording often contains the noun "records" as a qualifier,
+   * not as a request to count rows:
+   *
+   *   "What municipalities have disaster damage records?"
+   *   "Which offices have personnel records?"
+   *
+   * The requested subject is the leading entity phrase.  Treat this as a
+   * list intent unless the user explicitly asked "how many/count/number of".
+   * This is schema-agnostic; the actual output column is still resolved from
+   * the live worksheet later in the shared planner pipeline.
+   */
+  if (
+    /^(?:what|which|who)\s+.+?\s+(?:have|has|had|contain|contains|include|includes|show|shows|appear|appears|exist|exists|are|were)\b/.test(text) &&
+    !/\b(?:how many|number of|count(?: of)?)\b/.test(text)
   ) {
     return "list";
   }

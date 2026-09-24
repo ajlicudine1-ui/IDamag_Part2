@@ -1,6 +1,15 @@
 const { normalizeText, parseNumber } = require('./utils');
-const { findExplicitSchemaColumns, detectQuestionAggregation, detectRankingDirection, detectRankingLimit, parseRankingTargets, scoreTargetToColumn } = require('./plannerNormalizer');
+const {
+  findExplicitSchemaColumns,
+  detectQuestionAggregation,
+  detectRankingDirection,
+  detectRankingLimit,
+  parseRankingTargets,
+  scoreTargetToColumn,
+  findStrongMorphologicalQuestionColumn,
+} = require('./plannerNormalizer');
 const { findColumn } = require('./columnMatcher');
+const { applyFilters } = require('./filterEngine');
 
 function cloneFilter(filter) {
   if (!filter || typeof filter !== 'object') return null;
@@ -110,6 +119,163 @@ function isNumericColumn(rows, column) {
   return usable > 0 && numeric / usable >= 0.6;
 }
 
+/**
+ * Decide whether a numeric field represents an additive measure rather than
+ * an identifier/rate/category encoded as a number.  The vocabulary here is
+ * intentionally semantic and reusable across reports; it never names a
+ * worksheet, province, commodity, project, or other dataset-specific value.
+ */
+function isAdditiveMeasureColumn(column) {
+  const raw = String(column || '');
+  const name = normalizeText(raw);
+  if (!name) return false;
+
+  // Numeric identifiers and non-additive rates must not be summed merely
+  // because the cells contain numbers.
+  if (
+    /\b(?:id|identifier|code|reference|ref|serial|contact|phone|mobile|telephone|year|month|day|date|phase|status|grade|level|rate|ratio|percent|percentage|average|avg|mean|price|yield|latitude|longitude)\b/.test(name)
+  ) {
+    return false;
+  }
+
+  if (
+    /\b(?:quantity|qty|amount|cost|value|area|land|volume|weight|production|harvested|planted|damage|damaged|loss|member|members|implementer|implementers|beneficiary|beneficiaries|recipient|recipients|farmer|farmers|male|males|female|females|person|persons|people|population|count|number)\b/.test(name)
+  ) {
+    return true;
+  }
+
+  // Common area units embedded in a metric header (for example "(...ha)")
+  // are reliable evidence that the field is an additive physical measure.
+  return /(?:\(|\b)(?:ha|hectare|hectares)(?:\)|\b)/i.test(raw);
+}
+
+function hasExplicitCountCue(question) {
+  return /\b(?:how many|number of|count(?: of)?)\b/.test(normalizeText(question));
+}
+
+function hasExplicitRowCountCue(question) {
+  return /\b(?:how many\s+(?:rows|records|entries)|number of\s+(?:rows|records|entries)|(?:row|record|entry)\s+count|count of\s+(?:rows|records|entries))\b/.test(
+    normalizeText(question)
+  );
+}
+
+/**
+ * Repair plans that counted rows merely because the question contained the
+ * word "records" even though the user actually asked which entity values are
+ * present (e.g. "What municipalities have ... records?").
+ */
+function repairEntityListIntent({ datasets, schema, plan, question }) {
+  if (!plan || plan.route !== 'dataset' || !plan.dataset) return plan;
+  if (String(plan.operation || '').toLowerCase() !== 'row_count') return plan;
+  if (hasExplicitCountCue(question) || hasExplicitRowCountCue(question)) return plan;
+
+  const text = normalizeText(question);
+  if (!/^(?:what|which|who)\b/.test(text)) return plan;
+  if (/^(?:what|which)\s+about\b/.test(text)) return plan;
+
+  const rows = datasets?.[plan.dataset];
+  if (!Array.isArray(rows) || !rows.length) return plan;
+
+  const match = findStrongMorphologicalQuestionColumn({
+    schema,
+    question,
+    preferredDataset: plan.dataset,
+  });
+
+  const column = match?.column ? (findColumn(rows, match.column) || match.column) : null;
+  if (!column || isNumericColumn(rows, column)) return plan;
+
+  return {
+    ...plan,
+    operation: 'list',
+    column,
+    labelColumn: column,
+    groupBy: null,
+    aggregation: null,
+    selectColumns: [column],
+    outputRequested: true,
+    showAll: true,
+    entityListIntentParityApplied: true,
+  };
+}
+
+/**
+ * "How many <numeric measure> ..." means SUM for additive count/quantity
+ * fields, not "how many non-empty cells".  Identifier-like numeric fields
+ * stay untouched, preserving questions such as counts of salary grades.
+ */
+function repairNumericMeasureCountIntent({ datasets, plan, question }) {
+  if (!plan || plan.route !== 'dataset' || !plan.dataset) return plan;
+  if (!hasExplicitCountCue(question) || hasExplicitRowCountCue(question)) return plan;
+  if (/\b(?:distinct|unique|different)\b/.test(normalizeText(question))) return plan;
+
+  const rows = datasets?.[plan.dataset];
+  if (!Array.isArray(rows) || !rows.length) return plan;
+
+  const column = plan.column ? (findColumn(rows, plan.column) || plan.column) : null;
+  if (!column || !isNumericColumn(rows, column) || !isAdditiveMeasureColumn(column)) return plan;
+
+  const op = String(plan.operation || '').toLowerCase();
+  const repairable = new Set(['row_count', 'non_empty_count', 'distinct_count', 'lookup', 'list', 'value', 'select', 'get']);
+  if (!repairable.has(op)) return plan;
+
+  return {
+    ...plan,
+    operation: 'sum',
+    column,
+    labelColumn: null,
+    groupBy: null,
+    aggregation: null,
+    selectColumns: [column],
+    outputRequested: true,
+    numericMeasureCountParityApplied: true,
+  };
+}
+
+/**
+ * A filtered request for one additive metric can represent a roll-up even
+ * without the literal word "total":
+ *   "What is the totally damaged area for Rice?"
+ * When several rows match the filter, return their sum instead of a raw list.
+ */
+function repairImplicitFilteredAdditiveAggregate({ datasets, plan, question }) {
+  if (!plan || plan.route !== 'dataset' || !plan.dataset) return plan;
+  if (detectRankingDirection(question) || detectQuestionAggregation(question)) return plan;
+  if (hasGroupingCue(question)) return plan;
+
+  const op = String(plan.operation || '').toLowerCase();
+  if (!['lookup', 'list', 'value', 'select', 'get'].includes(op)) return plan;
+
+  const text = normalizeText(question);
+  if (!/^(?:what|which|show|give|tell|get|find)\b/.test(text)) return plan;
+  if (/\b(?:list|show all|display all|each value|values)\b/.test(text)) return plan;
+
+  const rows = datasets?.[plan.dataset];
+  if (!Array.isArray(rows) || !rows.length) return plan;
+
+  const column = plan.column ? (findColumn(rows, plan.column) || plan.column) : null;
+  if (!column || !isNumericColumn(rows, column) || !isAdditiveMeasureColumn(column)) return plan;
+
+  const filters = Array.isArray(plan.filters) ? plan.filters : [];
+  if (!filters.length) return plan;
+
+  const matchedRows = applyFilters(rows, filters);
+  if (matchedRows.length <= 1) return plan;
+
+  return {
+    ...plan,
+    operation: 'sum',
+    column,
+    labelColumn: null,
+    groupBy: null,
+    aggregation: null,
+    selectColumns: [column],
+    outputRequested: true,
+    showAll: false,
+    implicitAdditiveAggregateParityApplied: true,
+  };
+}
+
 function hasGroupingCue(question) {
   const text = normalizeText(question);
   return /\b(?:for\s+each|for\s+every|per|by|grouped\s+by|broken\s+down\s+by)\b/.test(text);
@@ -130,8 +296,7 @@ function extractGroupingTarget(question) {
 
 function repairGroupedAggregatePlan({ datasets, schema, plan, question }) {
   if (!plan || plan.route !== 'dataset' || !plan.dataset || !hasGroupingCue(question)) return plan;
-  const aggregation = detectQuestionAggregation(question);
-  if (!aggregation) return plan;
+  let aggregation = detectQuestionAggregation(question);
   const rows = datasets?.[plan.dataset];
   if (!Array.isArray(rows) || !rows.length) return plan;
 
@@ -150,6 +315,32 @@ function repairGroupedAggregatePlan({ datasets, schema, plan, question }) {
     metric = findColumn(rows, beforeGrouping);
     if (metric && !isNumericColumn(rows, metric)) metric = null;
   }
+
+  /**
+   * Grouped additive measures do not need the user to literally say "sum".
+   * Natural questions such as "What is the value loss for each commodity?"
+   * and "What quantity was distributed for each intervention?" clearly ask
+   * for one rolled-up additive value per group.
+   */
+  if (!aggregation && metric && isAdditiveMeasureColumn(metric)) {
+    aggregation = 'sum';
+  }
+
+  /**
+   * "How many <numeric measure> for each <group>" is also a grouped SUM,
+   * not a count of populated rows.  If no additive numeric metric is present,
+   * keep ordinary group-count semantics.
+   */
+  if (
+    aggregation === 'count' &&
+    metric &&
+    isAdditiveMeasureColumn(metric) &&
+    !/\b(?:distinct|unique|different)\b/.test(normalizeText(question))
+  ) {
+    aggregation = 'sum';
+  }
+
+  if (!aggregation) return plan;
   if (aggregation !== 'count' && !metric) return plan;
 
   const opMap = { average: 'group_average', sum: 'group_sum', count: 'group_count' };
@@ -464,8 +655,11 @@ function enforcePlannerInvariants({ datasets, schema, plan, question }) {
   next = normalizeSameColumnEqualityFilters(next);
   next = repairListProjectionIntent({ datasets, plan: next, question });
   next = removeRedundantContainsEqualsFilters(next);
+  next = repairEntityListIntent({ datasets, schema, plan: next, question });
   next = repairCategoricalCountIntent({ datasets, plan: next, question });
+  next = repairNumericMeasureCountIntent({ datasets, plan: next, question });
   next = repairAggregateIntent({ datasets, plan: next, question });
+  next = repairImplicitFilteredAdditiveAggregate({ datasets, plan: next, question });
   next = repairGroupedAggregatePlan({ datasets, schema, plan: next, question });
   next = applySimpleRowRankingInvariant({ datasets, schema, plan: next, question });
   next = removeProjectionFieldFilterArtifacts({ datasets, plan: next, question });
@@ -480,8 +674,12 @@ module.exports = {
   repairListProjectionIntent,
   removeRedundantContainsEqualsFilters,
   repairGroupedAggregatePlan,
+  repairEntityListIntent,
   repairCategoricalCountIntent,
+  repairNumericMeasureCountIntent,
   repairAggregateIntent,
+  repairImplicitFilteredAdditiveAggregate,
+  isAdditiveMeasureColumn,
   buildRankingDetailRescuePlan,
   applySimpleRowRankingInvariant,
   enforcePlannerInvariants,

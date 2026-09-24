@@ -2924,6 +2924,102 @@ function splitCompoundQuestions(
 }
 
 
+/**
+ * Split one coordinated "how many" request into independent metric clauses
+ * only when every coordinated noun phrase resolves to a DISTINCT numeric
+ * column in the SAME live worksheet.
+ *
+ * Example (schema-driven, no field names hardcoded):
+ *   "How many <metric A> and <metric B> were affected in <scope>?"
+ * becomes two ordinary questions that both Groq and the local planner process
+ * through the exact same compound pipeline.
+ *
+ * This deliberately runs before planner selection so a capability added here
+ * is available to both planner paths.
+ */
+function splitCoordinatedNumericMetricQuestion({
+  question,
+  schema,
+  datasets,
+}) {
+  const raw = String(question || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[?!.]+$/, "");
+
+  if (!raw || !/^how\s+many\b/i.test(raw) || !/\band\b/i.test(raw)) {
+    return null;
+  }
+
+  const match = raw.match(
+    /^how\s+many\s+(.+?)\s+((?:was|were|is|are|has|have|had|do|does|did|can|could|will|would|should)\b.*)$/i
+  );
+
+  if (!match?.[1] || !match?.[2]) {
+    return null;
+  }
+
+  const metricPart = match[1].trim();
+  const sharedTail = match[2].trim();
+  const metricPhrases = metricPart
+    .split(/\s+(?:and|&)\s+/i)
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  if (metricPhrases.length < 2 || metricPhrases.length > 4) {
+    return null;
+  }
+
+  const resolved = metricPhrases.map((phrase) =>
+    findStrongMorphologicalQuestionColumn({
+      schema,
+      question: phrase,
+      preferredDataset: null,
+    })
+  );
+
+  if (resolved.some((item) => !item?.dataset || !item?.column)) {
+    return null;
+  }
+
+  const datasetNames = new Set(resolved.map((item) => String(item.dataset)));
+  const columnNames = new Set(resolved.map((item) => normalizeText(item.column)));
+
+  if (datasetNames.size !== 1 || columnNames.size !== resolved.length) {
+    return null;
+  }
+
+  const datasetName = resolved[0].dataset;
+  const rows = datasets?.[datasetName];
+  const datasetSchema = (schema || []).find(
+    (item) => String(item?.name || "") === String(datasetName)
+  );
+
+  if (!Array.isArray(rows) || !rows.length || !datasetSchema) {
+    return null;
+  }
+
+  const everyMetricIsNumeric = resolved.every((item) => {
+    const columnSchema = (datasetSchema.columns || []).find(
+      (column) => normalizeText(column?.name) === normalizeText(item.column)
+    );
+
+    return isNumericLikeColumn({
+      column: columnSchema,
+      rows,
+    });
+  });
+
+  if (!everyMetricIsNumeric) {
+    return null;
+  }
+
+  return metricPhrases.map(
+    (phrase) => `How many ${phrase} ${sharedTail}?`
+  );
+}
+
+
 function buildCompoundAnswer(
   subResults
 ) {
@@ -4443,6 +4539,14 @@ async function answerQuestion(
     };
   }
 
+  // Build the live schema once up front so shared pre-planner features
+  // (notably coordinated numeric-metric decomposition) are available to
+  // BOTH Groq and the local fallback. The same schema object is reused later.
+  const earlySchema =
+    buildSchema(
+      datasets
+    );
+
 
   // ========================================================
   // COMPOUND / MULTI-QUESTION REQUEST
@@ -4461,13 +4565,27 @@ async function answerQuestion(
         cleanQuestion
       );
 
+    const coordinatedMetricQuestions =
+      linkedMultiFieldCandidate
+        ? null
+        : splitCoordinatedNumericMetricQuestion({
+            question:
+              cleanQuestion,
+            schema:
+              earlySchema,
+            datasets,
+          });
+
     const compoundQuestions =
       linkedMultiFieldCandidate
         ? [
             cleanQuestion,
           ]
-        : splitCompoundQuestions(
-            cleanQuestion
+        : (
+            coordinatedMetricQuestions ||
+            splitCompoundQuestions(
+              cleanQuestion
+            )
           );
 
     if (
@@ -4720,9 +4838,7 @@ async function answerQuestion(
   // ========================================================
 
   const schema =
-    buildSchema(
-      datasets
-    );
+    earlySchema;
 
   const worksheetRelationships =
     discoverWorksheetRelationships({ datasets, schema });
