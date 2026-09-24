@@ -89,6 +89,12 @@ function detectSemanticContractDatasets(datasets) {
         exposureStatus: findContractColumn(rows, ['exposure_status']),
         blockReason: findContractColumn(rows, ['block_reason']),
         semanticRestrictions: findContractColumn(rows, ['semantic_restrictions']),
+        intentId: findContractColumn(rows, ['intent_id']),
+        intentIds: findContractColumn(rows, ['intent_ids_json']),
+        capabilityId: findContractColumn(rows, ['capability_id']),
+        requiredParameters: findContractColumn(rows, ['required_parameters_json']),
+        dimensions: findContractColumn(rows, ['dimensions_json']),
+        geographyLevels: findContractColumn(rows, ['geography_levels_json']),
         outputId: findContractColumn(rows, ['output_id']),
         outputName: findContractColumn(rows, ['output_name']),
         publicTerminology: findContractColumn(rows, ['public_terminology']),
@@ -165,6 +171,44 @@ function isAuthoritativeRetrieveOperation(operation) {
   return key === 'retrieve' || key.startsWith('retrieve ');
 }
 
+function contractRowValue(row, columns, key) {
+  const column = columns?.[key];
+  return column ? String(row?.[column] ?? '').trim() : '';
+}
+
+function buildSemanticContextSignature(match) {
+  const { row, columns, metricFields, allowedOperations } = match;
+  const parts = [
+    contractRowValue(row, columns, 'resultTable'),
+    contractRowValue(row, columns, 'resultRecordType'),
+    contractRowValue(row, columns, 'resultType'),
+    contractRowValue(row, columns, 'sourceTable'),
+    contractRowValue(row, columns, 'filterProfileId'),
+    uniqueStrings(metricFields).map(normalizeContractKey).sort().join(','),
+    uniqueStrings(allowedOperations).map(normalizeContractKey).sort().join(','),
+  ];
+  return parts.map(normalizeContractKey).join('||');
+}
+
+function rowMatchesBoundIntentContext(match, plan) {
+  if (!plan?.semanticContractIntentRepaired) return true;
+
+  const expectedOutputId = normalizeContractKey(plan.semanticContractIntentOutputId);
+  if (expectedOutputId) {
+    const actualOutputId = normalizeContractKey(
+      contractRowValue(match.row, match.columns, 'outputId')
+    );
+    if (actualOutputId !== expectedOutputId) return false;
+  }
+
+  const expectedSignature = String(plan.semanticContractIntentContextSignature || '').trim();
+  if (expectedSignature && buildSemanticContextSignature(match) !== expectedSignature) {
+    return false;
+  }
+
+  return true;
+}
+
 function resolveSemanticContractPolicy({
   datasets,
   datasetName,
@@ -196,7 +240,7 @@ function resolveSemanticContractPolicy({
       const metricFields = getContractMetricFields(row, contract.columns);
       if (!valuesMatchAny(metricCandidates, metricFields)) continue;
 
-      matches.push({
+      const match = {
         contractDataset: contract.datasetName,
         columns: contract.columns,
         row,
@@ -204,7 +248,10 @@ function resolveSemanticContractPolicy({
         allowedOperations: safeJsonArray(
           row?.[contract.columns.allowedOperations]
         ),
-      });
+      };
+
+      if (!rowMatchesBoundIntentContext(match, plan)) continue;
+      matches.push(match);
     }
   }
 
@@ -222,7 +269,33 @@ function resolveSemanticContractPolicy({
   const selectedEntry = [...byDataset.entries()]
     .sort((a, b) => b[1].length - a[1].length)[0];
 
-  const [contractDataset, selectedMatches] = selectedEntry;
+  const [contractDataset, candidateMatches] = selectedEntry;
+
+  // Multiple contract rows may legitimately describe the same semantic
+  // result context (for example the same stored scalar exposed on two
+  // visuals). Collapse only rows whose complete execution context is
+  // identical. Never union different contexts merely because they share a
+  // header and geography.
+  const byContext = new Map();
+  for (const match of candidateMatches) {
+    const signature = buildSemanticContextSignature(match);
+    if (!byContext.has(signature)) byContext.set(signature, []);
+    byContext.get(signature).push(match);
+  }
+
+  const contextEntries = [...byContext.entries()];
+  const hasBoundContext = Boolean(
+    plan?.semanticContractIntentOutputId ||
+    plan?.semanticContractIntentContextSignature
+  );
+
+  // A bound intent must resolve to exactly one semantic context. An unbound
+  // metric with several distinct contexts is unsafe for scalar retrieval and
+  // is carried forward as ambiguous so execution can fail closed.
+  const ambiguousContext = contextEntries.length > 1;
+  const selectedContextEntry = contextEntries[0];
+  const selectedMatches = selectedContextEntry?.[1] || [];
+  const selectedContextSignature = selectedContextEntry?.[0] || null;
   const allowedOperations = uniqueStrings(
     selectedMatches.flatMap((item) => item.allowedOperations)
   );
@@ -241,6 +314,10 @@ function resolveSemanticContractPolicy({
 
   return {
     contractDataset,
+    ambiguousContext,
+    hasBoundContext,
+    contextCount: contextEntries.length,
+    contextSignature: selectedContextSignature,
     authoritativeOnly,
     allowedOperations,
     metricFields: uniqueStrings(
@@ -254,7 +331,18 @@ function resolveSemanticContractPolicy({
     outputIds: collectColumnValues('outputId'),
     outputNames: collectColumnValues('outputName'),
     publicTerminology: collectColumnValues('publicTerminology'),
+    intentIds: uniqueStrings(
+      selectedMatches.flatMap((item) => [
+        contractRowValue(item.row, item.columns, 'intentId'),
+        ...safeJsonArray(contractRowValue(item.row, item.columns, 'intentIds')),
+      ])
+    ),
+    capabilityIds: collectColumnValues('capabilityId'),
+    requiredParameters: collectColumnValues('requiredParameters'),
+    dimensions: collectColumnValues('dimensions'),
+    geographyLevels: collectColumnValues('geographyLevels'),
     matchedContractRows: selectedMatches.length,
+    candidateContractRows: candidateMatches.length,
   };
 }
 
@@ -349,7 +437,11 @@ function resolveSemanticContractIntentPlan({ datasets, plan, question }) {
 
   const questionText = normalizeContractKey(question);
   if (!/\b(?:how many|number of|count of|count)\b/.test(questionText)) return null;
-  if (/\b(?:rows?|records?|entries?)\b/.test(questionText)) return null;
+  // "rows" and "entries" are unambiguously physical-record requests. The
+  // word "records" is not: many semantic contracts legitimately expose a
+  // business metric called registered records. We decide that only after
+  // attempting to bind the question to a contract metric below.
+  if (/\b(?:rows?|entries?)\b/.test(questionText)) return null;
 
   const targetRows = datasets?.[plan.dataset];
   if (!Array.isArray(targetRows) || !targetRows.length) return null;
@@ -406,6 +498,18 @@ function resolveSemanticContractIntentPlan({ datasets, plan, question }) {
         overlapCount: bestMatch.overlapCount,
         labelCoverage: bestMatch.labelCoverage,
         allowedOperations,
+        outputId: contractRowValue(row, contract.columns, 'outputId'),
+        resultTable: contractRowValue(row, contract.columns, 'resultTable'),
+        resultRecordType: contractRowValue(row, contract.columns, 'resultRecordType'),
+        resultType: contractRowValue(row, contract.columns, 'resultType'),
+        sourceTable: contractRowValue(row, contract.columns, 'sourceTable'),
+        filterProfileId: contractRowValue(row, contract.columns, 'filterProfileId'),
+        contextSignature: buildSemanticContextSignature({
+          row,
+          columns: contract.columns,
+          metricFields,
+          allowedOperations,
+        }),
       });
     }
   }
@@ -431,6 +535,15 @@ function resolveSemanticContractIntentPlan({ datasets, plan, question }) {
     return null;
   }
 
+  // Preserve genuine physical row-count questions such as "How many records
+  // are in this dataset?". A question containing "records" is only treated as
+  // a semantic metric when a strong contract label already matched it.
+  if (/\brecords?\b/.test(questionText)) {
+    const physicalContext = /\b(?:dataset|table|sheet|worksheet|rows?)\b/.test(questionText);
+    if (physicalContext && !best.labelCoverage) return null;
+    if (physicalContext && best.labelCoverage < 0.99) return null;
+  }
+
   const groupBy = plan.groupBy ? findColumn(targetRows, plan.groupBy) : null;
   const operation = groupBy ? 'group_sum' : 'sum';
 
@@ -447,10 +560,17 @@ function resolveSemanticContractIntentPlan({ datasets, plan, question }) {
     semanticContractIntentDataset: best.contractDataset,
     semanticContractIntentLabel: best.label,
     semanticContractIntentAllowedOperations: best.allowedOperations,
+    semanticContractIntentOutputId: best.outputId || null,
+    semanticContractIntentResultTable: best.resultTable || null,
+    semanticContractIntentResultRecordType: best.resultRecordType || null,
+    semanticContractIntentResultType: best.resultType || null,
+    semanticContractIntentSourceTable: best.sourceTable || null,
+    semanticContractIntentFilterProfileId: best.filterProfileId || null,
+    semanticContractIntentContextSignature: best.contextSignature,
   };
 }
 
-function applyAllowedValuesConstraint(rows, column, allowedValues) {
+function applyAllowedValuesConstraint(rows, column, allowedValues, options = {}) {
   if (!column || !Array.isArray(rows) || !rows.length || !allowedValues?.length) {
     return { rows, applied: false };
   }
@@ -465,10 +585,14 @@ function applyAllowedValuesConstraint(rows, column, allowedValues) {
     allowed.has(normalizeContractKey(row?.[column]))
   );
 
-  // Contract metadata can legitimately describe a separate represented
-  // surface. Never erase otherwise valid data just because one optional
-  // discriminator is absent in this worksheet version.
+  // For an intent-bound authoritative retrieval the contract context is a
+  // required part of the lookup key. If the discriminator exists but no row
+  // matches, fail closed by preserving the empty selection. Legacy/unbound
+  // metric plans keep the earlier permissive fallback behavior.
   if (!selected.length) {
+    if (options.strict === true) {
+      return { rows: [], applied: true, strictMiss: true };
+    }
     return { rows, applied: false };
   }
 
@@ -515,6 +639,7 @@ function scopeRowsToSemanticContract(rows, policy) {
 
   let scopedRows = rows;
   const appliedConstraints = [];
+  const strict = Boolean(policy.hasBoundContext && policy.authoritativeOnly);
 
   for (const constraint of constraints) {
     if (!constraint.column || !constraint.values?.length) continue;
@@ -522,7 +647,8 @@ function scopeRowsToSemanticContract(rows, policy) {
     const resolution = applyAllowedValuesConstraint(
       scopedRows,
       constraint.column,
-      constraint.values
+      constraint.values,
+      { strict }
     );
 
     if (resolution.applied) {
@@ -532,6 +658,7 @@ function scopeRowsToSemanticContract(rows, policy) {
         values: constraint.values,
         rowsBefore: scopedRows.length,
         rowsAfter: resolution.rows.length,
+        strictMiss: Boolean(resolution.strictMiss),
       });
     }
 
@@ -577,10 +704,15 @@ function applySemanticContractScope({
     metadata: {
       semanticContractAware: true,
       semanticContractDataset: policy.contractDataset,
+      semanticContractContextSignature: policy.contextSignature,
+      semanticContractContextCount: policy.contextCount,
+      semanticContractContextAmbiguous: policy.ambiguousContext,
+      semanticContractIntentBound: policy.hasBoundContext,
       semanticContractAuthoritativeOnly: policy.authoritativeOnly,
       semanticContractAllowedOperations: policy.allowedOperations,
       semanticContractMetricFields: policy.metricFields,
       semanticContractMatchedRows: policy.matchedContractRows,
+      semanticContractCandidateRows: policy.candidateContractRows,
       semanticContractOutputIds: policy.outputIds,
       semanticContractOutputNames: policy.outputNames,
       semanticContractScopeConstraints: filteredScope.constraints,
@@ -604,7 +736,21 @@ function evaluateSemanticContractAggregation({
   operation,
   parseNumber,
 }) {
-  if (!policy?.authoritativeOnly) {
+  if (!policy) {
+    return { allowed: true, mode: null };
+  }
+
+  if (policy.ambiguousContext) {
+    return {
+      allowed: false,
+      mode: 'semantic_context_ambiguous',
+      diagnostic: 'MULTIPLE_SEMANTIC_CONTEXT_MATCH',
+      contextCount: policy.contextCount,
+      reason: 'multiple_semantic_contract_contexts',
+    };
+  }
+
+  if (!policy.authoritativeOnly) {
     return { allowed: true, mode: null };
   }
 
@@ -638,7 +784,7 @@ function evaluateSemanticContractAggregation({
   if (scalarOperations.has(operation)) {
     const recordsUsed = countNonEmptyNumericRows(rows, metricColumn, parseNumber);
 
-    if (recordsUsed <= 1) {
+    if (recordsUsed === 1) {
       return {
         allowed: true,
         mode: 'authoritative_stored_value',
@@ -646,9 +792,20 @@ function evaluateSemanticContractAggregation({
       };
     }
 
+    if (recordsUsed === 0) {
+      return {
+        allowed: false,
+        mode: 'authoritative_scalar_missing',
+        diagnostic: 'NO_SCALAR_MATCH',
+        recordsUsed,
+        reason: 'no_authoritative_scalar_row',
+      };
+    }
+
     return {
       allowed: false,
       mode: 'recomputation_blocked',
+      diagnostic: 'MULTIPLE_SCALAR_MATCH',
       recordsUsed,
       reason: 'multiple_authoritative_rows',
     };

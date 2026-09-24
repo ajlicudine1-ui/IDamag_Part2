@@ -26,6 +26,7 @@ const {
   findBestRelationship,
 } = require("./relationshipEngine");
 const {
+  resolveSemanticContractIntentPlan,
   applySemanticContractScope,
   evaluateSemanticContractAggregation,
 } = require("./semanticContractEngine");
@@ -2092,6 +2093,23 @@ function executePlan({
   plan,
   question,
 }) {
+  // Last-mile semantic-contract repair. Planner invariants normally resolve
+  // this earlier, but deployed runtimes can still arrive here with a physical
+  // row_count plan for a contract-defined scalar metric. Repair again at the
+  // execution boundary so Groq, local fallback, and any later planner rewrite
+  // cannot turn "how many <stored metric>" into a row count.
+  const executionContractRepair = resolveSemanticContractIntentPlan({
+    datasets,
+    plan,
+    question,
+  });
+
+  if (executionContractRepair?.semanticContractIntentRepaired) {
+    Object.assign(plan, executionContractRepair, {
+      semanticContractExecutionIntentRepairApplied: true,
+    });
+  }
+
   const crossDatasetGroupedResult =
     executeCrossDatasetGroupedAggregation({
       datasets,
@@ -2271,6 +2289,7 @@ function executePlan({
   }
 
   if (semanticContractAggregation?.allowed === false) {
+    const diagnostic = semanticContractAggregation.diagnostic || null;
     return {
       success: false,
       source: "router",
@@ -2280,11 +2299,15 @@ function executePlan({
       filters,
       ...(hasExecutionMetadata ? executionMetadata : {}),
       semanticContractViolation: true,
+      semanticContractDiagnostic: diagnostic,
       semanticContractViolationReason:
         semanticContractAggregation.reason || "recomputation_not_authorized",
       answer:
-        "This dataset provides that metric as an authoritative stored/evaluated result rather than a recalculable measure across multiple represented rows. " +
-        "Please ask for a single represented scope, or use an output whose dataset contract allows aggregation.",
+        diagnostic === "NO_SCALAR_MATCH"
+          ? "That authoritative stored result is unavailable for the requested scope."
+          : diagnostic === "MULTIPLE_SCALAR_MATCH" || diagnostic === "MULTIPLE_SEMANTIC_CONTEXT_MATCH"
+            ? "The request matched more than one authoritative semantic result, so I did not combine them. Please use a more specific supported scope."
+            : "This dataset provides that metric as an authoritative stored/evaluated result rather than a recalculable measure across multiple represented rows. Please ask for a single represented scope, or use an output whose dataset contract allows aggregation.",
     };
   }
 

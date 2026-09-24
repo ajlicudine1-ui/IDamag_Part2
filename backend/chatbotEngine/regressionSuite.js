@@ -7246,3 +7246,104 @@ test('semantic contract count repair preserves explicit physical row-count quest
   assert.equal(repaired.operation, 'row_count');
   assert.equal(repaired.semanticContractIntentRepaired, undefined);
 });
+
+test('execution boundary repairs stale Groq row_count for authoritative regional scalar', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    overview: [
+      { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Province', region: 'REGION I (ILOCOS REGION)', province: 'LA UNION', municipality: '', barangay: '', registry_registration_count: '97731' },
+      { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Region', region: 'REGION I (ILOCOS REGION)', province: '', municipality: '', barangay: '', registry_registration_count: '603501' },
+    ],
+    contract: [
+      { output_id: 'audit_output_001', output_name: 'Total Registered Individuals', public_terminology: 'registered registry records', result_table: 'overview', result_record_type: 'overview_summary', result_type: 'overview_summary', result_fields_json: '["registry_registration_count"]', original_result_fields_json: '["registered_registry_rows"]', allowed_operations_json: '["retrieve_stored_value"]', filter_profile_id: 'overview_fixed_v1', source_table: 'overview', exposure_status: 'PASS' },
+    ],
+  };
+  const plan = {
+    route: 'dataset', dataset: 'overview', operation: 'row_count', column: null,
+    filters: [
+      { column: 'region', operator: 'equals', value: 'REGION I (ILOCOS REGION)' },
+      { column: 'geography_level', operator: 'equals', value: 'Region' },
+    ],
+    selectColumns: [], outputRequested: true,
+  };
+  const result = executePlan({ datasets, plan, question: 'How many registered individuals are in Region I?' });
+  assert.equal(plan.operation, 'sum');
+  assert.equal(plan.column, 'registry_registration_count');
+  assert.equal(plan.semanticContractExecutionIntentRepairApplied, true);
+  assert.equal(result.success, true);
+  assert.equal(result.value, 603501);
+  assert.equal(result.recordsUsed, 1);
+  assert.equal(result.semanticContractExecutionMode, 'authoritative_stored_value');
+});
+
+test('execution boundary repairs stale local row_count and excludes alternate visual context', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    overview: [
+      { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Barangay', region: 'REGION I (ILOCOS REGION)', province: 'LA UNION', municipality: 'A', barangay: 'X', registry_registration_count: '40000' },
+      { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Municipality', region: 'REGION I (ILOCOS REGION)', province: 'LA UNION', municipality: 'A', barangay: '', registry_registration_count: '97731' },
+      { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Province', region: 'REGION I (ILOCOS REGION)', province: 'LA UNION', municipality: '', barangay: '', registry_registration_count: '97731' },
+      { source_table: 'pbi_overview_province_visual', record_type: 'overview_province_visual', result_type: 'overview_province_visual', filter_profile_id: 'overview_province_visual_live_v1', geography_level: 'Province', region: 'REGION I (ILOCOS REGION)', province: 'LA UNION', municipality: '', barangay: '', registry_registration_count: '97731' },
+    ],
+    geographic: [
+      { source_table: 'geo_summary', record_type: 'summary', result_type: 'summary', filter_profile_id: 'geographic_summary_fixed_v1', geography_level: 'Province', region: 'REGION I (ILOCOS REGION)', province: 'LA UNION', registry_registration_count: '97731' },
+    ],
+    contract: [
+      { output_id: 'audit_output_001', intent_ids_json: '["overview_registered_records"]', output_name: 'Total Registered Individuals', public_terminology: 'registered registry records', result_table: 'overview', result_record_type: 'overview_summary', result_type: 'overview_summary', result_fields_json: '["registry_registration_count"]', original_result_fields_json: '["registered_registry_rows"]', allowed_operations_json: '["retrieve_stored_value"]', filter_profile_id: 'overview_fixed_v1', source_table: 'overview', exposure_status: 'PASS' },
+      { output_id: 'audit_output_010', intent_ids_json: '["overview_registered_records"]', output_name: 'Registered individuals by province', public_terminology: 'registered registry records', result_table: 'overview', result_record_type: 'overview_summary', result_type: 'overview_summary', result_fields_json: '["registry_registration_count"]', original_result_fields_json: '["registered_registry_rows"]', allowed_operations_json: '["retrieve_stored_value"]', filter_profile_id: 'overview_fixed_v1', source_table: 'overview', exposure_status: 'PASS' },
+    ],
+  };
+  const plan = {
+    route: 'dataset', dataset: 'overview', operation: 'row_count', column: null,
+    filters: [{ column: 'province', operator: 'equals', value: 'LA UNION' }],
+    selectColumns: [], outputRequested: true,
+  };
+  const result = executePlan({ datasets, plan, question: 'How many registered individuals are in La Union?' });
+  assert.equal(plan.operation, 'sum');
+  assert.equal(plan.semanticContractExecutionIntentRepairApplied, true);
+  assert.equal(result.success, true);
+  assert.equal(result.value, 97731);
+  assert.equal(result.recordsUsed, 1);
+  assert.equal(result.grainValue, 'Province');
+  assert.equal(result.rowsAfterSemanticContractScope, 3);
+  assert.equal(result.rowsAfterGrainSelection, 1);
+});
+
+test('authoritative scalar lookup fails closed on duplicate semantic rows', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    overview: [
+      { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Province', region: 'REGION I (ILOCOS REGION)', province: 'LA UNION', municipality: '', barangay: '', registry_registration_count: '97731' },
+      { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Province', region: 'REGION I (ILOCOS REGION)', province: 'LA UNION', municipality: '', barangay: '', registry_registration_count: '97731' },
+    ],
+    contract: [
+      { output_id: 'audit_output_001', output_name: 'Total Registered Individuals', public_terminology: 'registered registry records', result_table: 'overview', result_record_type: 'overview_summary', result_type: 'overview_summary', result_fields_json: '["registry_registration_count"]', allowed_operations_json: '["retrieve_stored_value"]', filter_profile_id: 'overview_fixed_v1', source_table: 'overview', exposure_status: 'PASS' },
+    ],
+  };
+  const plan = { route: 'dataset', dataset: 'overview', operation: 'row_count', column: null, filters: [{ column: 'province', operator: 'equals', value: 'LA UNION' }], selectColumns: [] };
+  const result = executePlan({ datasets, plan, question: 'How many registered individuals are in La Union?' });
+  assert.equal(result.success, false);
+  assert.equal(result.semanticContractDiagnostic, 'MULTIPLE_SCALAR_MATCH');
+  assert.equal(result.semanticContractViolationReason, 'multiple_authoritative_rows');
+});
+
+test('semantic contract recognizes business metric phrase registered records without turning dataset row counts into metrics', () => {
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    overview: [
+      { source_table: 'overview', record_type: 'overview_summary', result_type: 'overview_summary', filter_profile_id: 'overview_fixed_v1', geography_level: 'Province', province: 'LA UNION', registry_registration_count: '97731' },
+    ],
+    contract: [
+      { output_id: 'audit_output_001', output_name: 'Total Registered Individuals', public_terminology: 'registered registry records', result_table: 'overview', result_record_type: 'overview_summary', result_type: 'overview_summary', result_fields_json: '["registry_registration_count"]', allowed_operations_json: '["retrieve_stored_value"]', filter_profile_id: 'overview_fixed_v1', source_table: 'overview' },
+    ],
+  };
+  const businessPlan = { route: 'dataset', dataset: 'overview', operation: 'row_count', column: null, filters: [{ column: 'province', operator: 'equals', value: 'LA UNION' }], selectColumns: [] };
+  const businessResult = executePlan({ datasets, plan: businessPlan, question: 'How many registered records are in La Union?' });
+  assert.equal(businessResult.success, true);
+  assert.equal(businessResult.value, 97731);
+
+  const physicalPlan = { route: 'dataset', dataset: 'overview', operation: 'row_count', column: null, filters: [], selectColumns: [] };
+  const physicalResult = executePlan({ datasets, plan: physicalPlan, question: 'How many records are in this dataset?' });
+  assert.equal(physicalPlan.operation, 'row_count');
+  assert.equal(physicalResult.value, 1);
+});
