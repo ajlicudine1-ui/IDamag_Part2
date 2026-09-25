@@ -64,7 +64,7 @@ function Login() {
             <img src={logo} alt="DA Logo" className="w-full h-full object-contain drop-shadow-md" />
           </div>
           <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Ilocos DAmag</h1>
-          <p className="text-sm font-bold text-slate-500 mt-1.5 uppercase tracking-widest">Staff Portal</p>
+          <p className="text-sm font-bold text-slate-500 mt-1.5 uppercase tracking-widest">Log In</p>
         </div>
 
         {error && (
