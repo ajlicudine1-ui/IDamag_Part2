@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, useLocation } from "react-router-dom";
 
 import Home from "./components/public/Home";
 import OfficeLayout from "./components/public/OfficeLayout";
@@ -125,6 +125,8 @@ function renderChatMessage(text) {
 }
 
 function App() {
+  const location = useLocation();
+  const showChatbot = location.pathname !== "/login" && location.pathname !== "/register" && Boolean(localStorage.getItem("user"));
   const [isChatbotOpen, setIsChatbotOpen] =
     useState(false);
 
@@ -853,32 +855,32 @@ function App() {
 
         <Route
           path="/"
-          element={<Home />}
+          element={<ProtectedRoute><Home /></ProtectedRoute>}
         />
 
         <Route
           path="/office/:officeId"
-          element={<OfficeLayout />}
+          element={<ProtectedRoute><OfficeLayout /></ProtectedRoute>}
         />
 
         <Route
           path="/feedback"
-          element={<Feedback />}
+          element={<ProtectedRoute><Feedback /></ProtectedRoute>}
         />
 
         <Route
           path="/about"
-          element={<About />}
+          element={<ProtectedRoute><About /></ProtectedRoute>}
         />
 
         <Route
           path="/chatbot"
-          element={<Chatbot />}
+          element={<ProtectedRoute><Chatbot /></ProtectedRoute>}
         />
 
         <Route
           path="/user-guide"
-          element={<UserGuide />}
+          element={<ProtectedRoute><UserGuide /></ProtectedRoute>}
         />
 
         {/* AUTHENTICATION ROUTES */}
@@ -961,7 +963,7 @@ function App() {
 
         <Route
           path="/feedback-management"
-          element={<FeedbackManagement />}
+          element={<ProtectedRoute requiresAdmin={true}><FeedbackManagement /></ProtectedRoute>}
         />
       </Routes>
 
@@ -969,7 +971,7 @@ function App() {
           FLOATING CHATBOT
       ===================================================== */}
 
-      {isChatbotOpen && (
+      {showChatbot && isChatbotOpen && (
         <div
           className="
             fixed
@@ -1620,12 +1622,12 @@ function App() {
         </div>
       )}
 
-      <FloatingChatbotButton
+      {showChatbot && <FloatingChatbotButton
         onClick={handleToggleChatbot}
         isOpen={isChatbotOpen}
         position={chatbotPosition}
         setPosition={setChatbotPosition}
-      />
+      />}
     </div>
   );
 }
