@@ -65,8 +65,12 @@ function Login() {
           <div className="w-16 h-16 mx-auto mb-4 flex items-center justify-center transition-transform hover:scale-105 duration-300">
             <img src={logo} alt="DA Logo" className="w-full h-full object-contain drop-shadow-md" />
           </div>
-          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Ilocos DAmag</h1>
-          <p className="text-sm font-bold text-slate-500 mt-1.5 uppercase tracking-widest">Log In</p>
+          <img
+            src="/I-DAMAG%20NAME%20LOGO.png"
+            alt="I-DAMAG"
+            className="mx-auto mb-2 h-auto max-h-20 w-full max-w-[260px] object-contain"
+          />
+          <p className="text-sm font-bold text-slate-500 mt-1.5 uppercase tracking-widest">Staff Portal</p>
         </div>
 
         {error && (
@@ -120,6 +124,13 @@ function Login() {
           </button>
         </form>
         
+        <div className="mt-6 pt-6 border-t border-slate-100 text-center space-y-3">
+          <div className="block">
+            <Link to="/" className="text-slate-400 hover:text-moss-600 text-[11px] font-bold transition-colors">
+              ← Back to Public Site
+            </Link>
+          </div>
+        </div>
       </div>
     </div>
   );
