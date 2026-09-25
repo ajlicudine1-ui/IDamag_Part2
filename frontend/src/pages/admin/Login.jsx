@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { Eye, EyeOff } from 'lucide-react';
 
 import { login } from '../../services/api';
@@ -12,6 +12,7 @@ function Login() {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
 
   // Auto-dismiss error after 3 seconds
   useEffect(() => {
@@ -37,7 +38,16 @@ function Login() {
       const res = await login({ email, password });
       // Store user info in localStorage for "session"
       localStorage.setItem('user', JSON.stringify(res.data));
-      navigate('/reports');
+      const requested = location.state?.from;
+      const requestedPath = requested
+        ? `${requested.pathname}${requested.search || ''}${requested.hash || ''}`
+        : null;
+      const canVisitRequested = res.data.role === 'Admin' ||
+        (requestedPath && !['/reports', '/users', '/office-division-management', '/activity-logs', '/feedback-management'].some(
+          path => requestedPath === path || requestedPath.startsWith(`${path}/`)
+        ));
+      navigate(requestedPath && canVisitRequested ? requestedPath :
+        res.data.role === 'Admin' ? '/reports' : '/', { replace: true });
     } catch (err) {
       setError(err.response?.data?.message || 'Login failed. Please check your credentials.');
     } finally {
