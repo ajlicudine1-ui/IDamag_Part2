@@ -140,7 +140,7 @@ function isAdditiveMeasureColumn(column) {
   }
 
   if (
-    /\b(?:quantity|qty|amount|cost|value|area|land|volume|weight|production|harvested|planted|damage|damaged|loss|member|members|implementer|implementers|beneficiary|beneficiaries|recipient|recipients|farmer|farmers|male|males|female|females|person|persons|people|individual|individuals|registrant|registrants|participant|participants|worker|workers|employee|employees|household|households|population|count|number)\b/.test(name)
+    /\b(?:quantity|qty|amount|cost|value|area|land|volume|weight|production|harvested|planted|damage|damaged|loss|member|members|implementer|implementers|beneficiary|beneficiaries|recipient|recipients|farmer|farmers|male|males|female|females|person|persons|people|population|count|number)\b/.test(name)
   ) {
     return true;
   }
@@ -1219,205 +1219,6 @@ function removeRedundantContainsEqualsFilters(plan) {
     : { ...plan, filters: filtered, redundantExactFilterRemoved: true };
 }
 
-
-function isStrictNumericCell(value) {
-  if (typeof value === 'number') return Number.isFinite(value);
-  const text = String(value ?? '').trim().replace(/\s+/g, '');
-  if (!text) return false;
-  return /^[₱$€£]?[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?$/.test(text);
-}
-
-function nonEmptyDistinctValues(rows, column) {
-  const values = new Map();
-  for (const row of rows || []) {
-    const display = String(row?.[column] ?? '').trim();
-    const key = normalizeText(display);
-    if (!key || values.has(key)) continue;
-    values.set(key, display);
-  }
-  return values;
-}
-
-function isMostlyCategoricalContextColumn(rows, column) {
-  const values = (rows || [])
-    .map((row) => row?.[column])
-    .filter((value) => value !== null && value !== undefined && String(value).trim() !== '');
-
-  if (!values.length) return false;
-
-  const numericRatio = values.filter(isStrictNumericCell).length / values.length;
-  if (numericRatio >= 0.7) return false;
-
-  const dateLikeRatio = values.filter((value) => {
-    const text = String(value).trim();
-    return /[/-]/.test(text) && !Number.isNaN(Date.parse(text));
-  }).length / values.length;
-
-  return dateLikeRatio < 0.7;
-}
-
-/**
- * Detect when one explicit categorical value is not a unique entity by
- * itself and needs a lower-cardinality parent/context value to identify it.
- *
- * This is deliberately relationship-driven rather than geography-specific:
- * a safe context is lower-cardinality than the filtered entity field, mostly
- * categorical, shared by several entity labels, and close to a functional
- * dependency of entity -> context. Wide many-to-many attributes are rejected.
- */
-function inferStableParentContextForFilter({ rows, plan, targetFilter }) {
-  if (!Array.isArray(rows) || rows.length < 2 || !targetFilter?.column) return null;
-
-  const operator = normalizeText(targetFilter.operator || 'equals');
-  if (!['equals', 'equal', '='].includes(operator)) return null;
-  if (Array.isArray(targetFilter.value)) return null;
-
-  const targetColumn = findColumn(rows, targetFilter.column) || targetFilter.column;
-  if (!targetColumn || !isMostlyCategoricalContextColumn(rows, targetColumn)) return null;
-
-  const targetDistinct = nonEmptyDistinctValues(rows, targetColumn);
-  if (targetDistinct.size < 2) return null;
-
-  const resolvedFilters = (Array.isArray(plan?.filters) ? plan.filters : [])
-    .map((filter) => ({
-      ...filter,
-      column: findColumn(rows, filter?.column) || filter?.column,
-    }))
-    .filter((filter) => filter?.column);
-
-  const scopedRows = applyFilters(rows, resolvedFilters);
-  if (scopedRows.length < 2) return null;
-
-  const candidates = [];
-  const columns = Object.keys(rows.find((row) => row && typeof row === 'object') || {});
-
-  for (const candidateColumn of columns) {
-    if (normalizeText(candidateColumn) === normalizeText(targetColumn)) continue;
-    if (normalizeText(candidateColumn) === normalizeText(plan?.column || '')) continue;
-    if (!isMostlyCategoricalContextColumn(rows, candidateColumn)) continue;
-
-    const candidateDistinct = nonEmptyDistinctValues(rows, candidateColumn);
-    if (candidateDistinct.size < 2 || candidateDistinct.size >= targetDistinct.size) continue;
-
-    const scopedContexts = nonEmptyDistinctValues(scopedRows, candidateColumn);
-    if (scopedContexts.size < 2) continue;
-
-    const contextsByTarget = new Map();
-    let usablePairs = 0;
-
-    for (const row of rows) {
-      const targetDisplay = String(row?.[targetColumn] ?? '').trim();
-      const contextDisplay = String(row?.[candidateColumn] ?? '').trim();
-      const targetKey = normalizeText(targetDisplay);
-      const contextKey = normalizeText(contextDisplay);
-      if (!targetKey || !contextKey) continue;
-
-      usablePairs += 1;
-      if (!contextsByTarget.has(targetKey)) contextsByTarget.set(targetKey, new Set());
-      contextsByTarget.get(targetKey).add(contextKey);
-    }
-
-    if (!usablePairs || !contextsByTarget.size) continue;
-
-    let pairCount = 0;
-    let maxContextsPerTarget = 0;
-    for (const contexts of contextsByTarget.values()) {
-      pairCount += contexts.size;
-      maxContextsPerTarget = Math.max(maxContextsPerTarget, contexts.size);
-    }
-
-    const coverage = contextsByTarget.size / targetDistinct.size;
-    const averageContextsPerTarget = pairCount / contextsByTarget.size;
-    const averageTargetsPerContext = pairCount / candidateDistinct.size;
-
-    // Stable parent/context requirements. These reject many-to-many
-    // attributes such as commodity/category histories while allowing a small
-    // number of genuinely duplicated child labels across parent contexts.
-    if (coverage < 0.7) continue;
-    if (averageContextsPerTarget > 1.6 || maxContextsPerTarget > 4) continue;
-    if (averageTargetsPerContext < 1.5) continue;
-
-    const score =
-      Math.log1p(candidateDistinct.size) +
-      coverage -
-      (averageContextsPerTarget - 1) * 4 +
-      Math.min(0.5, scopedContexts.size / 10);
-
-    candidates.push({
-      column: candidateColumn,
-      score,
-      contexts: [...scopedContexts.values()].sort((a, b) => a.localeCompare(b)),
-      averageContextsPerTarget,
-      averageTargetsPerContext,
-      coverage,
-    });
-  }
-
-  if (!candidates.length) return null;
-
-  candidates.sort((a, b) =>
-    b.score - a.score ||
-    b.contexts.length - a.contexts.length ||
-    a.column.localeCompare(b.column)
-  );
-
-  return candidates[0];
-}
-
-function hasExplicitCrossContextCombineCue(question) {
-  const text = normalizeText(question);
-  return /\b(?:combined across|across all|all .+ combined|overall across)\b/.test(text);
-}
-
-function guardAmbiguousFilteredEntity({ datasets, plan, question }) {
-  if (!plan || plan.route !== 'dataset' || !plan.dataset) return plan;
-  if (!Array.isArray(plan.filters) || !plan.filters.length) return plan;
-  if (plan.groupBy) return plan;
-  if (hasExplicitCrossContextCombineCue(question)) return plan;
-
-  const operation = normalizeText(plan.operation || '');
-  if (!['sum', 'average', 'minimum', 'maximum', 'lookup', 'value', 'select', 'get', 'row_count', 'distinct_count', 'non_empty_count'].includes(operation)) {
-    return plan;
-  }
-
-  const rows = datasets?.[plan.dataset];
-  if (!Array.isArray(rows) || !rows.length) return plan;
-
-  for (const filter of plan.filters) {
-    const ambiguity = inferStableParentContextForFilter({
-      rows,
-      plan,
-      targetFilter: filter,
-    });
-
-    if (!ambiguity) continue;
-
-    const entityValue = String(filter?.value ?? '').trim();
-    const options = ambiguity.contexts.slice(0, 8);
-    const rendered = options
-      .map((context) => `${entityValue} — ${context}`)
-      .join('; ');
-    const suffix = ambiguity.contexts.length > options.length ? '; …' : '';
-
-    return {
-      route: 'clarify',
-      question:
-        `I found more than one match for "${entityValue}": ${rendered}${suffix}. ` +
-        `Please specify the ${ambiguity.column} you mean.`,
-      confidence: 0.98,
-      localSemanticResolved: false,
-      ambiguousEntityScope: true,
-      ambiguousEntityColumn: filter.column,
-      ambiguousEntityValue: filter.value,
-      disambiguationColumn: ambiguity.column,
-      disambiguationOptions: ambiguity.contexts,
-      originalPlan: plan,
-    };
-  }
-
-  return plan;
-}
-
 function enforcePlannerInvariants({ datasets, schema, plan, question }) {
   let next = plan;
   next = normalizeSameColumnEqualityFilters(next);
@@ -1438,7 +1239,6 @@ function enforcePlannerInvariants({ datasets, schema, plan, question }) {
   next = applySimpleRowRankingInvariant({ datasets, schema, plan: next, question });
   next = removeProjectionFieldFilterArtifacts({ datasets, plan: next, question });
   next = dedupePlanFilters(next);
-  next = guardAmbiguousFilteredEntity({ datasets, plan: next, question });
   return next;
 }
 
@@ -1460,8 +1260,6 @@ module.exports = {
   repairNumericMeasureCountIntent,
   repairAggregateIntent,
   repairImplicitFilteredAdditiveAggregate,
-  inferStableParentContextForFilter,
-  guardAmbiguousFilteredEntity,
   isAdditiveMeasureColumn,
   buildRankingDetailRescuePlan,
   applySimpleRowRankingInvariant,

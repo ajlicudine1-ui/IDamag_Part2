@@ -316,35 +316,13 @@ function fuzzyWordSimilarity(a, b) {
   if (left === right) return 1;
 
   const maxLen = Math.max(left.length, right.length);
-  const editScore = maxLen
+  return maxLen
     ? 1 - levenshteinDistance(left, right) / maxLen
     : 0;
-
-  // Generic morphology bridge for related inflections/noun forms that share
-  // a substantial lexical stem (for example register/registered/registration).
-  // Requiring a six-character alphabetic prefix keeps this conservative and
-  // avoids turning short coincidental prefixes into semantic matches.
-  let prefixLength = 0;
-  const limit = Math.min(left.length, right.length);
-  while (prefixLength < limit && left[prefixLength] === right[prefixLength]) {
-    prefixLength += 1;
-  }
-
-  const stemScore =
-    prefixLength >= 6 && /^[a-z]+$/.test(left) && /^[a-z]+$/.test(right)
-      ? Math.min(0.96, 0.86 + (prefixLength - 6) * 0.02)
-      : 0;
-
-  return Math.max(editScore, stemScore);
 }
 
 function tokenizeMathText(value) {
   return normalizeText(value)
-    // Treat common schema separators as token boundaries for semantic
-    // matching. This lets machine-friendly headers such as
-    // "registry_registration_count" participate in the same local fallback
-    // logic as human-readable headers without changing the stored schema.
-    .replace(/[._/()+-]+/g, " ")
     .split(/\s+/)
     .map((token) => singularizeToken(token))
     .filter(Boolean);
