@@ -66,7 +66,7 @@ function Login() {
             <img src={logo} alt="DA Logo" className="w-full h-full object-contain drop-shadow-md" />
           </div>
           <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Ilocos DAmag</h1>
-          <p className="text-sm font-bold text-slate-500 mt-1.5 uppercase tracking-widest">Staff Portal</p>
+          <p className="text-sm font-bold text-slate-500 mt-1.5 uppercase tracking-widest">Log In</p>
         </div>
 
         {error && (
@@ -120,13 +120,6 @@ function Login() {
           </button>
         </form>
         
-        <div className="mt-6 pt-6 border-t border-slate-100 text-center space-y-3">
-          <div className="block">
-            <Link to="/" className="text-slate-400 hover:text-moss-600 text-[11px] font-bold transition-colors">
-              ← Back to Public Site
-            </Link>
-          </div>
-        </div>
       </div>
     </div>
   );
