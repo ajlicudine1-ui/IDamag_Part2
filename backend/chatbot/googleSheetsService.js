@@ -17,6 +17,8 @@ function getGoogleSpreadsheetId(sheetUrl) {
     throw new Error("A valid Google Sheets URL is required.");
   }
 
+  
+
   const match = sheetUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
 
   if (!match) {
