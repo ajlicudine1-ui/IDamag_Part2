@@ -10,7 +10,10 @@ const ProtectedRoute = ({ children, requiresAdmin = false }) => {
     localStorage.removeItem('user');
   }
 
-  if (!user || !user.id || !['Admin', 'Staff'].includes(user.role)) {
+  const sessionVersion = localStorage.getItem('idamag_auth_version');
+  if (sessionVersion !== '2' || !user || !user.id || !['Admin', 'Staff'].includes(user.role)) {
+    localStorage.removeItem('user');
+    localStorage.removeItem('idamag_auth_version');
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
   if (requiresAdmin && user.role !== 'Admin') {

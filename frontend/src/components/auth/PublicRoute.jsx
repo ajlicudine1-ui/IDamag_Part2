@@ -8,6 +8,12 @@ const PublicRoute = ({ children }) => {
   } catch {
     localStorage.removeItem('user');
   }
+  const sessionVersion = localStorage.getItem('idamag_auth_version');
+  if (sessionVersion !== '2') {
+    localStorage.removeItem('user');
+    localStorage.removeItem('idamag_auth_version');
+    return children;
+  }
   if (user?.id && ['Admin', 'Staff'].includes(user.role)) {
     return <Navigate to={user.role === 'Admin' ? '/reports' : '/'} replace />;
   }

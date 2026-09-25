@@ -38,6 +38,7 @@ function Login() {
       const res = await login({ email, password });
       // Store user info in localStorage for "session"
       localStorage.setItem('user', JSON.stringify(res.data));
+      localStorage.setItem('idamag_auth_version', '2');
       const requested = location.state?.from;
       const requestedPath = requested
         ? `${requested.pathname}${requested.search || ''}${requested.hash || ''}`
