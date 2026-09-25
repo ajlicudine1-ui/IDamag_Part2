@@ -6793,3 +6793,129 @@ test('plain distinct lists do not use near one-to-one descriptive text as identi
   assert.equal(result.contextualizedList, undefined);
   assert.deepEqual(result.results, ['One', 'Shared', 'Three', 'Two']);
 });
+
+test('ambiguous repeated entity values ask for stable parent context instead of aggregating across entities', () => {
+  const { enforcePlannerInvariants } = require('./plannerInvariantEngine');
+  const datasets = {
+    Data: [
+      { Parent: 'North', Place: 'Shared', Detail: 'A', 'Registered Individuals': '10' },
+      { Parent: 'North', Place: 'Other', Detail: 'B', 'Registered Individuals': '5' },
+      { Parent: 'South', Place: 'Shared', Detail: 'C', 'Registered Individuals': '20' },
+      { Parent: 'South', Place: 'Another', Detail: 'D', 'Registered Individuals': '7' },
+    ],
+  };
+  const schema = buildSchema(datasets);
+  const plan = enforcePlannerInvariants({
+    datasets,
+    schema,
+    question: 'total registered individuals in Shared?',
+    plan: {
+      route: 'dataset',
+      dataset: 'Data',
+      operation: 'sum',
+      column: 'Registered Individuals',
+      filters: [{ column: 'Place', operator: 'equals', value: 'Shared' }],
+      selectColumns: ['Registered Individuals'],
+    },
+  });
+
+  assert.equal(plan.route, 'clarify');
+  assert.equal(plan.ambiguousEntityScope, true);
+  assert.equal(plan.disambiguationColumn, 'Parent');
+  assert.deepEqual(plan.disambiguationOptions, ['North', 'South']);
+  assert.match(plan.question, /Shared — North/i);
+  assert.match(plan.question, /Shared — South/i);
+});
+
+test('parent-qualified repeated entity value remains executable', () => {
+  const { enforcePlannerInvariants } = require('./plannerInvariantEngine');
+  const { executePlan } = require('./calculationEngine');
+  const datasets = {
+    Data: [
+      { Parent: 'North', Place: 'Shared', Detail: 'A', 'Registered Individuals': '10' },
+      { Parent: 'North', Place: 'Other', Detail: 'B', 'Registered Individuals': '5' },
+      { Parent: 'South', Place: 'Shared', Detail: 'C', 'Registered Individuals': '20' },
+      { Parent: 'South', Place: 'Another', Detail: 'D', 'Registered Individuals': '7' },
+    ],
+  };
+  const schema = buildSchema(datasets);
+  const question = 'how many registered individuals are in Shared, South?';
+  const plan = enforcePlannerInvariants({
+    datasets,
+    schema,
+    question,
+    plan: {
+      route: 'dataset',
+      dataset: 'Data',
+      operation: 'distinct_count',
+      column: 'Registered Individuals',
+      filters: [
+        { column: 'Place', operator: 'equals', value: 'Shared' },
+        { column: 'Parent', operator: 'equals', value: 'South' },
+      ],
+      selectColumns: ['Registered Individuals'],
+    },
+  });
+
+  assert.equal(plan.route, 'dataset');
+  assert.equal(plan.operation, 'sum');
+  assert.equal(plan.numericMeasureCountParityApplied, true);
+  const result = executePlan({ datasets, plan, question });
+  assert.equal(result.success, true);
+  assert.equal(result.value, 20);
+});
+
+test('many-to-many descriptive attributes are not used as identity disambiguation context', () => {
+  const { enforcePlannerInvariants } = require('./plannerInvariantEngine');
+  const datasets = {
+    Data: [
+      { Entity: 'Alpha', Attribute: 'Rice', Metric: '10' },
+      { Entity: 'Alpha', Attribute: 'Corn', Metric: '12' },
+      { Entity: 'Beta', Attribute: 'Rice', Metric: '7' },
+      { Entity: 'Beta', Attribute: 'Fish', Metric: '9' },
+      { Entity: 'Gamma', Attribute: 'Corn', Metric: '4' },
+      { Entity: 'Gamma', Attribute: 'Fish', Metric: '6' },
+    ],
+  };
+  const schema = buildSchema(datasets);
+  const plan = enforcePlannerInvariants({
+    datasets,
+    schema,
+    question: 'total metric in Alpha?',
+    plan: {
+      route: 'dataset',
+      dataset: 'Data',
+      operation: 'sum',
+      column: 'Metric',
+      filters: [{ column: 'Entity', operator: 'equals', value: 'Alpha' }],
+      selectColumns: ['Metric'],
+    },
+  });
+
+  assert.equal(plan.route, 'dataset');
+});
+
+test('local fallback resolves machine-friendly registration count header and then disambiguates repeated place names', () => {
+  const { resolveStrongLocalSemanticPlan } = require('./localSemanticResolver');
+  const { enforcePlannerInvariants } = require('./plannerInvariantEngine');
+  const datasets = {
+    overview: [
+      { Province: 'ILOCOS NORTE', Municipality: 'BURGOS', registry_registration_count: '100' },
+      { Province: 'ILOCOS NORTE', Municipality: 'ADAMS', registry_registration_count: '50' },
+      { Province: 'LA UNION', Municipality: 'BURGOS', registry_registration_count: '200' },
+      { Province: 'LA UNION', Municipality: 'AGOO', registry_registration_count: '75' },
+    ],
+  };
+  const schema = buildSchema(datasets);
+  const question = 'total registered individuals in Burgos?';
+  const localPlan = resolveStrongLocalSemanticPlan({ question, schema, datasets });
+
+  assert.equal(localPlan.route, 'dataset');
+  assert.equal(localPlan.operation, 'sum');
+  assert.equal(localPlan.column, 'registry_registration_count');
+
+  const guarded = enforcePlannerInvariants({ datasets, schema, plan: localPlan, question });
+  assert.equal(guarded.route, 'clarify');
+  assert.equal(guarded.disambiguationColumn, 'Province');
+  assert.deepEqual(guarded.disambiguationOptions, ['ILOCOS NORTE', 'LA UNION']);
+});
