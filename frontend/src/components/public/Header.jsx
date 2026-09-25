@@ -398,21 +398,6 @@ const Header = () => {
                   About Us
                 </Link>
 
-                {currentUser && (
-                  <>
-                    <div className="my-1 border-t border-slate-200" role="separator" />
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={handleLogout}
-                      className="flex w-full items-center gap-2 px-4 py-3 text-left text-sm font-semibold text-red-700 transition-colors hover:bg-red-600 hover:text-white sm:px-5"
-                    >
-                      <LogOut className="h-4 w-4" aria-hidden="true" />
-                      Log Out
-                    </button>
-                  </>
-                )}
-
                 <Link
                   to="/user-guide"
                   role="menuitem"
@@ -433,6 +418,21 @@ const Header = () => {
                 >
                   User Guide
                 </Link>
+
+                {currentUser && (
+                  <>
+                    <div className="my-1 border-t border-slate-200" role="separator" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={handleLogout}
+                      className="flex w-full items-center gap-2 px-4 py-3 text-left text-sm font-semibold text-red-700 transition-colors hover:bg-red-600 hover:text-white sm:px-5"
+                    >
+                      <LogOut className="h-4 w-4" aria-hidden="true" />
+                      Log Out
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
