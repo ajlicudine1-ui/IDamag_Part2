@@ -1,7 +1,9 @@
 import React from 'react';
 import { Navigate } from 'react-router-dom';
+import { expireSessionAfterCloseGrace } from './sessionTimeout';
 
 const PublicRoute = ({ children }) => {
+  expireSessionAfterCloseGrace();
   let user;
   try {
     user = JSON.parse(localStorage.getItem('user'));

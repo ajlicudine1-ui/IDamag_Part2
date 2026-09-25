@@ -1,8 +1,10 @@
 import React from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
+import { expireSessionAfterCloseGrace } from './sessionTimeout';
 
 const ProtectedRoute = ({ children, requiresAdmin = false }) => {
   const location = useLocation();
+  expireSessionAfterCloseGrace();
   let user;
   try {
     user = JSON.parse(localStorage.getItem('user'));

@@ -21,6 +21,7 @@ import PublicRoute from "./components/auth/PublicRoute";
 import FloatingChatbotButton from "./components/public/FloatingChatbotButton";
 import UserGuide from "./components/public/UserGuide";
 import FeedbackManagement from "./pages/admin/FeedbackManagement";
+import { clearPendingClose, expireSessionAfterCloseGrace, markAppClosed } from "./components/auth/sessionTimeout";
 
 /*
  * Supports either:
@@ -129,6 +130,27 @@ function App() {
   const showChatbot = location.pathname !== "/login" && location.pathname !== "/register" && Boolean(localStorage.getItem("user"));
   const [isChatbotOpen, setIsChatbotOpen] =
     useState(false);
+
+  // Record when the app tab is closed. If the user returns within five
+  // minutes, keep the session; otherwise expire it on the next visit.
+  useEffect(() => {
+    const handlePageHide = () => markAppClosed();
+    const handlePageShow = (event) => {
+      if (!event.persisted) return;
+      const expired = expireSessionAfterCloseGrace();
+      if (expired) {
+        window.location.reload();
+      } else {
+        clearPendingClose();
+      }
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("pageshow", handlePageShow);
+    return () => {
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("pageshow", handlePageShow);
+    };
+  }, []);
 
   // Shared chat-head position so both the draggable button
   // and the chatbot window know where to appear.
