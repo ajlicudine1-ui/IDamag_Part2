@@ -181,16 +181,20 @@ const allowedOrigins = [
   "http://localhost:5173",
   "http://192.168.56.1:5173",
   "https://i-damag-portal.vercel.app",
-   "https://idamag.vercel.app",  // add this line
+  "https://idamag.vercel.app",
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
-app.use(
+app.use((req, res, next) =>
   cors({
     origin(origin, callback) {
       console.log("Request origin:", origin);
 
-      if (!origin || allowedOrigins.includes(origin)) {
+      // A frontend and API deployed by this Vercel project share one host.
+      // Preview deployment URLs change, so accept only this request's own host.
+      const host = req.get("host");
+      const sameDeployment = Boolean(host) && origin === `https://${host}`;
+      if (!origin || sameDeployment || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
 
@@ -215,7 +219,7 @@ app.use(
       "Authorization",
       "x-user-id",
     ],
-  })
+  })(req, res, next)
 );
 
 
