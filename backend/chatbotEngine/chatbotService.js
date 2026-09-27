@@ -155,11 +155,13 @@ function recordFieldAnswer(record, question) {
 function distinctValueAnswer(reportData, question, context) {
   const input = String(question).trim();
   const followUp = /^(?:(?:[a-z]+|\d+)\s+)?(?:only|just)\s*\??$/i.test(input);
-  const listMatch = input.match(/^(?:(?:what|which)\s+are|(?:list|show|name))\s+(?:me\s+)?(?:all\s+)?(?:the\s+)?([a-z][a-z-]*)\s*\??$/i);
-  const countMatch = input.match(/^how\s+many\s+(?:(?:different|distinct|unique)\s+)?([a-z][a-z-]*)\s+(?:are\s+there|do\s+we\s+have)\s*\??$/i);
+  const listMatch = input.match(/^(?:(?:what|which)\s+are|(?:list|show|name))\s+(?:me\s+)?(?:all\s+)?(?:the\s+)?([a-z][a-z-]*)(?:\s+(?:in|of|for|under|from)\s+(.+?))?\s*\??$/i);
+  const countMatch = input.match(/^how\s+many\s+(?:(?:different|distinct|unique)\s+)?([a-z][a-z-]*)(?:\s+(?:are\s+there|do\s+we\s+have))?(?:\s+(?:in|of|for|under|from)\s+(.+?))?\s*\??$/i);
   const subject = followUp ? context.lastListQuery : listMatch?.[1] || countMatch?.[1];
   if (!subject) return null;
   const normalized = normalizedHeader(subject).replace(/ies$/, 'y').replace(/s$/, '');
+  const scopeText = (followUp ? context.lastListScope : listMatch?.[2] || countMatch?.[2] || '')
+    .replace(/\?$/, '').trim();
   const matches = [];
   for (const [sheetName, data] of Object.entries(reportData || {})) {
     if (data?.error) continue;
@@ -171,9 +173,31 @@ function distinctValueAnswer(reportData, question, context) {
   if (!matches.length) return null;
   if (Object.values(reportData || {}).some((data) => data?.error))
     return { answer: 'I cannot confirm the complete list because some connected sheets could not be read.' };
+  let scope = null;
+  if (scopeText) {
+    const found = [];
+    for (const { rows, key } of matches) {
+      for (const column of Object.keys(rows[0] || {}).filter((item) => item !== key)) {
+        for (const row of rows) {
+          const value = String(row[column] ?? '').trim();
+          if (value.length < 2 || value.length > 100 || !/[a-z]/i.test(value)) continue;
+          if (normalizedHeader(value) === normalizedHeader(scopeText)) {
+            found.push({ header: normalizedHeader(column), value });
+          }
+        }
+      }
+    }
+    const headers = [...new Set(found.map((item) => item.header))];
+    if (headers.length !== 1) return null;
+    scope = { header: headers[0], value: found[0].value };
+  }
   const values = new Map();
   for (const { rows, key } of matches) {
+    const scopeKeys = scope ? Object.keys(rows[0] || {})
+      .filter((column) => normalizedHeader(column) === scope.header) : [];
+    if (scope && scopeKeys.length !== 1) return { answer: 'I cannot confirm a complete list for that area.' };
     for (const row of rows) {
+      if (scope && normalizedHeader(row[scopeKeys[0]]) !== normalizedHeader(scope.value)) continue;
       const value = String(row[key] ?? '').trim();
       if (value && !values.has(value.toLowerCase())) values.set(value.toLowerCase(), value);
     }
@@ -181,12 +205,10 @@ function distinctValueAnswer(reportData, question, context) {
   const items = [...values.values()].sort((a, b) => a.localeCompare(b));
   const count = items.length;
   const noun = subject.toLowerCase();
-  if (countMatch) return { answer: `There are ${count} distinct ${noun}.`, subject };
-  if (!count) return { answer: `I found no ${noun} in the connected data.`, subject };
-  const shown = items.slice(0, 40);
-  const list = shown.join(', ');
-  const rest = count > shown.length ? ` I listed the first ${shown.length}.` : '';
-  return { answer: `There are ${count} ${noun}: ${list}.${rest}`, subject };
+  const location = scope ? ` in ${scope.value}` : '';
+  if (countMatch) return { answer: `There are ${count} distinct ${noun}${location}.`, subject, scope: scopeText };
+  if (!count) return { answer: `I found no ${noun}${location} in the connected data.`, subject, scope: scopeText };
+  return { answer: `There are ${count} ${noun}${location}: ${items.join(', ')}.`, subject, scope: scopeText };
 }
 
 function exactGroupRate(reportData, question) {
@@ -728,7 +750,10 @@ async function answerQuestion(reportData, question, conversationKey) {
   const listAnswer = distinctValueAnswer(reportData, question, context);
   if (listAnswer) {
     listed = true;
-    if (listAnswer.subject) context.lastListQuery = listAnswer.subject;
+    if (listAnswer.subject) {
+      context.lastListQuery = listAnswer.subject;
+      context.lastListScope = listAnswer.scope || null;
+    }
     return finish(listAnswer.answer);
   }
 
