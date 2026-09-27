@@ -163,7 +163,7 @@ function distinctValueAnswer(reportData, question, context) {
   const normalized = normalizedHeader(subject).replace(/ies$/, 'y').replace(/s$/, '');
   const rawScope = (followUp || pronounFollowUp ? context.lastListScope || '' : listMatch?.[2] || countMatch?.[2] || '')
     .replace(/\?$/, '').trim();
-  const scopeText = /^(?:(?:this|the|our)\s+)?(?:data|dataset|spreadsheet|sheet|report)$/i.test(rawScope)
+  const scopeText = /^(?:(?:this|the|our|my)\s+)?(?:data|dataset|spreadsheet|sheet|report)$/i.test(rawScope)
     ? '' : rawScope;
   const matches = [];
   for (const [sheetName, data] of Object.entries(reportData || {})) {
@@ -174,8 +174,7 @@ function distinctValueAnswer(reportData, question, context) {
     if (keys.length === 1) matches.push({ sheetName, rows, key: keys[0] });
   }
   if (!matches.length) return null;
-  if (Object.values(reportData || {}).some((data) => data?.error))
-    return { answer: 'I cannot confirm the complete list because some connected sheets could not be read.' };
+  const unreadable = Object.values(reportData || {}).filter((data) => data?.error).length;
   let scope = null;
   if (scopeText) {
     const found = [];
@@ -209,9 +208,14 @@ function distinctValueAnswer(reportData, question, context) {
   const count = items.length;
   const noun = subject.toLowerCase();
   const location = scope ? ` in ${scope.value}` : '';
-  if (countMatch) return { answer: `There are ${count} distinct ${noun}${location}.`, subject, scope: scopeText };
-  if (!count) return { answer: `I found no ${noun}${location} in the connected data.`, subject, scope: scopeText };
-  return { answer: `There are ${count} ${noun}${location}: ${items.join(', ')}.`, subject, scope: scopeText };
+  const note = unreadable ? ` I couldn't check ${unreadable} other connected sheet${unreadable === 1 ? '' : 's'}.` : '';
+  if (countMatch) return { answer: unreadable
+    ? `I found ${count} distinct ${noun}${location} in the available data.${note}`
+    : `There are ${count} distinct ${noun}${location}.`, subject, scope: scopeText };
+  if (!count) return { answer: `I found no ${noun}${location} in the available data.${note}`, subject, scope: scopeText };
+  return { answer: unreadable
+    ? `I found ${count} ${noun}${location} in the available data: ${items.join(', ')}.${note}`
+    : `There are ${count} ${noun}${location}: ${items.join(', ')}.`, subject, scope: scopeText };
 }
 
 function exactGroupRate(reportData, question) {
@@ -222,7 +226,7 @@ function exactGroupRate(reportData, question) {
   const subject = ` ${normalizedHeader(categoryText)} `;
   const matches = [];
   for (const [sheetName, data] of Object.entries(reportData || {})) {
-    if (data?.error) return null;
+    if (data?.error) continue;
     const rows = Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : [];
     if (!rows.length) continue;
     const keys = Object.keys(rows[0] || {});
@@ -265,14 +269,14 @@ function exactGroupRate(reportData, question) {
 }
 
 function exactExtremumRecord(reportData, question) {
-  const match = String(question).trim().match(/^which\s+([a-z][a-z -]*?)\s+has\s+(?:the\s+)?(highest|lowest|largest|smallest|maximum|minimum)\s+(.+?)\s*\??$/i);
+  const match = String(question).trim().match(/^which\s+([a-z][a-z -]*?)\s+has\s+(?:the\s+)?(highest|lowest|largest|smallest|maximum|minimum|most|fewest)\s+(.+?)\s*\??$/i);
   if (!match) return null;
   const [, subject, direction, measure] = match;
   const noun = normalizedHeader(subject).replace(/ies$/, 'y').replace(/s$/, '');
   const metric = normalizedHeader(measure);
   const candidates = [];
   for (const [sheetName, data] of Object.entries(reportData || {})) {
-    if (data?.error) return null;
+    if (data?.error) continue;
     const rows = Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : [];
     if (!rows.length) continue;
     const keys = Object.keys(rows[0] || {});
@@ -285,13 +289,15 @@ function exactExtremumRecord(reportData, question) {
     });
     if (entityKeys.length !== 1) continue;
     const metricKey = metricKeys[0], entityKey = entityKeys[0];
-    const values = rows.map((row) => ({ row, value: numberValue(row[metricKey]) }))
+    const grainKey = keys.find((key) => normalizedHeader(key) === 'geography level');
+    const relevantRows = grainKey ? rows.filter((row) => normalizedHeader(row[grainKey]) === noun) : rows;
+    const values = relevantRows.map((row) => ({ row, value: numberValue(row[metricKey]) }))
       .filter(({ row, value }) => value !== null && String(row[entityKey] ?? '').trim());
     if (values.length) candidates.push({ sheetName, metricKey, entityKey, values });
   }
   if (candidates.length !== 1) return null;
   const { metricKey, entityKey, values } = candidates[0];
-  const highest = /^(highest|largest|maximum)$/i.test(direction);
+  const highest = /^(highest|largest|maximum|most)$/i.test(direction);
   const extreme = (highest ? Math.max : Math.min)(...values.map((item) => item.value));
   const leaders = [...new Set(values.filter((item) => item.value === extreme)
     .map((item) => String(item.row[entityKey]).trim()))];
@@ -683,8 +689,9 @@ function buildEvidence(reportData, question) {
 }
 
 async function calculateFromAllRows(reportData, question, apiKey, history = []) {
-  const broken = Object.entries(reportData || {}).filter(([, sheet]) => sheet?.error);
-  if (broken.length) return `I can't verify an exact answer because ${broken.map(([name]) => name).join(', ')} could not be read.`;
+  const usable = Object.fromEntries(Object.entries(reportData || {}).filter(([, sheet]) =>
+    !sheet?.error && (Array.isArray(sheet) ? sheet.length : Array.isArray(sheet?.rows) && sheet.rows.length)));
+  if (!Object.keys(usable).length) return "I couldn't read the data needed to answer that.";
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), boundedInteger(process.env.OLLAMA_TIMEOUT_MS, 45000, 1000, 120000));
   let response;
@@ -694,8 +701,8 @@ async function calculateFromAllRows(reportData, question, apiKey, history = []) 
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: process.env.OLLAMA_MODEL || DEFAULT_MODEL, stream: false, think: false,
         format: 'json', messages: [
-          { role: 'system', content: `Translate the user's quantitative question into a calculation plan for the provided worksheets. Return JSON only: {"queries":[{"sheet":"exact worksheet name","operation":"count|sum|average|minimum|maximum","column":null,"groupBy":null,"filters":[{"column":"exact column name","operator":"equals|contains","value":"exact observed cell value"}]}]}. Use one grouped count for questions asking for categories such as filled and unfilled. For questions comparing groups or asking which group has the most, use groupBy for the relevant column and filter the category being counted; the server selects the requested groups or winner. For a filtered count, choose the column whose examples contain the requested value. Use only exact worksheet names, column names and category values from the schema. For count, column is null unless counting only nonempty values in that column. Use equals for categorical filters. When ambiguous or unsupported return {"queries":[]}. Do not include an answer or executable code.` },
-          { role: 'user', content: `Recent conversation: ${JSON.stringify(history.slice(-4)).slice(0, 3000)}\nQuestion: ${String(question).slice(0, 1200)}\nWorksheet schema and example values: ${JSON.stringify(describeSheets(reportData)).slice(0, 24000)}` },
+          { role: 'system', content: `Translate the user's quantitative question into a calculation plan for the provided worksheets. Return JSON only: {"queries":[{"sheet":"exact worksheet name","operation":"count|sum|average|minimum|maximum","column":null,"groupBy":null,"filters":[{"column":"exact column name","operator":"equals|contains","value":"exact observed cell value"}]}]}. Use one grouped count for questions asking for categories such as filled and unfilled. For questions comparing groups or asking which group has the most, use groupBy for the relevant column and filter the category being counted; the server selects the requested groups or winner. For a filtered count, choose the column whose examples contain the requested value. If geography_level exists, filter to the requested geographic level before comparing or aggregating; never sum overlapping geographic levels. Use only exact worksheet names, column names and category values from the schema. For count, column is null unless counting only nonempty values in that column. Use equals for categorical filters. When ambiguous or unsupported return {"queries":[]}. Do not include an answer or executable code.` },
+          { role: 'user', content: `Recent conversation: ${JSON.stringify(history.slice(-4)).slice(0, 3000)}\nQuestion: ${String(question).slice(0, 1200)}\nWorksheet schema and example values: ${JSON.stringify(describeSheets(usable)).slice(0, 24000)}` },
         ] }), signal: controller.signal,
     });
   } catch (error) {
