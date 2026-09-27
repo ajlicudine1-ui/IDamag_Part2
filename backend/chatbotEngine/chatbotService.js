@@ -112,19 +112,40 @@ function recordFieldAnswer(record, question) {
   const q = String(question).toLowerCase();
   const stop = new Set(['what', 'which', 'where', 'how', 'about', 'this', 'that', 'his', 'her', 'its',
     'the', 'of', 'for', 'in', 'and', 'please', 'tell', 'me', 'source', 'row', 'number', 'no', 'position']);
-  const terms = [...new Set(normalizedHeader(q).split(' ').filter((word) => word.length > 1 && !stop.has(word)))];
   const columns = Object.keys(record.row || {}).filter((key) => key !== record.key);
-  const scored = columns.map((key) => {
-    const words = normalizedHeader(key).split(' ').filter((word) => word.length > 1 && !stop.has(word));
-    return { key, words, score: words.filter((word) => terms.includes(word)).length };
-  }).filter((item) => item.score && item.score === item.words.length);
-  scored.sort((a, b) => b.score - a.score);
-  if (!scored.length) return null;
-  const best = scored[0].score;
-  const chosen = scored.filter((item) => item.score === best &&
-    (!/\bactual\b/.test(q) || /\bactual\b/.test(normalizedHeader(item.key))));
+  // Score each requested field separately: "title and salary" must not drop
+  // salary merely because "position title" matches more words overall.
+  const parts = q.split(/\s+and\s+/i);
+  const chosen = [];
+  for (const part of parts) {
+    const terms = [...new Set(normalizedHeader(part).split(' ')
+      .filter((word) => word.length > 1 && !stop.has(word)))];
+    const scored = columns.map((key) => {
+      const words = normalizedHeader(key).split(' ').filter((word) => word.length > 1 && !stop.has(word));
+      return { key, score: words.filter((word) => terms.includes(word)).length, words };
+    }).filter((item) => item.score)
+      .sort((a, b) => b.score - a.score);
+    if (!scored.length) return null;
+    const best = scored[0].score;
+    let matches = scored.filter((item) => item.score === best &&
+      (!/\bactual\b/.test(part) || /\bactual\b/.test(normalizedHeader(item.key))));
+    if (/\bsalary\b/.test(part) && !/\b(?:actual|authorized)\b/.test(part)) {
+      const actual = matches.filter((item) => /\bactual\b/.test(normalizedHeader(item.key)));
+      if (actual.length === 1) matches = actual;
+    }
+    if (!matches.length) return null;
+    for (const match of matches) {
+      if (!chosen.some((item) => item.key === match.key)) chosen.push(match);
+    }
+  }
   if (!chosen.length || chosen.length > 3) return null;
-  const phrases = chosen.map(({ key }) => `${normalizedHeader(key)} is ${String(record.row[key] ?? '').trim()}`);
+  const phrases = chosen.map(({ key }) => {
+    const raw = String(record.row[key] ?? '').trim();
+    const numeric = numberValue(raw);
+    const value = numeric !== null && /\b(?:salary|price|amount|cost|pay|wage)\b/.test(normalizedHeader(key))
+      ? numeric.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : raw;
+    return `${normalizedHeader(key)} is ${value}`;
+  });
   if (phrases.some((part) => !part.split(' is ')[1])) return null;
   return `${record.value}: ${phrases.join('; ')}.`;
 }
