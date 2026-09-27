@@ -155,13 +155,16 @@ function recordFieldAnswer(record, question) {
 function distinctValueAnswer(reportData, question, context) {
   const input = String(question).trim();
   const followUp = /^(?:(?:[a-z]+|\d+)\s+)?(?:only|just)\s*\??$/i.test(input);
+  const pronounFollowUp = /^(?:(?:what|which)\s+are\s+(?:they|those)|(?:list|show|name)\s+(?:me\s+)?(?:them|those))\s*\??$/i.test(input);
   const listMatch = input.match(/^(?:(?:what|which)\s+are|(?:list|show|name))\s+(?:me\s+)?(?:all\s+)?(?:the\s+)?([a-z][a-z-]*)(?:\s+(?:in|of|for|under|from)\s+(.+?))?\s*\??$/i);
   const countMatch = input.match(/^how\s+many\s+(?:(?:different|distinct|unique)\s+)?([a-z][a-z-]*)(?:\s+(?:are\s+there|do\s+we\s+have))?(?:\s+(?:in|of|for|under|from)\s+(.+?))?\s*\??$/i);
-  const subject = followUp ? context.lastListQuery : listMatch?.[1] || countMatch?.[1];
+  const subject = followUp || pronounFollowUp ? context.lastListQuery : listMatch?.[1] || countMatch?.[1];
   if (!subject) return null;
   const normalized = normalizedHeader(subject).replace(/ies$/, 'y').replace(/s$/, '');
-  const scopeText = (followUp ? context.lastListScope : listMatch?.[2] || countMatch?.[2] || '')
+  const rawScope = (followUp || pronounFollowUp ? context.lastListScope || '' : listMatch?.[2] || countMatch?.[2] || '')
     .replace(/\?$/, '').trim();
+  const scopeText = /^(?:(?:this|the|our)\s+)?(?:data|dataset|spreadsheet|sheet|report)$/i.test(rawScope)
+    ? '' : rawScope;
   const matches = [];
   for (const [sheetName, data] of Object.entries(reportData || {})) {
     if (data?.error) continue;
