@@ -56,7 +56,16 @@ function findRecord(reportData, question, context) {
   const candidates = [];
   const named = [];
   const questionWords = normalizedHeader(q);
+  const sheetHints = Object.keys(reportData || {}).filter((sheet) =>
+    ` ${questionWords} `.includes(` ${normalizedHeader(sheet)} `));
+  const scopedSheet = sheetHints.length === 1 ? sheetHints[0] : null;
+  const shortFollowUp = /^(?:what|which|how|and|(?:i(?:'m| am) asking))\b/i.test(q.trim()) &&
+    q.trim().split(/\s+/).length <= 12 &&
+    !/\b(?:total|sum|count|average|how many|compare|difference|highest|lowest|largest|smallest|maximum|minimum|most|fewest)\b/i.test(q);
+  const remembered = !identifiers.length && !rowNumber && (shortFollowUp || scopedSheet)
+    ? context.lastAmbiguousRecord : null;
   for (const [sheet, data] of Object.entries(reportData || {})) {
+    if (scopedSheet && sheet !== scopedSheet) continue;
     if (data?.error) continue;
     const rows = Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : [];
     if (!rows.length) continue;
@@ -67,12 +76,14 @@ function findRecord(reportData, question, context) {
         const value = String(row[key] ?? '').trim();
         if (!value) continue;
         if (identifiers.some((id) => id.toLowerCase() === value.toLowerCase()) ||
+            (remembered && remembered.key === key && value.toLowerCase() === remembered.value.toLowerCase() &&
+              (!remembered.sheet || remembered.sheet === sheet)) ||
             (rowNumber && rowKeys.includes(key) && value === rowNumber)) {
           candidates.push({ sheet, key, value, row, index });
         }
         // Names can be written surname-first in a cell and given-name-first
         // in a question. Accept a unique sequence of at least two name words.
-        if (!identifiers.length && !rowNumber && /\b(?:name|incumbent)\b/.test(normalizedHeader(key))) {
+        if (!identifiers.length && !rowNumber && !remembered && /\b(?:name|incumbent)\b/.test(normalizedHeader(key))) {
           const words = normalizedHeader(value).split(' ').filter(Boolean);
           if (words.length >= 2 && words.length <= 8) {
             let longest = 0;
@@ -89,14 +100,15 @@ function findRecord(reportData, question, context) {
       }
     }
   }
-  if (candidates.length) return candidates.length === 1 ? candidates[0] : null;
+  if (candidates.length) {
+    const unique = [...new Map(candidates.map((item) => [`${item.sheet}\u0000${item.index}`, item])).values()];
+    return unique.length === 1 ? unique[0] : { ambiguous: true, matches: unique,
+      sheets: [...new Set(unique.map((item) => item.sheet))], key: unique[0].key, value: unique[0].value };
+  }
   if (!identifiers.length && !rowNumber && named.length) {
     named.sort((a, b) => b.score - a.score);
     return named.filter((item) => item.score === named[0].score).length === 1 ? named[0] : null;
   }
-  const shortFollowUp = /^(?:what|which|how|and|(?:i(?:'m| am) asking))\b/i.test(q.trim()) &&
-    q.trim().split(/\s+/).length <= 12 &&
-    !/\b(?:total|sum|count|average|how many|compare|difference|highest|lowest|largest|smallest|maximum|minimum|most|fewest)\b/i.test(q);
   if (!candidates.length && !identifiers.length && !rowNumber && shortFollowUp && context.lastRecord) {
     const previous = context.lastRecord;
     const data = reportData?.[previous.sheet];
@@ -142,8 +154,13 @@ function recordFieldAnswer(record, question) {
   const phrases = chosen.map(({ key }) => {
     const raw = String(record.row[key] ?? '').trim();
     const numeric = numberValue(raw);
-    const value = numeric !== null && /\b(?:salary|price|amount|cost|pay|wage)\b/.test(normalizedHeader(key))
-      ? numeric.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : raw;
+    const isoDate = /\bdate\b/.test(normalizedHeader(key)) &&
+      /^(\d{4})-(\d{2})-(\d{2})(?:[T ].*)?$/.exec(raw);
+    const value = isoDate
+      ? new Date(Date.UTC(Number(isoDate[1]), Number(isoDate[2]) - 1, Number(isoDate[3])))
+        .toLocaleDateString('en-US', { timeZone: 'UTC', year: 'numeric', month: 'short', day: 'numeric' })
+      : numeric !== null && /\b(?:salary|price|amount|cost|pay|wage)\b/.test(normalizedHeader(key))
+        ? numeric.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : raw;
     return `${normalizedHeader(key)} is ${value}`;
   });
   if (phrases.some((part) => !part.split(' is ')[1])) return null;
@@ -855,7 +872,14 @@ async function answerQuestion(reportData, question, conversationKey) {
   const record = findRecord(reportData, question, context);
   let listed = false;
   const finish = (answer) => {
-    if (record) context.lastRecord = { sheet: record.sheet, key: record.key, value: record.value };
+    if (record?.ambiguous) {
+      context.lastRecord = null;
+      context.lastAmbiguousRecord = { key: record.key, value: record.value,
+        sheet: record.sheets.length === 1 ? record.sheets[0] : null };
+    } else if (record) {
+      context.lastRecord = { sheet: record.sheet, key: record.key, value: record.value };
+      context.lastAmbiguousRecord = null;
+    }
     if (!listed) context.lastListQuery = null;
     context.history = [...history, { role: "user", content: String(question).slice(0, 1000) },
       { role: "assistant", content: String(answer).slice(0, 1000) }].slice(-MAX_HISTORY_MESSAGES);
@@ -875,12 +899,27 @@ async function answerQuestion(reportData, question, conversationKey) {
   }
   context.lastFullList = null;
 
+  if (record?.ambiguous) {
+    if (record.sheets.length > 1)
+      return finish(`${record.key} ${record.value} appears in ${record.sheets.join(', ')}. Which sheet do you mean?`);
+    const answers = record.matches.map((item) => recordFieldAnswer(item, question)).filter(Boolean);
+    if (answers.length === record.matches.length && new Set(answers).size === 1)
+      return finish(answers[0]);
+    const keys = Object.keys(record.matches[0].row || {}).filter((key) => key !== record.key &&
+      /\b(?:code|id|number)\b/i.test(normalizedHeader(key)) &&
+      new Set(record.matches.map((item) => String(item.row[key] ?? '').trim())).size === record.matches.length);
+    return finish(`${record.key} ${record.value} matches ${record.matches.length} records in ${record.sheets[0]}. Please include ${keys[0] || 'another identifier'} to select one.`);
+  }
+
   const extremeAnswer = exactExtremumRecord(reportData, question);
   if (extremeAnswer) return finish(extremeAnswer);
   const valueDifference = exactValueDifference(reportData, question);
   if (valueDifference) return finish(valueDifference);
 
-  const fieldQuestion = /^of\s+[\p{L}\s,.'-]+\??$/iu.test(String(question).trim()) &&
+  const selectedSheet = Object.keys(reportData || {}).some((sheet) =>
+    normalizedHeader(question).replace(/^(?:under|in) /, '') === normalizedHeader(sheet));
+  const fieldQuestion = (selectedSheet && context.lastAmbiguousRecord ||
+    /^of\s+[\p{L}\s,.'-]+\??$/iu.test(String(question).trim())) &&
     context.lastQuestion ? context.lastQuestion : question;
   const fieldAnswer = recordFieldAnswer(record, fieldQuestion);
   if (fieldAnswer) return finish(fieldAnswer);
