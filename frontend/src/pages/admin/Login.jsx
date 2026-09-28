@@ -7,7 +7,7 @@ import logo from '../../assets/dalogo.png';
 import { clearPendingClose } from '../../components/auth/sessionTimeout';
 
 function Login() {
-  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
@@ -36,7 +36,7 @@ function Login() {
     setError('');
     
     try {
-      const res = await login({ email, password });
+      const res = await login({ username: username.trim(), password });
       // Store user info in localStorage for "session"
       localStorage.setItem('user', JSON.stringify(res.data));
       clearPendingClose();
@@ -52,7 +52,7 @@ function Login() {
       navigate(requestedPath && canVisitRequested ? requestedPath :
         res.data.role === 'Admin' ? '/reports' : '/', { replace: true });
     } catch (err) {
-      setError(err.response?.data?.message || 'Login failed. Please check your credentials.');
+      setError(err.response?.data?.message || 'Login failed. Please check your username and password.');
     } finally {
       setIsLoading(false);
     }
@@ -84,14 +84,14 @@ function Login() {
 
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label className="block text-xs font-bold text-slate-700 mb-1.5">Email Address</label>
+            <label className="block text-xs font-bold text-slate-700 mb-1.5">Username</label>
             <input 
-              type="email" 
+              type="text" 
               required
-              value={email}
-              onChange={handleInputChange(setEmail)}
+              value={username}
+              onChange={handleInputChange(setUsername)}
               className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-moss-600/10 focus:border-moss-600 transition-all outline-none"
-              placeholder="name@da.gov.ph"
+              placeholder="Enter your username"
             />
           </div>
           <div>
@@ -124,6 +124,13 @@ function Login() {
           </button>
         </form>
         
+        <div className="mt-6 pt-6 border-t border-slate-100 text-center space-y-3">
+          <div className="block">
+            <Link to="/" className="text-slate-400 hover:text-moss-600 text-[11px] font-bold transition-colors">
+              ← Back to Public Site
+            </Link>
+          </div>
+        </div>
       </div>
     </div>
   );
