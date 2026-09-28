@@ -8,7 +8,7 @@ import {
   getDivisions
 } from '../../services/api';
 
-import logo from '../../assets/dalogo.png';
+import logo from '../../assets/DA-RFO1_LOGO.png';
 import SearchableSelect from '../../components/common/SearchableSelect';
 
 
@@ -514,45 +514,20 @@ function Register() {
           "
         >
 
-          <div
+          <img
+            src={logo}
+            alt="Department of Agriculture RFO1 Logo"
             className="
-              w-16
-              h-16
               mx-auto
               mb-4
-              flex
-              items-center
-              justify-center
-              transition-transform
-              hover:scale-105
-              duration-300
+              h-auto
+              max-h-24
+              w-full
+              max-w-[280px]
+              object-contain
+              drop-shadow-md
             "
-          >
-
-            <img
-              src={logo}
-              alt="DA Logo"
-              className="
-                w-full
-                h-full
-                object-contain
-                drop-shadow-md
-              "
-            />
-
-          </div>
-
-
-          <h1
-            className="
-              text-2xl
-              font-extrabold
-              text-slate-900
-              tracking-tight
-            "
-          >
-            Create Account
-          </h1>
+          />
 
 
           <p
