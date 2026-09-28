@@ -156,8 +156,8 @@ function distinctValueAnswer(reportData, question, context) {
   const input = String(question).trim();
   const followUp = /^(?:(?:[a-z]+|\d+)\s+)?(?:only|just)\s*\??$/i.test(input);
   const pronounFollowUp = /^(?:(?:what|which)\s+are\s+(?:they|those)|(?:list|show|name)\s+(?:me\s+)?(?:them|those))\s*\??$/i.test(input);
-  const listMatch = input.match(/^(?:(?:what|which)\s+are|(?:list|show|name))\s+(?:me\s+)?(?:all\s+)?(?:the\s+)?([a-z][a-z-]*)(?:\s+(?:in|of|for|under|from)\s+(.+?))?\s*\??$/i);
-  const countMatch = input.match(/^how\s+many\s+(?:(?:different|distinct|unique)\s+)?([a-z][a-z-]*)(?:\s+(?:are\s+there|do\s+we\s+have))?(?:\s+(?:in|of|for|under|from)\s+(.+?))?\s*\??$/i);
+  const listMatch = input.match(/^(?:(?:what|which)\s+are|(?:list|show|name))\s+(?:me\s+)?(?:all\s+)?(?:the\s+)?([a-z][a-z-]*(?:\s+[a-z][a-z-]*){0,3}?)(?:\s+(?:in|of|for|under|from)\s+(.+?))?\s*\??$/i);
+  const countMatch = input.match(/^how\s+many\s+(?:(?:different|distinct|unique)\s+)?([a-z][a-z-]*(?:\s+[a-z][a-z-]*){0,3}?)(?:\s+(?:are\s+there|do\s+we\s+have))?(?:\s+(?:in|of|for|under|from)\s+(.+?))?\s*\??$/i);
   const subject = followUp || pronounFollowUp ? context.lastListQuery : listMatch?.[1] || countMatch?.[1];
   if (!subject) return null;
   const normalized = normalizedHeader(subject).replace(/ies$/, 'y').replace(/s$/, '');
@@ -657,6 +657,96 @@ function executePlan(reportData, plan, question = '') {
   return answers.join('\n');
 }
 
+// List questions need the full matching rows. The short evidence excerpt used
+// for conversational answers cannot establish whether a list is complete.
+function executeListPlan(reportData, plan, offset = 0) {
+  const query = plan?.query;
+  if (!query || !['distinct', 'rows'].includes(query.operation) ||
+      typeof query.sheet !== 'string' || !Array.isArray(query.filters) || query.filters.length > 6)
+    throw new Error('The list could not be mapped to a worksheet.');
+  const data = reportData?.[query.sheet];
+  if (!data || data?.error) throw new Error('The selected worksheet could not be read.');
+  const rows = Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : [];
+  if (!rows.length) throw new Error('The selected worksheet has no readable rows.');
+  const keys = Object.keys(rows[0] || {});
+  if (query.operation === 'distinct' && !keys.includes(query.column))
+    throw new Error('The requested list column does not exist.');
+  for (const filter of query.filters) {
+    if (!keys.includes(filter.column) || filter.operator !== 'equals' ||
+        typeof filter.value !== 'string' || filter.value.length > 150)
+      throw new Error('A list filter does not match the worksheet.');
+  }
+  const selected = rows.filter((row) => query.filters.every((filter) => {
+    const cell = String(row?.[filter.column] ?? '').trim();
+    const exact = String(filter.value).trim();
+    const a = numberValue(cell), b = numberValue(exact);
+    return a !== null && b !== null ? a === b : cell.toLowerCase() === exact.toLowerCase();
+  }));
+  let items;
+  if (query.operation === 'distinct') {
+    const unique = new Map();
+    for (const row of selected) {
+      const value = String(row[query.column] ?? '').trim();
+      if (value && !unique.has(value.toLowerCase())) unique.set(value.toLowerCase(), value);
+    }
+    items = [...unique.values()].sort((a, b) => a.localeCompare(b));
+  } else {
+    const requested = Array.isArray(query.displayColumns) ? query.displayColumns : [];
+    const display = [...new Set(requested.filter((key) => keys.includes(key)))].slice(0, 5);
+    const fingerprintCount = (columns) => new Set(selected.map((row) =>
+      columns.map((key) => String(row[key] ?? '').trim()).join('\u0000'))).size;
+    // Add identifying fields when the model's selected fields would collapse
+    // distinct records, e.g. two Corn rows from different years.
+    while (display.length < 5 && fingerprintCount(display) < selected.length) {
+      const options = keys.filter((key) => !display.includes(key) && key !== query.column &&
+        (/\b(?:year|date|month|period)\b/i.test(normalizedHeader(key)) ||
+          selected.some((row) => numberValue(row[key]) === null && String(row[key] ?? '').trim())));
+      options.sort((a, b) => fingerprintCount([...display, b]) - fingerprintCount([...display, a]) ||
+        selected.reduce((n, row) => n + String(row[a] ?? '').length - String(row[b] ?? '').length, 0));
+      if (!options.length || fingerprintCount([...display, options[0]]) <= fingerprintCount(display)) break;
+      display.push(options[0]);
+    }
+    if (!display.length) throw new Error('No record labels are available for this list.');
+    items = selected.map((row) => display.map((key) => `${key}: ${String(row[key] ?? '').trim()}`).join(', '));
+  }
+  const start = Math.max(0, Math.min(offset, items.length));
+  const page = items.slice(start, start + 100);
+  const label = query.operation === 'distinct' ? `distinct ${query.column}` : 'matching records';
+  const answer = items.length
+    ? `${items.length} ${label}${start ? ` (items ${start + 1}–${start + page.length})` : ''}:\n${page.map((item) => `- ${item}`).join('\n')}` +
+      (start + page.length < items.length ? `\n${items.length - start - page.length} more. Ask “show next” to continue.` : '')
+    : `No ${label} match that request.`;
+  return { answer, nextOffset: start + page.length < items.length ? start + page.length : null };
+}
+
+async function planListFromAllRows(reportData, question, apiKey) {
+  const usable = Object.fromEntries(Object.entries(reportData || {}).filter(([, sheet]) =>
+    !sheet?.error && (Array.isArray(sheet) ? sheet.length : Array.isArray(sheet?.rows) && sheet.rows.length)));
+  if (!Object.keys(usable).length) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), boundedInteger(process.env.OLLAMA_TIMEOUT_MS, 45000, 1000, 120000));
+  let response;
+  try {
+    response = await fetch(ENDPOINT, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: process.env.OLLAMA_MODEL || DEFAULT_MODEL, stream: false, think: false,
+        format: 'json', messages: [
+          { role: 'system', content: `Map a list request to the worksheet schema. Return JSON only: {"query":{"sheet":"exact sheet name","operation":"distinct|rows","column":"exact column name or null","filters":[{"column":"exact column name","operator":"equals","value":"exact cell value"}],"displayColumns":["exact column name"]}}. Use distinct for a list of unique values from one column. Use rows when the user asks for records matching a condition, including numeric zero. For rows, choose descriptive fields needed to identify each matching record, including year or date where present. For a request about zero of a numeric measure, filter the matching numeric column to "0" and list matching records. Never add a category filter that the user did not request. Use only exact names and observed values. If "low" has no defined threshold, or the request cannot be mapped reliably, return {"query":null}. Do not answer from example rows.` },
+          { role: 'user', content: `Question: ${String(question).slice(0, 1200)}\nWorksheet schema and example values: ${JSON.stringify(describeSheets(usable)).slice(0, 24000)}` },
+        ] }), signal: controller.signal,
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') throw Object.assign(new Error('Ollama took too long to plan the list.'), { statusCode: 504 });
+    throw Object.assign(new Error('Could not connect to Ollama Cloud.'), { statusCode: 502 });
+  } finally { clearTimeout(timeout); }
+  if (!response.ok) throw Object.assign(new Error(`Ollama Cloud returned HTTP ${response.status}.`), { statusCode: 502 });
+  try {
+    const result = await response.json();
+    return JSON.parse(String(result?.message?.content ?? '').trim().replace(/^```(?:json)?\s*|\s*```$/g, ''));
+  } catch { return null; }
+}
+
 function buildEvidence(reportData, question) {
   const tokens = [...new Set(String(question).toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) || [])]
     .filter((word) => !["what", "which", "where", "when", "with", "from", "that", "this", "total", "many", "show", "about"].includes(word))
@@ -747,6 +837,15 @@ async function answerQuestion(reportData, question, conversationKey) {
     return { success: true, answer };
   };
 
+  if (/^(?:show|list)\s+(?:me\s+)?(?:the\s+)?next\b/i.test(String(question).trim()) && context.lastFullList?.nextOffset != null) {
+    try {
+      const page = executeListPlan(reportData, context.lastFullList.plan, context.lastFullList.nextOffset);
+      context.lastFullList.nextOffset = page.nextOffset;
+      return finish(page.answer);
+    } catch { context.lastFullList = null; }
+  }
+  context.lastFullList = null;
+
   const extremeAnswer = exactExtremumRecord(reportData, question);
   if (extremeAnswer) return finish(extremeAnswer);
   const valueDifference = exactValueDifference(reportData, question);
@@ -787,6 +886,18 @@ async function answerQuestion(reportData, question, conversationKey) {
   const apiKey = String(process.env.OLLAMA_API_KEY || "").trim();
   if (!apiKey) {
     throw Object.assign(new Error("OLLAMA_API_KEY is not configured on the backend."), { statusCode: 503 });
+  }
+
+  if (/^(?:(?:list|show|name)\b|(?:what|which)\s+are\b)/i.test(String(question).trim())) {
+    const plan = await planListFromAllRows(reportData, question, apiKey);
+    if (plan?.query) {
+      try {
+        const page = executeListPlan(reportData, plan);
+        context.lastFullList = { plan, nextOffset: page.nextOffset };
+        return finish(page.answer);
+      } catch (error) { console.warn('Chatbot list plan rejected:', error.message); }
+    }
+    return finish('Which value or threshold should I use for that list?');
   }
 
   if (/\b(?:how many|count|total|sum|average|mean|minimum|maximum|highest|lowest|most|fewest|largest|smallest|percent|percentage|rate|difference)\b/i.test(String(resolvedQuestion))) {
