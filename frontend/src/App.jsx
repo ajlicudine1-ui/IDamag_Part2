@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Routes, Route, useLocation } from "react-router-dom";
 
 import Home from "./components/public/Home";
@@ -199,9 +199,72 @@ function App() {
 
   // Chat states
   const [question, setQuestion] = useState("");
+  const recognitionRef = useRef(null);
+  const [listening, setListening] = useState(false);
+  const [voiceError, setVoiceError] = useState("");
   const [messages, setMessages] = useState([]);
   const [chatLoading, setChatLoading] =
     useState(false);
+
+  // Stop capturing audio when the chat closes or the selected report changes.
+  useEffect(() => {
+    return () => {
+      recognitionRef.current?.abort();
+      recognitionRef.current = null;
+    };
+  }, [isChatbotOpen, selectedReport]);
+
+  const toggleMicrophone = () => {
+    if (listening) {
+      recognitionRef.current?.stop();
+      return;
+    }
+
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      setVoiceError("Voice input is not supported in this browser.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognitionRef.current = recognition;
+    recognition.lang = "en-PH";
+    recognition.interimResults = false;
+
+    recognition.onresult = (event) => {
+      const spokenText = event.results[0][0].transcript;
+      setQuestion((current) =>
+        current.trim() ? `${current.trim()} ${spokenText}` : spokenText
+      );
+    };
+
+    recognition.onerror = (event) => {
+      setVoiceError(
+        event.error === "not-allowed" || event.error === "service-not-allowed"
+          ? "Allow microphone access in your browser to use voice input."
+          : "Couldn't hear you. Please try again."
+      );
+    };
+
+    recognition.onend = () => {
+      if (recognitionRef.current === recognition) {
+        recognitionRef.current = null;
+      }
+      setListening(false);
+    };
+
+    setVoiceError("");
+    try {
+      recognition.start();
+      setListening(true);
+    } catch {
+      recognitionRef.current = null;
+      setListening(false);
+      setVoiceError("Couldn't start the microphone.");
+    }
+  };
 
   // Keep the chat head inside the browser window after resize.
   useEffect(() => {
@@ -1606,6 +1669,25 @@ function App() {
 
                     <button
                       type="button"
+                      onClick={toggleMicrophone}
+                      disabled={chatLoading || !selectedReport.hasSheet}
+                      aria-label={listening ? "Stop microphone" : "Speak your question"}
+                      aria-pressed={listening}
+                      title={listening ? "Stop recording" : "Speak your question"}
+                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-[#2F6F32] text-[#2F6F32] transition hover:bg-[#EAF4E8] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {listening ? (
+                        <span className="h-3 w-3 rounded-sm bg-current" aria-hidden="true" />
+                      ) : (
+                        <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="9" y="2" width="6" height="12" rx="3" />
+                          <path d="M5 10a7 7 0 0 0 14 0M12 17v5m-4 0h8" />
+                        </svg>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
                       onClick={sendQuestion}
                       disabled={
                         chatLoading ||
@@ -1638,6 +1720,11 @@ function App() {
                       ➤
                     </button>
                   </div>
+                  {voiceError && (
+                    <p role="alert" className="mt-2 text-xs text-red-600">
+                      {voiceError}
+                    </p>
+                  )}
                 </div>
               </div>
             )}
