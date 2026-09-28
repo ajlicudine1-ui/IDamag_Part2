@@ -8,7 +8,7 @@ import {
   getDivisions
 } from '../../services/api';
 
-import logo from '../../assets/DA-RFO1_LOGO.png';
+import daRfo1Logo from '../../assets/DA-RFO1_LOGO.png';
 import SearchableSelect from '../../components/common/SearchableSelect';
 
 
@@ -514,22 +514,47 @@ function Register() {
           "
         >
 
-          <img
-            src={logo}
-            alt="Department of Agriculture RFO1 Logo"
+          <div
             className="
+              w-16
+              h-16
               mx-auto
               mb-4
-              h-auto
-              max-h-24
-              w-full
-              max-w-[280px]
-              object-contain
-              drop-shadow-md
+              flex
+              items-center
+              justify-center
+              transition-transform
+              hover:scale-105
+              duration-300
             "
-          />
+          >
+
+            <img
+              src={logo}
+              alt="DA Logo"
+              className="
+                w-full
+                h-full
+                object-contain
+                drop-shadow-md
+              "
+            />
+
+          </div>
 
 
+          <h1
+            className="
+              text-2xl
+              font-extrabold
+              text-slate-900
+              tracking-tight
+            "
+          >
+            <img src={daRfo1Logo} alt="DA RFO1 Logo" className="mx-auto h-16 w-auto object-contain"/>
+          </h1>
+
+          
           <p
             className="
               text-sm
@@ -540,7 +565,7 @@ function Register() {
               tracking-widest
             "
           >
-            Ilocos DAmag
+            Create Account
           </p>
 
         </div>
