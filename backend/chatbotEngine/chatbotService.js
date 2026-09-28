@@ -876,9 +876,12 @@ async function answerQuestion(reportData, question, conversationKey) {
       context.lastRecord = null;
       context.lastAmbiguousRecord = { key: record.key, value: record.value,
         sheet: record.sheets.length === 1 ? record.sheets[0] : null };
+      if (!context.pendingRecordQuestion && String(question).trim().split(/\s+/).length > 3)
+        context.pendingRecordQuestion = String(question).slice(0, 1000);
     } else if (record) {
       context.lastRecord = { sheet: record.sheet, key: record.key, value: record.value };
       context.lastAmbiguousRecord = null;
+      context.pendingRecordQuestion = null;
     }
     if (!listed) context.lastListQuery = null;
     context.history = [...history, { role: "user", content: String(question).slice(0, 1000) },
@@ -918,9 +921,14 @@ async function answerQuestion(reportData, question, conversationKey) {
 
   const selectedSheet = Object.keys(reportData || {}).some((sheet) =>
     normalizedHeader(question).replace(/^(?:under|in) /, '') === normalizedHeader(sheet));
-  const fieldQuestion = (selectedSheet && context.lastAmbiguousRecord ||
+  const identifierReply = /^(?:(?:lab|item|record)\s+(?:code|number|id)\s+)?[a-z0-9]+(?:-[a-z0-9]+)+\s*\??$/i.test(String(question).trim());
+  const priorIdentifierMatches = record && !record.ambiguous && context.lastAmbiguousRecord &&
+    String(record.row?.[context.lastAmbiguousRecord.key] ?? '').trim().toLowerCase() ===
+      context.lastAmbiguousRecord.value.toLowerCase();
+  const fieldQuestion = ((selectedSheet || identifierReply) && priorIdentifierMatches ||
     /^of\s+[\p{L}\s,.'-]+\??$/iu.test(String(question).trim())) &&
-    context.lastQuestion ? context.lastQuestion : question;
+    (context.pendingRecordQuestion || context.lastQuestion) ?
+      context.pendingRecordQuestion || context.lastQuestion : question;
   const fieldAnswer = recordFieldAnswer(record, fieldQuestion);
   if (fieldAnswer) return finish(fieldAnswer);
 
