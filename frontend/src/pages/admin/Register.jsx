@@ -546,8 +546,8 @@ function Register() {
 
           <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">
             <img
-              src={daRfo1Logo}
-              alt="DA RFO1 Logo"
+              src="/I-DAMAG%20NAME%20LOGO.png"
+              alt="I-DAMAG Logo"
               className="mx-auto h-16 w-auto object-contain"
             />
           </h1>
