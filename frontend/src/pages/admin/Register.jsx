@@ -8,6 +8,7 @@ import {
   getDivisions
 } from '../../services/api';
 
+import logo from '../../assets/dalogo.png';
 import daRfo1Logo from '../../assets/DA-RFO1_LOGO.png';
 import SearchableSelect from '../../components/common/SearchableSelect';
 
