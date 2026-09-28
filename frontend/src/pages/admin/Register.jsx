@@ -544,15 +544,12 @@ function Register() {
           </div>
 
 
-          <h1
-            className="
-              text-2xl
-              font-extrabold
-              text-slate-900
-              tracking-tight
-            "
-          >
-            <img src={daRfo1Logo} alt="DA RFO1 Logo" className="mx-auto h-16 w-auto object-contain"/>
+          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">
+            <img
+              src={daRfo1Logo}
+              alt="DA RFO1 Logo"
+              className="mx-auto h-16 w-auto object-contain"
+            />
           </h1>
 
           
