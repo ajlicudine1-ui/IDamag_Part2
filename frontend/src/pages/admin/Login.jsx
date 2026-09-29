@@ -37,10 +37,10 @@ function Login() {
     
     try {
       const res = await login({ username: username.trim(), password });
-      // Store user info in localStorage for "session"
-      localStorage.setItem('user', JSON.stringify(res.data));
+      // Store user info in this tab only
+      sessionStorage.setItem('user', JSON.stringify(res.data));
       clearPendingClose();
-      localStorage.setItem('idamag_auth_version', '2');
+      sessionStorage.setItem('idamag_auth_version', '2');
       const requested = location.state?.from;
       const requestedPath = requested
         ? `${requested.pathname}${requested.search || ''}${requested.hash || ''}`
@@ -124,7 +124,13 @@ function Login() {
           </button>
         </form>
         
-        
+        <div className="mt-6 pt-6 border-t border-slate-100 text-center space-y-3">
+          <div className="block">
+            <Link to="/" className="text-slate-400 hover:text-moss-600 text-[11px] font-bold transition-colors">
+              ← Back to Public Site
+            </Link>
+          </div>
+        </div>
       </div>
     </div>
   );

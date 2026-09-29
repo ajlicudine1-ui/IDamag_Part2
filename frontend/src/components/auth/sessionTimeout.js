@@ -1,33 +1,17 @@
-const PENDING_CLOSE_KEY = "idamag_pending_close_at";
-const SESSION_VERSION_KEY = "idamag_auth_version";
-const USER_KEY = "user";
-
-export const CLOSE_GRACE_PERIOD_MS = 5 * 60 * 1000;
+// Authentication now lives in sessionStorage, which is isolated per tab.
+// It survives refreshes and is cleared automatically when that tab closes.
+// The former five-minute close-tab grace period is intentionally disabled.
+export const CLOSE_GRACE_PERIOD_MS = 0;
 
 export function expireSessionAfterCloseGrace() {
-  const pendingCloseAt = Number(
-    localStorage.getItem(PENDING_CLOSE_KEY)
-  );
-
-  if (!pendingCloseAt) return false;
-
-  localStorage.removeItem(PENDING_CLOSE_KEY);
-
-  if (Date.now() - pendingCloseAt >= CLOSE_GRACE_PERIOD_MS) {
-    localStorage.removeItem(USER_KEY);
-    localStorage.removeItem(SESSION_VERSION_KEY);
-    return true;
-  }
-
   return false;
 }
 
 export function markAppClosed() {
-  if (localStorage.getItem(USER_KEY)) {
-    localStorage.setItem(PENDING_CLOSE_KEY, String(Date.now()));
-  }
+  // Do not clear on pagehide: pagehide also fires during refresh/navigation.
+  // Closing the tab clears its sessionStorage automatically.
 }
 
 export function clearPendingClose() {
-  localStorage.removeItem(PENDING_CLOSE_KEY);
+  // No cross-tab pending-close flag is used with per-tab sessions.
 }

@@ -5,22 +5,26 @@ import { expireSessionAfterCloseGrace } from './sessionTimeout';
 const ProtectedRoute = ({ children, requiresAdmin = false }) => {
   const location = useLocation();
   expireSessionAfterCloseGrace();
+
   let user;
   try {
-    user = JSON.parse(localStorage.getItem('user'));
+    user = JSON.parse(sessionStorage.getItem('user'));
   } catch {
-    localStorage.removeItem('user');
+    sessionStorage.removeItem('user');
+    sessionStorage.removeItem('idamag_auth_version');
   }
 
-  const sessionVersion = localStorage.getItem('idamag_auth_version');
-  if (sessionVersion !== '2' || !user || !user.id || !['Admin', 'Staff'].includes(user.role)) {
-    localStorage.removeItem('user');
-    localStorage.removeItem('idamag_auth_version');
+  const sessionVersion = sessionStorage.getItem('idamag_auth_version');
+  if (sessionVersion !== '2' || !user?.id || !['Admin', 'Staff'].includes(user.role)) {
+    sessionStorage.removeItem('user');
+    sessionStorage.removeItem('idamag_auth_version');
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
+
   if (requiresAdmin && user.role !== 'Admin') {
     return <Navigate to="/" replace />;
   }
+
   return children;
 };
 
