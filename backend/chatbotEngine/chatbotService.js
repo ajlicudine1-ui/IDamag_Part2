@@ -47,6 +47,93 @@ function normalizedHeader(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
+// Keep numeric-only summary lines out of row-level calculations when most
+// records have an identifier. Rows with other descriptive fields remain data.
+function detailRows(rows) {
+  if (rows.length < 2) return rows;
+  const keys = Object.keys(rows[0] || {});
+  const ids = keys.filter((key) => /(?:^| )id$/.test(normalizedHeader(key)))
+    .map((key) => ({ key, filled: rows.filter((row) => String(row?.[key] ?? '').trim()).length }))
+    .filter(({ filled }) => filled >= 2 && filled / rows.length >= 0.75)
+    .sort((a, b) => b.filled - a.filled);
+  if (!ids.length) return rows;
+  const idKey = ids[0].key;
+  return rows.filter((row) => String(row?.[idKey] ?? '').trim() ||
+    keys.some((key) => key !== idKey && String(row?.[key] ?? '').trim() &&
+      numberValue(row[key]) === null));
+}
+
+function singularHeader(value) {
+  return normalizedHeader(value).replace(/ies$/, 'y').replace(/s$/, '');
+}
+
+// Select a record table by its identifier header. If the question does not
+// identify one and several tables qualify, leave it to the planner.
+function recordTable(reportData, entity) {
+  const subject = singularHeader(entity);
+  const candidates = [];
+  for (const [sheet, data] of Object.entries(reportData || {})) {
+    if (data?.error) continue;
+    const raw = Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : [];
+    if (!raw.length) continue;
+    const keys = Object.keys(raw[0] || {});
+    const ids = keys.filter((key) => /(?:^| )id$/.test(normalizedHeader(key)));
+    if (!ids.length) continue;
+    const rows = detailRows(raw);
+    for (const id of ids) {
+      const records = rows.filter((row) => String(row?.[id] ?? '').trim());
+      if (!records.length) continue;
+      const prefix = normalizedHeader(id).replace(/(?:^| )id$/, '').trim();
+      const score = prefix && subject.split(' ').includes(prefix) ? 2 : 0;
+      candidates.push({ sheet, keys, rows: records, id, score });
+    }
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  if (!candidates.length || (candidates[1] && candidates[1].score === candidates[0].score)) return null;
+  return candidates[0];
+}
+
+function exactRecordAndGroupCounts(reportData, question) {
+  const input = String(question ?? '').trim();
+  const top = input.match(/\btop\s+(\d{1,2})\s+(.+?)\s+by\s+(?:the\s+)?(?:number|count)\s+of\s+(.+?)\s*\??$/i);
+  const compare = !top && input.match(/\b(?:compare|show|give)\s+(?:the\s+)?(?:number|count)\s+of\s+(.+?)\s+by\s+(.+?)\s*\??$/i);
+  const count = !top && !compare && input.match(/^(?:how many|number of)\s+(.+?)\s*\??$/i);
+  if (!top && !compare && !count) return null;
+
+  const entity = top ? top[3] : compare ? compare[1] : count[1]
+    .replace(/\s+(?:are there|are listed|are in (?:the|this) (?:data|report)|listed)$/i, '');
+  // A longer count question may contain filters or a different measured field.
+  // Leave those to the existing filtered calculation path.
+  if (count && singularHeader(entity).split(' ').length > 1) return null;
+  const table = recordTable(reportData, entity);
+  if (!table) return null;
+  if (count) return `${table.rows.length} matching records.`;
+
+  const group = singularHeader(top ? top[2] : compare[2]);
+  const groupKeys = table.keys.filter((key) => singularHeader(key) === group);
+  if (groupKeys.length !== 1) return null;
+  const groupKey = groupKeys[0];
+  const totals = new Map();
+  for (const row of table.rows) {
+    const label = String(row?.[groupKey] ?? '').trim();
+    if (!label) continue;
+    const normalized = label.toLowerCase();
+    if (!totals.has(normalized)) totals.set(normalized, { label, count: 0 });
+    totals.get(normalized).count++;
+  }
+  const ranked = [...totals.values()].sort((a, b) => b.count - a.count ||
+    a.label.localeCompare(b.label));
+  if (!ranked.length) return null;
+  const limit = top ? Math.min(Number(top[1]), 30) : 30;
+  if (!limit) return null;
+  const shown = ranked.slice(0, limit);
+  const ties = top && ranked.length > limit && ranked[limit].count === shown.at(-1).count;
+  const lines = shown.map(({ label, count }) => `- ${label}: ${count} record${count === 1 ? '' : 's'}`);
+  return `${top ? `Top ${shown.length} ${top[2].trim()} by record count` : `Records by ${groupKey}`}:\n${lines.join('\n')}` +
+    (ties ? `\nOther ${top[2].trim()} tie at ${shown.at(-1).count} records.` :
+      !top && ranked.length > limit ? `\n${ranked.length - limit} more groups.` : '');
+}
+
 // Find an explicit record identifier in the full data, or reuse the last
 // identified record for a short follow-up. Never carry it across reports.
 function findRecord(reportData, question, context) {
@@ -291,6 +378,44 @@ function exactGroupRate(reportData, question) {
   return `${winner.group}: ${(winner.count / winner.total * 100).toFixed(2)}% ${value.toLowerCase()} (${winner.count} of ${winner.total} ${noun}).`;
 }
 
+function exactMetricExtremeWithDetails(reportData, question) {
+  const input = String(question ?? '').trim();
+  const match = input.match(/\b(highest|largest|maximum|max|lowest|smallest|minimum|min)\s+(.+?)(?:\s+and\s+(?:give|show|include|provide)\b.*)?\s*\??$/i);
+  if (!match) return null;
+  const direction = match[1].toLowerCase();
+  const measure = normalizedHeader(match[2].replace(/[?.,!]+$/, ''));
+  const candidates = [];
+  for (const [sheetName, data] of Object.entries(reportData || {})) {
+    if (data?.error) continue;
+    const raw = Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : [];
+    if (!raw.length) continue;
+    const keys = Object.keys(raw[0] || {});
+    const metrics = keys.filter((key) => normalizedHeader(key) === measure);
+    if (metrics.length !== 1) continue;
+    const rows = detailRows(raw);
+    const values = rows.map((row) => ({ row, value: numberValue(row?.[metrics[0]]) }))
+      .filter(({ value }) => value !== null);
+    if (values.length) candidates.push({ sheetName, metric: metrics[0], keys, values });
+  }
+  if (candidates.length !== 1) return null;
+  const { metric, keys, values } = candidates[0];
+  const highest = /^(highest|largest|maximum|max)$/.test(direction);
+  const extreme = (highest ? Math.max : Math.min)(...values.map(({ value }) => value));
+  const leaders = values.filter(({ value }) => value === extreme);
+  if (leaders.length !== 1) return null;
+  const row = leaders[0].row;
+  const decimals = /\b(?:salary|price|amount|cost|pay|wage)\b/.test(normalizedHeader(metric)) ? 2 : 0;
+  const amount = extreme.toLocaleString('en-US',
+    { minimumFractionDigits: decimals, maximumFractionDigits: Math.max(decimals, 2) });
+  const priority = (key) => /\b(?:name|title)\b/.test(normalizedHeader(key)) ? 3 :
+    /(?:^| )id$/.test(normalizedHeader(key)) ? 2 :
+    /\b(?:status|stage)\b/.test(normalizedHeader(key)) ? 1 : 0;
+  const details = keys.filter((key) => key !== metric && String(row[key] ?? '').trim() &&
+    numberValue(row[key]) === null).sort((a, b) => priority(b) - priority(a))
+    .slice(0, 7).map((key) => `${key}: ${String(row[key]).trim()}`);
+  return `${highest ? 'Highest' : 'Lowest'} ${metric}: ${amount}.${details.length ? `\n${details.join('\n')}` : ''}`;
+}
+
 function exactExtremumRecord(reportData, question) {
   const match = String(question).trim().match(/^which\s+([a-z][a-z -]*?)\s+has\s+(?:the\s+)?(highest|lowest|largest|smallest|maximum|minimum|most|fewest)\s+(.+?)\s*\??$/i);
   if (!match) return null;
@@ -383,6 +508,7 @@ function metricTokens(value) {
 function exactNumericTotal(reportData, question, context) {
   const followUp = /^(?:what|how)\s+about\b/i.test(String(question).trim());
   if (!followUp && !/\b(?:total|sum|how many)\b/i.test(question)) return null;
+  if (/\b(?:highest|largest|maximum|max|lowest|smallest|minimum|min)\b/i.test(question)) return null;
   const q = String(question).toLowerCase();
   const qTokens = metricTokens(q);
   const candidates = [];
@@ -422,7 +548,8 @@ function exactNumericTotal(reportData, question, context) {
     if (!scope && followUp && previous?.sheet === sheetName && previous.scopeKey)
       scope = { key: previous.scopeKey, value: previous.scopeValue };
     if (!scope && followUp) continue;
-    const selected = scope ? rows.filter((row) => String(row[scope.key] ?? '').trim().toLowerCase() === scope.value.toLowerCase()) : rows;
+    const selected = detailRows(scope ? rows.filter((row) =>
+      String(row[scope.key] ?? '').trim().toLowerCase() === scope.value.toLowerCase()) : rows);
     if (!selected.length) continue;
     // Match spreadsheet SUM behavior for blank metric cells while rejecting
     // nonblank text in a numeric measure.
@@ -489,32 +616,37 @@ function exactSubjectStatusCounts(reportData, question, context) {
     state: { sheet: match.sheet, subjectKey: match.subjectKey, statusKey: match.statusKey, labels: match.labels, noun } };
 }
 
-// Count SPs whose stage is not Completed. Require a real SP ID so trailing
-// totals or blank rows in the exported worksheet are never counted as SPs.
-function exactIncompleteSubprojectCount(reportData, question) {
+// Count a named category's complement using values and headers found in the
+// selected worksheets. Return no answer if multiple columns fit equally well.
+function exactNegatedCategoryCount(reportData, question) {
   const input = String(question ?? '');
-  if (!/\b(?:how many|count|number of)\b/i.test(input) ||
-      !/\b(?:sps?|subprojects?|sub-projects?)\b/i.test(input) ||
-      !/\b(?:not|non)\s+(?:yet\s+)?(?:(?:tagged|marked|classified|listed)\s+as\s+)?["']?completed\b/i.test(input))
-    return null;
-
-  const matches = Object.entries(reportData || {}).flatMap(([name, data]) => {
-    if (data?.error) return [];
-    const rows = Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : [];
-    if (!rows.length) return [];
-    const keys = Object.keys(rows[0] || {});
-    const statusKey = keys.find((key) => normalizedHeader(key) === 'sp status stage');
-    const idKey = keys.find((key) => normalizedHeader(key) === 'sp id');
-    return statusKey && idKey ? [{ name, rows, statusKey, idKey }] : [];
-  });
-  if (matches.length !== 1) return null;
-
-  const { rows, statusKey, idKey } = matches[0];
-  const validRows = rows.filter((row) => String(row?.[idKey] ?? '').trim());
-  const count = validRows.filter((row) =>
-    String(row?.[statusKey] ?? '').trim().toLowerCase() !== 'completed'
-  ).length;
-  return `${count} subproject${count === 1 ? '' : 's'} ${count === 1 ? 'is' : 'are'} not marked Completed.`;
+  if (!/\b(?:how many|count|number of)\b/i.test(input)) return null;
+  const negation = input.match(/\bnot\s+(?:yet\s+)?(?:(?:tagged|marked|classified|listed)\s+as\s+)?["']?(.+?)\s*\??$/i);
+  if (!negation) return null;
+  const afterNot = normalizedHeader(negation[1]);
+  const questionWords = new Set(normalizedHeader(input).split(' '));
+  const matches = [];
+  for (const [sheetName, data] of Object.entries(reportData || {})) {
+    if (data?.error) continue;
+    const raw = Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : [];
+    if (!raw.length) continue;
+    const rows = detailRows(raw);
+    for (const key of Object.keys(raw[0] || {})) {
+      const labels = [...new Set(rows.map((row) => String(row?.[key] ?? '').trim()).filter(Boolean))]
+        .filter((value) => value.length <= 70 && numberValue(value) === null &&
+          afterNot === normalizedHeader(value));
+      for (const label of labels) {
+        const overlap = normalizedHeader(key).split(' ').filter((word) => questionWords.has(word)).length;
+        if (overlap) matches.push({ sheetName, rows, key, label, overlap });
+      }
+    }
+  }
+  matches.sort((a, b) => b.overlap - a.overlap || b.rows.length - a.rows.length);
+  if (!matches.length || (matches[1] && matches[0].overlap === matches[1].overlap &&
+      matches[0].rows.length === matches[1].rows.length)) return null;
+  const { rows, key, label } = matches[0];
+  const count = rows.filter((row) => normalizedHeader(row?.[key]) !== normalizedHeader(label)).length;
+  return `${count} record${count === 1 ? '' : 's'} ${count === 1 ? 'has' : 'have'} ${key} other than ${label}.`;
 }
 
 // Answer simple categorical counts directly from all cells. Column names and
@@ -602,7 +734,7 @@ function resolveFollowUp(reportData, question, previousQuestion) {
   // Carry over a prior question only when the new subject occurs as a value
   // in the same report. Avoid inventing an interpretation of vague follow-ups.
   const exists = Object.values(reportData || {}).some((sheet) => {
-    const rows = Array.isArray(sheet) ? sheet : Array.isArray(sheet?.rows) ? sheet.rows : [];
+    const rows = detailRows(Array.isArray(sheet) ? sheet : Array.isArray(sheet?.rows) ? sheet.rows : []);
     return rows.some((row) => Object.values(row || {}).some((cell) =>
       String(cell ?? '').trim().toLowerCase() === value.toLowerCase()));
   });
@@ -621,7 +753,7 @@ function executePlan(reportData, plan, question = '') {
   for (const query of plan.queries) {
     const sheet = reportData?.[query.sheet];
     if (!sheet || sheet?.error) throw new Error("A required worksheet could not be read.");
-    const rows = Array.isArray(sheet) ? sheet : Array.isArray(sheet?.rows) ? sheet.rows : [];
+    const rows = detailRows(Array.isArray(sheet) ? sheet : Array.isArray(sheet?.rows) ? sheet.rows : []);
     if (!rows.length) throw new Error("A required worksheet has no readable rows.");
     const columns = new Set(Object.keys(rows[0] || {}));
     if (!['count', 'sum', 'average', 'minimum', 'maximum'].includes(query.operation) ||
@@ -723,7 +855,7 @@ function executeListPlan(reportData, plan, offset = 0) {
       throw new Error('The list could not be mapped to a worksheet.');
     const data = reportData?.[query.sheet];
     if (!data || data?.error) throw new Error('The selected worksheet could not be read.');
-    const rows = Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : [];
+    const rows = detailRows(Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : []);
     if (!rows.length) throw new Error('The selected worksheet has no readable rows.');
     const keys = Object.keys(rows[0] || {});
     if (distinct && !keys.includes(query.column))
@@ -942,6 +1074,8 @@ async function answerQuestion(reportData, question, conversationKey) {
     return finish(`${record.key} ${record.value} matches ${record.matches.length} records in ${record.sheets[0]}. Please include ${keys[0] || 'another identifier'} to select one.`);
   }
 
+  const metricExtreme = exactMetricExtremeWithDetails(reportData, question);
+  if (metricExtreme) return finish(metricExtreme);
   const extremeAnswer = exactExtremumRecord(reportData, question);
   if (extremeAnswer) return finish(extremeAnswer);
   const valueDifference = exactValueDifference(reportData, question);
@@ -960,6 +1094,9 @@ async function answerQuestion(reportData, question, conversationKey) {
   const fieldAnswer = recordFieldAnswer(record, fieldQuestion);
   if (fieldAnswer) return finish(fieldAnswer);
 
+  const recordCountAnswer = exactRecordAndGroupCounts(reportData, resolvedQuestion);
+  if (recordCountAnswer) return finish(recordCountAnswer);
+
   const listAnswer = distinctValueAnswer(reportData, question, context);
   if (listAnswer) {
     listed = true;
@@ -977,8 +1114,8 @@ async function answerQuestion(reportData, question, conversationKey) {
   const wantsList = /^(?:(?:list|show|name|enumerate|ilista|pakilista)\b|(?:what|which)\s+are\b|(?:give|provide)\s+(?:me\s+)?(?:a\s+list|the\s+list|all)\b|(?:ano-?ano|anu-?ano)\s+ang\s+mga\b)/i.test(listInput) &&
     !/^show\s+(?:me\s+)?(?:the\s+)?(?:total|sum|average|difference)\b/i.test(listInput);
   if (!wantsList) {
-    const incompleteCount = exactIncompleteSubprojectCount(reportData, resolvedQuestion);
-    if (incompleteCount) return finish(incompleteCount);
+    const negatedCount = exactNegatedCategoryCount(reportData, resolvedQuestion);
+    if (negatedCount) return finish(negatedCount);
 
     const rateAnswer = exactGroupRate(reportData, question);
     if (rateAnswer) return finish(rateAnswer);
