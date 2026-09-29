@@ -6,7 +6,7 @@ const api = axios.create({
 
 // Interceptor to add User ID for activity logging
 api.interceptors.request.use((config) => {
-  const storedUser = localStorage.getItem('user');
+  const storedUser = sessionStorage.getItem('user');
 
   if (storedUser) {
     const user = JSON.parse(storedUser);

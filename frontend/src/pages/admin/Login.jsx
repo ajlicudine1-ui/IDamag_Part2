@@ -37,10 +37,11 @@ function Login() {
     
     try {
       const res = await login({ username: username.trim(), password });
-      // Store user info in localStorage for "session"
-      localStorage.setItem('user', JSON.stringify(res.data));
+      // sessionStorage is scoped to this browser tab, so another tab can
+      // sign in as a different account without overwriting this session.
+      sessionStorage.setItem('user', JSON.stringify(res.data));
       clearPendingClose();
-      localStorage.setItem('idamag_auth_version', '2');
+      sessionStorage.setItem('idamag_auth_version', '2');
       const requested = location.state?.from;
       const requestedPath = requested
         ? `${requested.pathname}${requested.search || ''}${requested.hash || ''}`

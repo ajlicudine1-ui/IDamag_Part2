@@ -18,7 +18,7 @@ function ManagementLayout({ children, title }) {
   const dropdownRef = useRef(null);
 
   useEffect(() => {
-    const storedUser = localStorage.getItem('user');
+    const storedUser = sessionStorage.getItem('user');
     if (storedUser) {
       const parsedUser = JSON.parse(storedUser);
       setUser(parsedUser);
@@ -37,16 +37,17 @@ function ManagementLayout({ children, title }) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const handleLogout = async () => {
-    try {
-      if (user) {
-        await logLogout({ userId: user.id, email: user.email });
-      }
-    } catch (err) {
-      console.error('Failed to log logout:', err);
-    } finally {
-      localStorage.removeItem('user');
-      navigate('/login');
+  const handleLogout = () => {
+    const userToLogOut = user;
+    // End this tab's session immediately; a network/logging failure must not
+    // leave the user signed in or block the logout button.
+    sessionStorage.removeItem('user');
+    sessionStorage.removeItem('idamag_auth_version');
+    sessionStorage.removeItem('idamag_pending_close_at');
+    navigate('/login', { replace: true });
+    if (userToLogOut) {
+      logLogout({ userId: userToLogOut.id, email: userToLogOut.email })
+        .catch((err) => console.error('Failed to log logout:', err));
     }
   };
 
@@ -106,7 +107,7 @@ function ManagementLayout({ children, title }) {
       setPasswordState({ error: '', success: 'Password changed successfully!', loading: false });
       
       const updatedUser = { ...user, requiresPasswordChange: false };
-      localStorage.setItem('user', JSON.stringify(updatedUser));
+      sessionStorage.setItem('user', JSON.stringify(updatedUser));
       setUser(updatedUser);
 
       setTimeout(() => {

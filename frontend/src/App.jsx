@@ -127,7 +127,7 @@ function renderChatMessage(text) {
 
 function App() {
   const location = useLocation();
-  const showChatbot = location.pathname !== "/login" && location.pathname !== "/register" && Boolean(localStorage.getItem("user"));
+  const showChatbot = location.pathname !== "/login" && location.pathname !== "/register" && Boolean(sessionStorage.getItem("user"));
   const [isChatbotOpen, setIsChatbotOpen] =
     useState(false);
 
@@ -999,7 +999,7 @@ function App() {
         <Route
           path="/reports"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute requiresAdmin={true}>
               <StaffDashboard />
             </ProtectedRoute>
           }
