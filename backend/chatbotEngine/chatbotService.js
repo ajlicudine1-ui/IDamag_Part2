@@ -565,9 +565,12 @@ function exactNumericTotal(reportData, question, context) {
   const result = candidates[0];
   const singular = result.column.replace(/[_-]+/g, ' ').replace(/\bcount\b/gi, '').trim().toLowerCase();
   const noun = result.value === 1 || singular.endsWith('s') ? singular : `${singular}s`;
-  const place = result.scopeValue || `the ${result.sheet} data`;
-  const displayPlace = place.toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase());
-  return { answer: `${displayPlace} has ${result.value.toLocaleString('en-US')} ${noun}.`,
+  const measure = result.column.replace(/[_-]+/g, ' ').replace(/\bcount\b/gi, '').trim()
+    .replace(/^total\s+/i, '').replace(/\b[A-Z][a-z]+\b/g, (word) => word.toLowerCase()) || singular;
+  const answer = result.scopeValue
+    ? `${result.scopeValue} has ${result.value.toLocaleString('en-US')} ${noun}.`
+    : `The total ${measure} is ${result.value.toLocaleString('en-US')}.`;
+  return { answer,
     state: { sheet: result.sheet, column: result.column, scopeKey: result.scopeKey, scopeValue: result.scopeValue } };
 }
 
