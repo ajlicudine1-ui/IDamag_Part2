@@ -1782,14 +1782,8 @@ app.post(
         : "";
       const isAdminCreated = !req.body.password;
 
-      if (isAdminCreated && !req.body.email) {
-        return res.status(400).json({
-          message: "An email address is required when an administrator creates an account.",
-        });
-      }
-
       if (isAdminCreated && !username) {
-        const base = (email.split("@")[0] || "staff")
+        const base = "staff"
           .replace(/[^a-z0-9._-]/g, "")
           .slice(0, 32) || "staff";
         username = base;
@@ -1873,10 +1867,13 @@ app.post(
           req
         );
 
-        sendWelcomeEmail(
-          user.email,
-          plainPassword
-        );
+        if (user.email) {
+          await sendWelcomeEmail(
+            user.email,
+            plainPassword,
+            user.username
+          );
+        }
       } else {
         await logActivity(
           user.id,
@@ -1891,6 +1888,9 @@ app.post(
         user.toJSON();
 
       delete userResponse.password;
+      if (isAdminCreated && !user.email) {
+        userResponse.temporaryPassword = plainPassword;
+      }
 
       res
         .status(201)

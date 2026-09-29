@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import ManagementLayout from '../../components/management/ManagementLayout';
 import SearchableSelect from '../../components/common/SearchableSelect';
 import { getUsers, createUser, updateUser, deleteUser, getOffices, getDivisions, updateUserStatus } from '../../services/api';
-import { UserPlus, Shield, Mail, Building2, Layers, CheckCircle2, AlertCircle, Edit3, Trash2, ShieldCheck, ShieldOff, UserCheck, UserMinus } from 'lucide-react';
+import { UserPlus, Shield, Building2, Layers, CheckCircle2, AlertCircle, Edit3, Trash2, ShieldCheck, ShieldOff, UserCheck, UserMinus, Copy } from 'lucide-react';
 
 
 function UserManagement() {
@@ -12,11 +12,12 @@ function UserManagement() {
   const [divisions, setDivisions] = useState([]);
   const [selectedOffice, setSelectedOffice] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [newUser, setNewUser] = useState({ firstName: '', lastName: '', suffix: '', username: '', email: '', role: 'Staff', officeId: '', divisionId: '' });
+  const [newUser, setNewUser] = useState({ firstName: '', lastName: '', suffix: '', username: '', role: 'Staff', officeId: '', divisionId: '' });
   const [editingUser, setEditingUser] = useState(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [confirmConfig, setConfirmConfig] = useState({ title: '', message: '', action: null });
   const [error, setError] = useState('');
+  const [createdCredentials, setCreatedCredentials] = useState(null);
 
   // No longer needed: ProtectedRoute handles redirects
   useEffect(() => {
@@ -62,12 +63,13 @@ function UserManagement() {
       if (editingUser) {
         await updateUser(editingUser.id, newUser);
       } else {
-        await createUser(newUser);
+        const response = await createUser(newUser);
+        setCreatedCredentials({ username: response.data.username, password: response.data.temporaryPassword });
       }
       setIsModalOpen(false);
       setEditingUser(null);
       setShowConfirmModal(false);
-      setNewUser({ firstName: '', lastName: '', suffix: '', username: '', email: '', role: 'Staff', officeId: '', divisionId: '' });
+      setNewUser({ firstName: '', lastName: '', suffix: '', username: '', role: 'Staff', officeId: '', divisionId: '' });
       setSelectedOffice('');
       // Refresh users
       const res = await getUsers();
@@ -130,7 +132,6 @@ function UserManagement() {
       lastName: user.lastName || user.name?.split(' ').slice(1).join(' ') || '', 
       suffix: user.suffix || '',
       username: user.username || '',
-      email: user.email || '', 
       role: user.role, 
       officeId: user.officeId, 
       divisionId: user.divisionId 
@@ -141,13 +142,23 @@ function UserManagement() {
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingUser(null);
-    setNewUser({ firstName: '', lastName: '', suffix: '', username: '', email: '', role: 'Staff', officeId: '', divisionId: '' });
+    setNewUser({ firstName: '', lastName: '', suffix: '', username: '', role: 'Staff', officeId: '', divisionId: '' });
     setSelectedOffice('');
     setError('');
   };
 
   return (
     <ManagementLayout title="User Management">
+      {createdCredentials && (
+        <div className="mb-6 rounded-2xl border border-emerald-200 bg-emerald-50 p-5 text-emerald-900">
+          <div className="font-bold">Account created. Copy these temporary credentials and give them to the user:</div>
+          <div className="mt-2">Username: <strong>{createdCredentials.username}</strong></div>
+          <div className="mt-1 flex items-center gap-2">Temporary password: <strong>{createdCredentials.password}</strong>
+            <button type="button" className="rounded-lg p-1 hover:bg-emerald-100" title="Copy credentials" onClick={() => navigator.clipboard?.writeText(`Username: ${createdCredentials.username}\nTemporary password: ${createdCredentials.password}`)}><Copy size={16} /></button>
+          </div>
+          <button type="button" className="mt-3 text-sm font-bold underline" onClick={() => setCreatedCredentials(null)}>Dismiss</button>
+        </div>
+      )}
       <div className="space-y-8 animate-in fade-in duration-500">
         <div className="flex justify-between items-center">
           <div>
@@ -185,13 +196,8 @@ function UserManagement() {
                             : user.name}
                         </span>
                         <div className="text-slate-500 text-[10px] flex items-center gap-1 font-medium">
-                          <UserCheck size={9} /> {user.username || 'Username not set'}
+                          <UserCheck size={9} /> @{user.username || 'Username not set'}
                         </div>
-                        {user.email && (
-                          <div className="text-slate-400 text-[10px] flex items-center gap-1 font-medium">
-                            <Mail size={9} /> {user.email}
-                          </div>
-                        )}
                       </div>
                     </td>
                     <td className="px-6 py-3">
@@ -269,7 +275,7 @@ function UserManagement() {
               {!editingUser && (
                 <div className="mb-6 p-4 bg-blue-50 text-blue-700 rounded-2xl flex items-start gap-3 text-sm font-bold border border-blue-100 leading-snug">
                   <span className="flex-shrink-0 mt-0.5">ℹ️</span>
-                  <p>New users are automatically assigned a secure random password.<br/><span className="font-medium text-blue-600">Their temporary credentials will be sent to their email address. They will be forced to change this password prior to accessing the dashboard.</span></p>
+                  <p>New users are automatically assigned a secure random temporary password. Copy it after account creation and give it to the user. They must change it before accessing the dashboard.</p>
                 </div>
               )}
               {error && (
@@ -322,16 +328,6 @@ function UserManagement() {
                     onChange={(e) => setNewUser({...newUser, username: e.target.value.toLowerCase()})}
                     className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-moss-600/10 focus:border-moss-600 transition-all outline-none"
                     placeholder="Choose a username"
-                  />
-                </div>
-                <div className="md:col-span-1">
-                  <label className="block text-sm font-bold text-slate-700 mb-2">Contact Email (for account details)</label>
-                  <input
-                    type="email" required
-                    value={newUser.email}
-                    onChange={(e) => setNewUser({...newUser, email: e.target.value})}
-                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-moss-600/10 focus:border-moss-600 transition-all outline-none"
-                    placeholder="j.doe@da.gov.ph"
                   />
                 </div>
                 <div className="md:col-span-1">
