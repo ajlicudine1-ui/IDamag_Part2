@@ -1264,28 +1264,6 @@ function Register() {
 
           </p>
 
-
-          <div
-            className="
-              block
-            "
-          >
-
-            <Link
-              to="/"
-              className="
-                text-slate-400
-                hover:text-moss-600
-                text-[11px]
-                font-bold
-                transition-colors
-              "
-            >
-              ← Back to Public Site
-            </Link>
-
-          </div>
-
         </div>
 
       </div>
@@ -1298,3 +1276,4 @@ function Register() {
 
 
 export default Register;
+   
