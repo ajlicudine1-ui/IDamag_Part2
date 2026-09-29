@@ -7,16 +7,15 @@ const PublicRoute = ({ children, allowStaffHome = false }) => {
 
   let user;
   try {
-    user = JSON.parse(sessionStorage.getItem('user'));
+    user = JSON.parse(localStorage.getItem('user'));
   } catch {
-    sessionStorage.removeItem('user');
-    sessionStorage.removeItem('idamag_auth_version');
+    localStorage.removeItem('user');
   }
 
-  const sessionVersion = sessionStorage.getItem('idamag_auth_version');
+  const sessionVersion = localStorage.getItem('idamag_auth_version');
   if (sessionVersion !== '2') {
-    sessionStorage.removeItem('user');
-    sessionStorage.removeItem('idamag_auth_version');
+    localStorage.removeItem('user');
+    localStorage.removeItem('idamag_auth_version');
     return children;
   }
 

@@ -11,15 +11,15 @@ const Header = () => {
   const [menuOpen, setMenuOpen] = useState(false);
   let currentUser = null;
   try {
-    currentUser = JSON.parse(sessionStorage.getItem("user"));
+    currentUser = JSON.parse(localStorage.getItem("user"));
   } catch {
-    sessionStorage.removeItem("user");
+    localStorage.removeItem("user");
   }
 
   const handleLogout = () => {
-    sessionStorage.removeItem("user");
-    sessionStorage.removeItem("idamag_auth_version");
-    sessionStorage.removeItem("idamag_pending_close_at");
+    localStorage.removeItem("user");
+    localStorage.removeItem("idamag_auth_version");
+    localStorage.removeItem("idamag_pending_close_at");
     setMenuOpen(false);
     navigate("/login", { replace: true });
   };
