@@ -940,7 +940,13 @@ function App() {
 
         <Route
           path="/"
-          element={<ProtectedRoute><Home /></ProtectedRoute>}
+          element={
+            <ProtectedRoute>
+              <PublicRoute allowStaffHome>
+                <Home />
+              </PublicRoute>
+            </ProtectedRoute>
+          }
         />
 
         <Route
