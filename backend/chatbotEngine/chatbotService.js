@@ -489,6 +489,34 @@ function exactSubjectStatusCounts(reportData, question, context) {
     state: { sheet: match.sheet, subjectKey: match.subjectKey, statusKey: match.statusKey, labels: match.labels, noun } };
 }
 
+// Count SPs whose stage is not Completed. Require a real SP ID so trailing
+// totals or blank rows in the exported worksheet are never counted as SPs.
+function exactIncompleteSubprojectCount(reportData, question) {
+  const input = String(question ?? '');
+  if (!/\b(?:how many|count|number of)\b/i.test(input) ||
+      !/\b(?:sps?|subprojects?|sub-projects?)\b/i.test(input) ||
+      !/\b(?:not|non)\s+(?:yet\s+)?(?:(?:tagged|marked|classified|listed)\s+as\s+)?["']?completed\b/i.test(input))
+    return null;
+
+  const matches = Object.entries(reportData || {}).flatMap(([name, data]) => {
+    if (data?.error) return [];
+    const rows = Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : [];
+    if (!rows.length) return [];
+    const keys = Object.keys(rows[0] || {});
+    const statusKey = keys.find((key) => normalizedHeader(key) === 'sp status stage');
+    const idKey = keys.find((key) => normalizedHeader(key) === 'sp id');
+    return statusKey && idKey ? [{ name, rows, statusKey, idKey }] : [];
+  });
+  if (matches.length !== 1) return null;
+
+  const { rows, statusKey, idKey } = matches[0];
+  const validRows = rows.filter((row) => String(row?.[idKey] ?? '').trim());
+  const count = validRows.filter((row) =>
+    String(row?.[statusKey] ?? '').trim().toLowerCase() !== 'completed'
+  ).length;
+  return `${count} subproject${count === 1 ? '' : 's'} ${count === 1 ? 'is' : 'are'} not marked Completed.`;
+}
+
 // Answer simple categorical counts directly from all cells. Column names and
 // category labels come from the selected worksheet and the user's question.
 function exactCategoryCount(reportData, question) {
@@ -949,6 +977,9 @@ async function answerQuestion(reportData, question, conversationKey) {
   const wantsList = /^(?:(?:list|show|name|enumerate|ilista|pakilista)\b|(?:what|which)\s+are\b|(?:give|provide)\s+(?:me\s+)?(?:a\s+list|the\s+list|all)\b|(?:ano-?ano|anu-?ano)\s+ang\s+mga\b)/i.test(listInput) &&
     !/^show\s+(?:me\s+)?(?:the\s+)?(?:total|sum|average|difference)\b/i.test(listInput);
   if (!wantsList) {
+    const incompleteCount = exactIncompleteSubprojectCount(reportData, resolvedQuestion);
+    if (incompleteCount) return finish(incompleteCount);
+
     const rateAnswer = exactGroupRate(reportData, question);
     if (rateAnswer) return finish(rateAnswer);
 
