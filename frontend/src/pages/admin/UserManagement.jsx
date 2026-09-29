@@ -185,7 +185,7 @@ function UserManagement() {
                             : user.name}
                         </span>
                         <div className="text-slate-500 text-[10px] flex items-center gap-1 font-medium">
-                          <UserCheck size={9} /> @{user.username || 'Username not set'}
+                          <UserCheck size={9} /> {user.username || 'Username not set'}
                         </div>
                         {user.email && (
                           <div className="text-slate-400 text-[10px] flex items-center gap-1 font-medium">
