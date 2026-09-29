@@ -12,7 +12,7 @@ function UserManagement() {
   const [divisions, setDivisions] = useState([]);
   const [selectedOffice, setSelectedOffice] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [newUser, setNewUser] = useState({ firstName: '', lastName: '', suffix: '', email: '', role: 'Staff', officeId: '', divisionId: '' });
+  const [newUser, setNewUser] = useState({ firstName: '', lastName: '', suffix: '', username: '', email: '', role: 'Staff', officeId: '', divisionId: '' });
   const [editingUser, setEditingUser] = useState(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [confirmConfig, setConfirmConfig] = useState({ title: '', message: '', action: null });
@@ -67,7 +67,7 @@ function UserManagement() {
       setIsModalOpen(false);
       setEditingUser(null);
       setShowConfirmModal(false);
-      setNewUser({ firstName: '', lastName: '', suffix: '', email: '', role: 'Staff', officeId: '', divisionId: '' });
+      setNewUser({ firstName: '', lastName: '', suffix: '', username: '', email: '', role: 'Staff', officeId: '', divisionId: '' });
       setSelectedOffice('');
       // Refresh users
       const res = await getUsers();
@@ -129,7 +129,8 @@ function UserManagement() {
       firstName: user.firstName || user.name?.split(' ')[0] || '', 
       lastName: user.lastName || user.name?.split(' ').slice(1).join(' ') || '', 
       suffix: user.suffix || '',
-      email: user.email, 
+      username: user.username || '',
+      email: user.email || '', 
       role: user.role, 
       officeId: user.officeId, 
       divisionId: user.divisionId 
@@ -140,7 +141,7 @@ function UserManagement() {
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingUser(null);
-    setNewUser({ firstName: '', lastName: '', suffix: '', email: '', role: 'Staff', officeId: '', divisionId: '' });
+    setNewUser({ firstName: '', lastName: '', suffix: '', username: '', email: '', role: 'Staff', officeId: '', divisionId: '' });
     setSelectedOffice('');
     setError('');
   };
@@ -183,9 +184,14 @@ function UserManagement() {
                             ? `${user.firstName || ''} ${user.lastName || ''} ${user.suffix ? user.suffix : ''}`.trim() 
                             : user.name}
                         </span>
-                        <div className="text-slate-400 text-[10px] flex items-center gap-1 font-medium">
-                          <Mail size={9} /> {user.email}
+                        <div className="text-slate-500 text-[10px] flex items-center gap-1 font-medium">
+                          <UserCheck size={9} /> @{user.username || 'Username not set'}
                         </div>
+                        {user.email && (
+                          <div className="text-slate-400 text-[10px] flex items-center gap-1 font-medium">
+                            <Mail size={9} /> {user.email}
+                          </div>
+                        )}
                       </div>
                     </td>
                     <td className="px-6 py-3">
@@ -304,8 +310,23 @@ function UserManagement() {
                   />
                 </div>
                 <div className="md:col-span-1">
-                  <label className="block text-sm font-bold text-slate-700 mb-2">Email Address</label>
-                  <input 
+                  <label className="block text-sm font-bold text-slate-700 mb-2">Username</label>
+                  <input
+                    type="text"
+                    required
+                    minLength={3}
+                    maxLength={40}
+                    pattern="[A-Za-z0-9._-]+"
+                    autoComplete="username"
+                    value={newUser.username}
+                    onChange={(e) => setNewUser({...newUser, username: e.target.value.toLowerCase()})}
+                    className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-moss-600/10 focus:border-moss-600 transition-all outline-none"
+                    placeholder="Choose a username"
+                  />
+                </div>
+                <div className="md:col-span-1">
+                  <label className="block text-sm font-bold text-slate-700 mb-2">Contact Email (for account details)</label>
+                  <input
                     type="email" required
                     value={newUser.email}
                     onChange={(e) => setNewUser({...newUser, email: e.target.value})}

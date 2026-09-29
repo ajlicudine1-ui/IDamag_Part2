@@ -175,7 +175,7 @@ function ActivityLog() {
                               <span className="text-slate-700 font-bold text-[11px] truncate leading-tight">
                                 {log.user.firstName} {log.user.lastName}
                               </span>
-                              <span className="text-slate-400 text-[9px] truncate leading-none">{log.user.email}</span>
+                              <span className="text-slate-400 text-[9px] truncate leading-none">@{log.user.username || 'Username not set'}</span>
                             </div>
                           </div>
                         ) : (

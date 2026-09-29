@@ -41,7 +41,7 @@ const managementSteps = [
     id: 1,
     title: "Login to the Management Portal",
     description:
-      "Enter your authorized email address and password to access the iDAMAG management portal.",
+      "Enter your authorized username and password to access the iDAMAG management portal.",
     image: "/iDAMAG/For Management Users/1.png",
     icon: Lock,
     section: "getting-started",
