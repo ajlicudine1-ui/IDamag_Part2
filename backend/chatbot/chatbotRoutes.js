@@ -734,11 +734,17 @@ function getConversationTtlHours() {
 
 function buildConversationKey(
   sessionId,
-  reportId
+  reportId,
+  worksheetName = ""
 ) {
+  const worksheetSuffix = String(worksheetName || "").trim()
+    ? `::worksheet:${encodeURIComponent(String(worksheetName).trim().toLowerCase())}`
+    : "";
+
   return (
     `${String(sessionId).trim()}` +
-    `::report:${Number(reportId)}`
+    `::report:${Number(reportId)}` +
+    worksheetSuffix
   );
 }
 
@@ -757,11 +763,13 @@ function cloneSerializableState(
 async function hydrateConversationState({
   sessionId,
   reportId,
+  worksheetName = "",
 }) {
   const conversationKey =
     buildConversationKey(
       sessionId,
-      reportId
+      reportId,
+      worksheetName
     );
 
   const stored =
@@ -956,6 +964,9 @@ router.post("/chat", async (req, res) => {
       req.body?.reportId
     );
 
+    const worksheetName = String(
+      req.body?.worksheetName || ""
+    ).trim();
 
     const sessionId = String(
       req.body?.sessionId || ""
@@ -966,6 +977,7 @@ router.post("/chat", async (req, res) => {
       "Parsed request:",
       {
         reportId,
+        worksheetName: worksheetName || "All worksheets",
         question,
         sessionId
       }
@@ -1097,9 +1109,29 @@ router.post("/chat", async (req, res) => {
     }
 
 
+    let selectedReportData = reportData;
+
+    if (worksheetName) {
+      const matchingWorksheet = Object.keys(reportData).find(
+        (name) => name.trim().toLowerCase() === worksheetName.toLowerCase()
+      );
+
+      if (!matchingWorksheet) {
+        return res.status(400).json({
+          success: false,
+          message: `Worksheet "${worksheetName}" is not connected to this dashboard.`,
+          availableWorksheets: Object.keys(reportData),
+        });
+      }
+
+      selectedReportData = {
+        [matchingWorksheet]: reportData[matchingWorksheet],
+      };
+    }
+
     const availableSheets =
       Object.keys(
-        reportData
+        selectedReportData
       );
 
 
@@ -1136,7 +1168,7 @@ router.post("/chat", async (req, res) => {
     ) {
 
       const sheet =
-        reportData[
+        selectedReportData[
           sheetName
         ];
 
@@ -1205,6 +1237,7 @@ router.post("/chat", async (req, res) => {
       await hydrateConversationState({
         sessionId,
         reportId,
+        worksheetName,
       });
 
     console.log(
@@ -1214,7 +1247,7 @@ router.post("/chat", async (req, res) => {
 
     const result =
       await answerQuestion(
-        reportData,
+        selectedReportData,
         question,
         conversationKey
       );

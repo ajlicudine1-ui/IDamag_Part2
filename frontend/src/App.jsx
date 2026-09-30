@@ -190,6 +190,10 @@ function App() {
     useState(null);
   const [selectedReport, setSelectedReport] =
     useState(null);
+  const [selectedWorksheet, setSelectedWorksheet] =
+    useState("");
+  const [isPublicDashboardContext, setIsPublicDashboardContext] =
+    useState(false);
 
   // Selection loading and errors
   const [selectionLoading, setSelectionLoading] =
@@ -244,9 +248,11 @@ function App() {
       };
 
       setIsChatbotOpen(true);
+      setIsPublicDashboardContext(true);
       setSelectedDivision(normalizedCategory);
       setSelectedOffice(normalizedSection);
       setSelectedReport(null);
+      setSelectedWorksheet("");
       setOffices([normalizedSection]);
       setReports([]);
       setQuestion("");
@@ -277,6 +283,13 @@ function App() {
             title: report.title || "Untitled Dashboard",
             description: report.description || "",
             hasSheet: true,
+            worksheets: Array.isArray(report.worksheets)
+              ? report.worksheets.map((worksheet) => ({
+                  id: Number(worksheet.id),
+                  name: worksheet.name || "Unnamed worksheet",
+                  gid: worksheet.gid || "",
+                }))
+              : [],
           }));
 
         setReports(connectedReports);
@@ -299,10 +312,13 @@ function App() {
 
         if (matchingReport) {
           setSelectedReport(matchingReport);
+          setSelectedWorksheet("");
           setMessages([
             {
               role: "bot",
-              text: `Hello! You selected "${matchingReport.title}" in ${normalizedSection.name}. Ask me a question about its connected Google Sheet data.`,
+              text: matchingReport.worksheets.length
+                ? `Hello! You selected "${matchingReport.title}". Its available worksheets are listed below. Choose one to focus your questions, or leave "All worksheets" selected.`
+                : `Hello! You selected "${matchingReport.title}". Ask me a question about its connected Google Sheet data.`,
             },
           ]);
         } else {
@@ -314,6 +330,7 @@ function App() {
             hasSheet: false,
           };
           setSelectedReport(reportWithoutChatData);
+          setSelectedWorksheet("");
           setMessages([
             {
               role: "bot",
@@ -456,6 +473,7 @@ function App() {
     setSelectedDivision(null);
     setSelectedOffice(null);
     setSelectedReport(null);
+    setSelectedWorksheet("");
 
     setOffices([]);
     setReports([]);
@@ -577,7 +595,7 @@ function App() {
    * Load offices/sections after selecting a division.
    */
   useEffect(() => {
-    if (!selectedDivision?.id) {
+    if (!selectedDivision?.id || isPublicDashboardContext) {
       return;
     }
 
@@ -673,14 +691,14 @@ function App() {
     return () => {
       isMounted = false;
     };
-  }, [selectedDivision]);
+  }, [selectedDivision, isPublicDashboardContext]);
 
   /*
    * Step 3:
    * Load reports after selecting an office/section.
    */
   useEffect(() => {
-    if (!selectedOffice?.id) {
+    if (!selectedOffice?.id || isPublicDashboardContext) {
       return;
     }
 
@@ -737,6 +755,13 @@ function App() {
               hasSheet: Boolean(
                 report.hasSheet
               ),
+              worksheets: Array.isArray(report.worksheets)
+                ? report.worksheets.map((worksheet) => ({
+                    id: Number(worksheet.id),
+                    name: worksheet.name || "Unnamed worksheet",
+                    gid: worksheet.gid || "",
+                  }))
+                : [],
             }))
           );
         }
@@ -766,7 +791,7 @@ function App() {
     return () => {
       isMounted = false;
     };
-  }, [selectedOffice]);
+  }, [selectedOffice, isPublicDashboardContext]);
 
   const handleToggleChatbot = () => {
     setIsChatbotOpen((current) => !current);
@@ -774,14 +799,17 @@ function App() {
 
   const handleCloseChatbot = () => {
     setIsChatbotOpen(false);
+    setIsPublicDashboardContext(false);
     resetChatbot();
   };
 
   const handleSelectDivision = (division) => {
+    setIsPublicDashboardContext(false);
     setSelectedDivision(division);
 
     setSelectedOffice(null);
     setSelectedReport(null);
+    setSelectedWorksheet("");
 
     setOffices([]);
     setReports([]);
@@ -792,9 +820,11 @@ function App() {
   };
 
   const handleSelectOffice = (office) => {
+    setIsPublicDashboardContext(false);
     setSelectedOffice(office);
 
     setSelectedReport(null);
+    setSelectedWorksheet("");
     setReports([]);
 
     setMessages([]);
@@ -804,6 +834,7 @@ function App() {
 
   const handleSelectReport = (report) => {
     setSelectedReport(report);
+    setSelectedWorksheet("");
 
     setSelectionError("");
     setQuestion("");
@@ -822,7 +853,9 @@ function App() {
     setMessages([
       {
         role: "bot",
-        text: `Hello! You selected "${report.title}". Ask me a question about its connected Google Sheet data.`,
+        text: Array.isArray(report.worksheets) && report.worksheets.length
+          ? `Hello! You selected "${report.title}". Its available worksheets are listed below. Choose one to focus your questions, or leave "All worksheets" selected.`
+          : `Hello! You selected "${report.title}". Ask me a question about its connected Google Sheet data.`,
       },
     ]);
   };
@@ -836,6 +869,7 @@ function App() {
     }
 
     if (selectedOffice) {
+      setIsPublicDashboardContext(false);
       setSelectedOffice(null);
       setSelectedReport(null);
 
@@ -848,6 +882,7 @@ function App() {
     }
 
     if (selectedDivision) {
+      setIsPublicDashboardContext(false);
       setSelectedDivision(null);
       setSelectedOffice(null);
       setSelectedReport(null);
@@ -938,6 +973,8 @@ function App() {
             reportId: Number(
               selectedReport.id
             ),
+
+            worksheetName: selectedWorksheet || null,
 
             sessionId:
               getChatSessionId(),
@@ -1684,6 +1721,11 @@ function App() {
                                 ? "Google Sheet connected"
                                 : "No Google Sheet connected"}
                             </p>
+                            {report.hasSheet && report.worksheets?.length > 0 && (
+                              <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
+                                Available worksheets: {report.worksheets.map((worksheet) => worksheet.name).join(", ")}
+                              </p>
+                            )}
                           </div>
 
                           <span className="shrink-0 text-xl text-[#7AA574] transition group-hover:translate-x-1 group-hover:text-[#235E26]">
@@ -1731,10 +1773,59 @@ function App() {
                     }`}
                   >
                     {selectedReport.hasSheet
-                      ? "Using the connected Google Sheet"
+                      ? selectedWorksheet
+                        ? `Worksheet: ${selectedWorksheet}`
+                        : "Using the connected Google Sheet"
                       : "No Google Sheet is connected"}
                   </p>
                 </div>
+
+                {selectedReport.hasSheet && Array.isArray(selectedReport.worksheets) && selectedReport.worksheets.length > 0 && (
+                  <div className="shrink-0 border-b border-[#D7E7D5] bg-white px-3 py-2.5">
+                    <p className="mb-2 text-[10px] font-bold uppercase tracking-wide text-[#235E26]">
+                      Available worksheets
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedWorksheet("");
+                          setMessages([{
+                            role: "bot",
+                            text: `All worksheets in "${selectedReport.title}" are available for your questions.`,
+                          }]);
+                        }}
+                        className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
+                          !selectedWorksheet
+                            ? "border-[#2F6F32] bg-[#2F6F32] text-white"
+                            : "border-[#B8D5B6] bg-white text-[#235E26] hover:bg-[#EAF4E8]"
+                        }`}
+                      >
+                        All worksheets
+                      </button>
+                      {selectedReport.worksheets.map((worksheet) => (
+                        <button
+                          key={worksheet.id || worksheet.name}
+                          type="button"
+                          onClick={() => {
+                            setSelectedWorksheet(worksheet.name);
+                            setMessages([{
+                              role: "bot",
+                              text: `Worksheet "${worksheet.name}" selected. Ask a question about this worksheet.`,
+                            }]);
+                          }}
+                          className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
+                            selectedWorksheet === worksheet.name
+                              ? "border-[#2F6F32] bg-[#2F6F32] text-white"
+                              : "border-[#B8D5B6] bg-white text-[#235E26] hover:bg-[#EAF4E8]"
+                          }`}
+                        >
+                          {worksheet.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* Messages */}
 
