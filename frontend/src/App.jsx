@@ -206,6 +206,110 @@ function App() {
   const [chatLoading, setChatLoading] =
     useState(false);
 
+  // A report selected on the public dashboard page can directly set the
+  // floating chatbot's context. The chatbot API already provides hasSheet.
+  useEffect(() => {
+    const handlePublicDashboardSelected = async (event) => {
+      const publicReport = event.detail || {};
+      const reportId = Number(publicReport.id);
+      const divisionId = Number(publicReport.divisionId);
+
+      if (!Number.isInteger(reportId) || reportId <= 0) {
+        return;
+      }
+
+      setIsChatbotOpen(true);
+      setSelectedDivision(null);
+      setSelectedOffice(null);
+      setSelectedReport({
+        id: reportId,
+        title: publicReport.title || "Selected dashboard",
+        description: publicReport.description || "",
+        hasSheet: false,
+      });
+      setOffices([]);
+      setReports([]);
+      setQuestion("");
+      setMessages([]);
+      setSelectionError("");
+      setSelectionLoading(true);
+
+      try {
+        if (!Number.isInteger(divisionId) || divisionId <= 0) {
+          throw new Error("Dashboard category information is missing.");
+        }
+
+        const response = await fetch(
+          `${API_URL}/chatbot/reports?officeId=${encodeURIComponent(divisionId)}`,
+          {
+            method: "GET",
+            headers: { Accept: "application/json" },
+          }
+        );
+        const data = await readJsonResponse(response);
+
+        if (!response.ok) {
+          throw new Error(
+            data.message || data.error || "Unable to load the selected dashboard."
+          );
+        }
+
+        const matchingReport = (Array.isArray(data.reports) ? data.reports : [])
+          .find((report) => Number(report.id) === reportId);
+
+        if (!matchingReport) {
+          throw new Error("The selected dashboard is not available to the chatbot.");
+        }
+
+        const normalizedReport = {
+          id: Number(matchingReport.id),
+          title: matchingReport.title || publicReport.title || "Selected dashboard",
+          description: matchingReport.description || publicReport.description || "",
+          hasSheet: Boolean(matchingReport.hasSheet),
+        };
+
+        setSelectedReport(normalizedReport);
+        setMessages([
+          {
+            role: "bot",
+            text: normalizedReport.hasSheet
+              ? `Hello! You selected "${normalizedReport.title}". Ask me a question about its connected Google Sheet data.`
+              : `"${normalizedReport.title}" does not have chatbot worksheets connected yet.`,
+          },
+        ]);
+      } catch (error) {
+        console.error("Unable to set chatbot dashboard context:", error);
+        setSelectedReport((current) =>
+          current?.id === reportId
+            ? { ...current, hasSheet: false }
+            : current
+        );
+        setMessages([
+          {
+            role: "bot",
+            text:
+              error.message ||
+              "Unable to load this dashboard in the chatbot. Please choose it from the chatbot list.",
+          },
+        ]);
+      } finally {
+        setSelectionLoading(false);
+      }
+    };
+
+    window.addEventListener(
+      "idamag:public-dashboard-selected",
+      handlePublicDashboardSelected
+    );
+
+    return () => {
+      window.removeEventListener(
+        "idamag:public-dashboard-selected",
+        handlePublicDashboardSelected
+      );
+    };
+  }, []);
+
   // Stop capturing audio when the chat closes or the selected report changes.
   useEffect(() => {
     return () => {
@@ -321,7 +425,7 @@ function App() {
    * Load top-level divisions from the offices table.
    */
   useEffect(() => {
-    if (!isChatbotOpen || divisions.length > 0) {
+    if (!isChatbotOpen || divisions.length > 0 || selectedReport) {
       return;
     }
 
@@ -414,7 +518,7 @@ function App() {
     return () => {
       isMounted = false;
     };
-  }, [isChatbotOpen, divisions.length]);
+  }, [isChatbotOpen, divisions.length, selectedReport]);
 
   /*
    * Step 2:

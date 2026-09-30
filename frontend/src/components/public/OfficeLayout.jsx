@@ -189,13 +189,22 @@ function OfficeLayout() {
     };
   }, [officeId]);
 
-  // Auto-collapse the sidebar when a report opens.
-  // Because this only runs when selectedReport changes, the user can
-  // still expand/collapse the sidebar manually while viewing the report.
+  // Auto-collapse the sidebar when a report opens and tell the floating
+  // chatbot which dashboard the visitor selected.
   useEffect(() => {
-    if (selectedReport) {
-      setIsManualCollapsed(true);
-    }
+    if (!selectedReport) return;
+
+    setIsManualCollapsed(true);
+    window.dispatchEvent(
+      new CustomEvent("idamag:public-dashboard-selected", {
+        detail: {
+          id: selectedReport.id,
+          title: selectedReport.title,
+          description: selectedReport.description || "",
+          divisionId: selectedReport.divisionId,
+        },
+      })
+    );
   }, [selectedReport]);
 
   // Load reports when the selected division changes
