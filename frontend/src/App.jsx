@@ -470,6 +470,7 @@ function App() {
   }, []);
 
   const resetChatbot = () => {
+    setIsPublicDashboardContext(false);
     setSelectedDivision(null);
     setSelectedOffice(null);
     setSelectedReport(null);
@@ -484,6 +485,25 @@ function App() {
     setSelectionError("");
     setChatLoading(false);
   };
+
+  // Clicking any React Router link to Home resets the chatbot's dashboard
+  // and worksheet context while leaving the floating chatbot open.
+  useEffect(() => {
+    const handleHomeClick = (event) => {
+      if (!(event.target instanceof Element)) return;
+
+      const homeLink = event.target.closest('a[href="/"]');
+      if (!homeLink) return;
+
+      resetChatbot();
+      setSelectionLoading(false);
+    };
+
+    document.addEventListener("click", handleHomeClick, true);
+    return () => {
+      document.removeEventListener("click", handleHomeClick, true);
+    };
+  }, []);
 
   /*
    * Step 1:
