@@ -247,7 +247,12 @@ function App() {
         divisionId: categoryId,
       };
 
-      setIsChatbotOpen(true);
+      // A category/subcategory click updates the chatbot's context in the
+      // background. Open the chat automatically only when a dashboard itself
+      // was selected.
+      if (openSelectedReport) {
+        setIsChatbotOpen(true);
+      }
       setIsPublicDashboardContext(true);
       setSelectedDivision(normalizedCategory);
       setSelectedOffice(normalizedSection);
