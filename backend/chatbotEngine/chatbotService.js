@@ -1014,19 +1014,22 @@ function executeListPlan(reportData, plan, offset = 0) {
     if (distinct && !keys.includes(query.column))
       throw new Error('The requested list column does not exist.');
     for (const filter of query.filters) {
-      if (!keys.includes(filter.column) || !['equals', 'minimum', 'maximum'].includes(filter.operator) ||
-          (filter.operator === 'equals' && (typeof filter.value !== 'string' || filter.value.length > 150)))
+      if (!keys.includes(filter.column) || !['equals', 'contains', 'minimum', 'maximum'].includes(filter.operator) ||
+          (['equals', 'contains'].includes(filter.operator) &&
+            (typeof filter.value !== 'string' || filter.value.length > 150 ||
+              (filter.operator === 'contains' && !filter.value.trim()))))
         throw new Error('A list filter does not match the worksheet.');
     }
-    const equalsFilters = query.filters.filter((filter) => filter.operator === 'equals');
+    const equalsFilters = query.filters.filter((filter) => ['equals', 'contains'].includes(filter.operator));
     let selected = rows.map((row, index) => ({ row, index })).filter(({ row }) =>
       equalsFilters.every((filter) => {
         const cell = String(row?.[filter.column] ?? '').trim();
         const exact = String(filter.value).trim();
+        if (filter.operator === 'contains') return cell.toLowerCase().includes(exact.toLowerCase());
         const a = numberValue(cell), b = numberValue(exact);
         return a !== null && b !== null ? a === b : cell.toLowerCase() === exact.toLowerCase();
       }));
-    for (const filter of query.filters.filter((item) => item.operator !== 'equals')) {
+    for (const filter of query.filters.filter((item) => ['minimum', 'maximum'].includes(item.operator))) {
       const values = selected.map(({ row }) => numberValue(row[filter.column])).filter((value) => value !== null);
       if (!values.length) { selected = []; break; }
       const target = values.reduce((current, value) => filter.operator === 'minimum'
@@ -1206,7 +1209,7 @@ All questions requiring record facts, associations, lists, counts, totals, compa
 Resolve they/them/those and short confirmations using the prior verified query and transcript. For a follow-up about another field, retain the prior worksheet and filters and project the requested fields from the same records. To show associations, include both the original entity field and the requested associated field. A new scope replaces the old scope filter. A genuinely new topic does not inherit old filters. Always explicitly provide the resulting filters; never rely on the server to guess missing scope. Mark followUp accordingly.
 Distinguish records from unique people and equipment units. rows preserves repeated entries. distinct lists unique nonblank field values; countDistinct counts unique nonblank values after trimming and ignoring case, without assuming differently spelled names are the same person. For a confirmation of a representative list, return both count with column:null and countDistinct of the representative field under the same filters. For a list of representative entries, use rows. For explicitly unique names, use distinct. count with column:null counts records; sum Quantity counts equipment units. Do not merge name variants without evidence.
 Use only requested display fields. Association questions require the paired fields, e.g. representative AND machinery. Location/person of the highest individual value: maximum/minimum with groupBy:null, output:records and requested identifying fields. Highest combined total by a group: sum with groupBy set to that field. Highest average by a group: average with groupBy. For top N/bottom N use limit:N. For top machinery TYPES by cost use maximum, groupBy:Machinery, column:Total Project Cost. Preserve ties. Map natural synonyms to actual columns. Use an appropriate program worksheet if consolidated lacks the measure. Never combine consolidated data and repeated program sheets.
-rows/distinct filters support equals/minimum/maximum. Numeric calculation filters support equals/contains. countDistinct supports equals/contains. minimum/maximum filters select all tied numeric rows within the other filters. For lowest/highest row lists use minimum/maximum filters on the measure. Do not add a numeric threshold for overview questions. Up to five queries per request. Multiple list queries must have the same operation. Missing scope/measure only needs clarification when genuinely ambiguous. Use next only to continue a paginated verified list. overview describes fields and dataset coverage, without claiming record results. conversation is for greetings or general questions unrelated to record facts.`;
+rows/distinct filters support equals/contains/minimum/maximum. Use contains for one commodity inside a multi-value cell, e.g. Commodities contains sugarcane, and equals for a full province name. For associations that produce ALL listed commodities, use one contains filter per commodity (AND). For ANY/OR requests, use one list query per alternative with shared scope, returning distinct Association values to deduplicate. contains values may be user-requested substrings and need not match an entire example cell. Select a worksheet actually containing the requested entity, commodity and location fields rather than a cost-only worksheet. Schema examples are incomplete: a requested substring missing from examples still needs a query against all rows. Numeric calculation filters support equals/contains. countDistinct supports equals/contains. minimum/maximum filters select all tied numeric rows within the other filters. For lowest/highest row lists use minimum/maximum filters on the measure. Do not add a numeric threshold for overview questions. Up to five queries per request. Multiple list queries must have the same operation. Missing scope/measure only needs clarification when genuinely ambiguous. Use next only to continue a paginated verified list. overview describes fields and dataset coverage, without claiming record results. conversation is for greetings or general questions unrelated to record facts.`;
 
 async function requestPlannedAnswer(messages, apiKey) {
   const controller = new AbortController();
