@@ -22,6 +22,7 @@ import FloatingChatbotButton from "./components/public/FloatingChatbotButton";
 import UserGuide from "./components/public/UserGuide";
 import FeedbackManagement from "./pages/admin/FeedbackManagement";
 import { clearPendingClose, expireSessionAfterCloseGrace, markAppClosed } from "./components/auth/sessionTimeout";
+import { sortOfficesForDisplay } from "./constants/offices";
 
 /*
  * Supports either:
@@ -558,7 +559,7 @@ function App() {
           : [];
 
         const normalizedDivisions =
-          divisionList.map((division, index) => ({
+          sortOfficesForDisplay(divisionList).map((division, index) => ({
             id: Number(division.id),
 
             code:
@@ -1300,16 +1301,15 @@ function App() {
             shadow-2xl
           "
           style={
-            isMobileChatbot
+          isMobileChatbot
               ? {
-                  top: "88px",
-                  left: "12px",
-                  right: "12px",
+                  top: "calc(env(safe-area-inset-top, 0px) + 76px)",
+                  left: "max(8px, env(safe-area-inset-left, 0px))",
+                  right: "max(8px, env(safe-area-inset-right, 0px))",
+                  bottom: "max(8px, env(safe-area-inset-bottom, 0px))",
                   width: "auto",
-                  height:
-                    "calc(100dvh - 105px)",
-                  maxHeight:
-                    "calc(100dvh - 105px)",
+                  height: "auto",
+                  maxHeight: "none",
                 }
               : {
                   left: `${chatbotPopupLeft}px`,
