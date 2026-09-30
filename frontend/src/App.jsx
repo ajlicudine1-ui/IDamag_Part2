@@ -206,28 +206,48 @@ function App() {
   const [chatLoading, setChatLoading] =
     useState(false);
 
-  // A report selected on the public dashboard page can directly set the
-  // floating chatbot's context. The chatbot API already provides hasSheet.
+  // Keep the floating chatbot scoped to the category and section selected
+  // on the public dashboard page.
   useEffect(() => {
-    const handlePublicDashboardSelected = async (event) => {
-      const publicReport = event.detail || {};
-      const reportId = Number(publicReport.id);
-      const divisionId = Number(publicReport.divisionId);
+    const applyPublicSelection = async (event, openSelectedReport) => {
+      const detail = event.detail || {};
+      const category = detail.category || {};
+      const section = detail.section || {};
+      const categoryId = Number(category.id);
+      const sectionId = Number(section.id);
+      const selectedReportId = openSelectedReport
+        ? Number(detail.report?.id)
+        : null;
 
-      if (!Number.isInteger(reportId) || reportId <= 0) {
+      if (
+        !Number.isInteger(categoryId) ||
+        categoryId <= 0 ||
+        !Number.isInteger(sectionId) ||
+        sectionId <= 0 ||
+        (openSelectedReport && (!Number.isInteger(selectedReportId) || selectedReportId <= 0))
+      ) {
         return;
       }
 
+      const normalizedCategory = {
+        id: categoryId,
+        code: category.acronym || category.code || "",
+        acronym: category.acronym || category.code || "",
+        name: category.name || "Selected Category",
+      };
+      const normalizedSection = {
+        id: sectionId,
+        code: section.acronym || section.code || "",
+        acronym: section.acronym || section.code || "",
+        name: section.name || "Selected Subcategory",
+        divisionId: categoryId,
+      };
+
       setIsChatbotOpen(true);
-      setSelectedDivision(null);
-      setSelectedOffice(null);
-      setSelectedReport({
-        id: reportId,
-        title: publicReport.title || "Selected dashboard",
-        description: publicReport.description || "",
-        hasSheet: false,
-      });
-      setOffices([]);
+      setSelectedDivision(normalizedCategory);
+      setSelectedOffice(normalizedSection);
+      setSelectedReport(null);
+      setOffices([normalizedSection]);
       setReports([]);
       setQuestion("");
       setMessages([]);
@@ -235,12 +255,8 @@ function App() {
       setSelectionLoading(true);
 
       try {
-        if (!Number.isInteger(divisionId) || divisionId <= 0) {
-          throw new Error("Dashboard category information is missing.");
-        }
-
         const response = await fetch(
-          `${API_URL}/chatbot/reports?officeId=${encodeURIComponent(divisionId)}`,
+          `${API_URL}/chatbot/reports?officeId=${encodeURIComponent(sectionId)}`,
           {
             method: "GET",
             headers: { Accept: "application/json" },
@@ -250,59 +266,90 @@ function App() {
 
         if (!response.ok) {
           throw new Error(
-            data.message || data.error || "Unable to load the selected dashboard."
+            data.message || data.error || "Unable to load dashboards for this category."
           );
         }
 
-        const matchingReport = (Array.isArray(data.reports) ? data.reports : [])
-          .find((report) => Number(report.id) === reportId);
+        const connectedReports = (Array.isArray(data.reports) ? data.reports : [])
+          .filter((report) => Boolean(report.hasSheet))
+          .map((report) => ({
+            id: Number(report.id),
+            title: report.title || "Untitled Dashboard",
+            description: report.description || "",
+            hasSheet: true,
+          }));
 
-        if (!matchingReport) {
-          throw new Error("The selected dashboard is not available to the chatbot.");
+        setReports(connectedReports);
+
+        if (!openSelectedReport) {
+          if (connectedReports.length === 0) {
+            setMessages([
+              {
+                role: "bot",
+                text: `There are no dashboards with connected chatbot data in "${normalizedSection.name}" yet.`,
+              },
+            ]);
+          }
+          return;
         }
 
-        const normalizedReport = {
-          id: Number(matchingReport.id),
-          title: matchingReport.title || publicReport.title || "Selected dashboard",
-          description: matchingReport.description || publicReport.description || "",
-          hasSheet: Boolean(matchingReport.hasSheet),
-        };
-
-        setSelectedReport(normalizedReport);
-        setMessages([
-          {
-            role: "bot",
-            text: normalizedReport.hasSheet
-              ? `Hello! You selected "${normalizedReport.title}". Ask me a question about its connected Google Sheet data.`
-              : `"${normalizedReport.title}" does not have chatbot worksheets connected yet.`,
-          },
-        ]);
-      } catch (error) {
-        console.error("Unable to set chatbot dashboard context:", error);
-        setSelectedReport((current) =>
-          current?.id === reportId
-            ? { ...current, hasSheet: false }
-            : current
+        const matchingReport = connectedReports.find(
+          (report) => report.id === selectedReportId
         );
-        setMessages([
-          {
-            role: "bot",
-            text:
-              error.message ||
-              "Unable to load this dashboard in the chatbot. Please choose it from the chatbot list.",
-          },
-        ]);
+
+        if (matchingReport) {
+          setSelectedReport(matchingReport);
+          setMessages([
+            {
+              role: "bot",
+              text: `Hello! You selected "${matchingReport.title}" in ${normalizedSection.name}. Ask me a question about its connected Google Sheet data.`,
+            },
+          ]);
+        } else {
+          const publicReport = detail.report || {};
+          const reportWithoutChatData = {
+            id: selectedReportId,
+            title: publicReport.title || "Selected dashboard",
+            description: publicReport.description || "",
+            hasSheet: false,
+          };
+          setSelectedReport(reportWithoutChatData);
+          setMessages([
+            {
+              role: "bot",
+              text: `"${reportWithoutChatData.title}" does not have chatbot worksheets connected in "${normalizedSection.name}" yet.`,
+            },
+          ]);
+        }
+      } catch (error) {
+        console.error("Unable to apply public dashboard selection:", error);
+        setSelectionError(
+          error.message || "Unable to load dashboards for this category."
+        );
       } finally {
         setSelectionLoading(false);
       }
     };
 
+    const handlePublicCategorySelected = (event) =>
+      applyPublicSelection(event, false);
+    const handlePublicDashboardSelected = (event) =>
+      applyPublicSelection(event, true);
+
+    window.addEventListener(
+      "idamag:public-category-selected",
+      handlePublicCategorySelected
+    );
     window.addEventListener(
       "idamag:public-dashboard-selected",
       handlePublicDashboardSelected
     );
 
     return () => {
+      window.removeEventListener(
+        "idamag:public-category-selected",
+        handlePublicCategorySelected
+      );
       window.removeEventListener(
         "idamag:public-dashboard-selected",
         handlePublicDashboardSelected
@@ -425,7 +472,12 @@ function App() {
    * Load top-level divisions from the offices table.
    */
   useEffect(() => {
-    if (!isChatbotOpen || divisions.length > 0 || selectedReport) {
+    if (
+      !isChatbotOpen ||
+      divisions.length > 0 ||
+      selectedDivision ||
+      selectedReport
+    ) {
       return;
     }
 
@@ -518,7 +570,7 @@ function App() {
     return () => {
       isMounted = false;
     };
-  }, [isChatbotOpen, divisions.length, selectedReport]);
+  }, [isChatbotOpen, divisions.length, selectedDivision, selectedReport]);
 
   /*
    * Step 2:
