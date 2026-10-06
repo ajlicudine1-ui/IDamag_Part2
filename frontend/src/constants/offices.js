@@ -4,6 +4,31 @@ const API_URL = (
 ).replace(/\/$/, "");
 
 /**
+ * Keep Agricultural Programs first and OTHERS last wherever office/category
+ * records are shown. Other records retain the order returned by the API.
+ */
+export function sortOfficesForDisplay(records) {
+  const priority = (office) => {
+    const acronym = String(office?.acronym || office?.code || "")
+      .trim()
+      .toUpperCase();
+    const name = String(office?.name || "")
+      .trim()
+      .toLowerCase();
+
+    if (acronym === "AGPROG" || name.includes("agricultural programs")) {
+      return -1;
+    }
+    if (acronym === "OTHERS" || name === "others") {
+      return 1;
+    }
+    return 0;
+  };
+
+  return [...records].sort((a, b) => priority(a) - priority(b));
+}
+
+/**
  * Load all categories/offices from the database.
  */
 export async function getOffices() {
@@ -43,7 +68,7 @@ export async function getOffices() {
     officeList = result.data;
   }
 
-  return officeList.map((office) => {
+  return sortOfficesForDisplay(officeList).map((office) => {
     const divisions = Array.isArray(office.divisions)
       ? office.divisions
       : [];
