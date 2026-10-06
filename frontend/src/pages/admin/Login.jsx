@@ -4,6 +4,7 @@ import { Eye, EyeOff } from 'lucide-react';
 
 import { login } from '../../services/api';
 import logo from '../../assets/dalogo.png';
+import { RAED_REPORT_URL } from '../../components/auth/RaedRedirect';
 import { clearPendingClose } from '../../components/auth/sessionTimeout';
 
 function Login() {
@@ -37,11 +38,14 @@ function Login() {
     
     try {
       const res = await login({ username: username.trim(), password });
-      // sessionStorage is scoped to this browser tab, so another tab can
-      // sign in as a different account without overwriting this session.
+      // Store user info in this tab only
       sessionStorage.setItem('user', JSON.stringify(res.data));
       clearPendingClose();
       sessionStorage.setItem('idamag_auth_version', '2');
+      if (res.data.role === 'RAED') {
+        window.location.replace(RAED_REPORT_URL);
+        return;
+      }
       const requested = location.state?.from;
       const requestedPath = requested
         ? `${requested.pathname}${requested.search || ''}${requested.hash || ''}`
@@ -125,7 +129,13 @@ function Login() {
           </button>
         </form>
         
-        
+        <div className="mt-6 pt-6 border-t border-slate-100 text-center space-y-3">
+          <div className="block">
+            <Link to="/" className="text-slate-400 hover:text-moss-600 text-[11px] font-bold transition-colors">
+              ← Back to Public Site
+            </Link>
+          </div>
+        </div>
       </div>
     </div>
   );
