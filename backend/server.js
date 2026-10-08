@@ -287,6 +287,49 @@ const logActivity = async (
 };
 
 // ============================================================
+// FINDING IV: Persistent login lockout (Supabase PostgreSQL)
+// Run backend/sql/login_rate_limit.sql BEFORE deploying this file.
+// No in-memory counters: Vercel instances share the database state.
+// ============================================================
+const crypto = require("crypto");
+const { QueryTypes } = require("sequelize");
+
+function loginLimitKey(username) {
+  // Do not store usernames in the login-rate-limit table.
+  return crypto.createHash("sha256").update(username).digest("hex");
+}
+
+async function loginSecondsRemaining(key) {
+  const rows = await sequelize.query(
+    "SELECT public.idamag_login_check(:key) AS seconds_left",
+    { replacements: { key }, type: QueryTypes.SELECT }
+  );
+  return Number(rows[0]?.seconds_left || 0);
+}
+
+async function recordFailedLogin(key) {
+  const rows = await sequelize.query(
+    "SELECT public.idamag_login_fail(:key) AS seconds_left",
+    { replacements: { key }, type: QueryTypes.SELECT }
+  );
+  return Number(rows[0]?.seconds_left || 0);
+}
+
+async function clearFailedLogins(key) {
+  await sequelize.query("SELECT public.idamag_login_clear(:key)", {
+    replacements: { key }, type: QueryTypes.SELECT
+  });
+}
+
+function sendLoginLockout(res, seconds) {
+  const retryAfter = Math.max(1, Math.ceil(seconds));
+  res.set("Retry-After", String(retryAfter));
+  return res.status(429).json({
+    message: "Too many failed login attempts. Please try again in 15 minutes."
+  });
+}
+
+// ============================================================
 // AUTH
 // ============================================================
 
@@ -303,12 +346,17 @@ app.post("/api/login", async (req, res) => {
       });
     }
 
+    const limitKey = loginLimitKey(username);
+    const initialLock = await loginSecondsRemaining(limitKey);
+    if (initialLock > 0) return sendLoginLockout(res, initialLock);
+
     const user = await User.findOne({
       where: { username },
       include: ["office", "division"],
     });
 
     if (!user) {
+      const lockedFor = await recordFailedLogin(limitKey);
       await logActivity(
         null,
         "LOGIN_ATTEMPT",
@@ -317,6 +365,7 @@ app.post("/api/login", async (req, res) => {
         req
       );
 
+      if (lockedFor > 0) return sendLoginLockout(res, lockedFor);
       return res.status(401).json({
         message: "Invalid username or password",
       });
@@ -337,6 +386,7 @@ app.post("/api/login", async (req, res) => {
     }
 
     if (!isMatch) {
+      const lockedFor = await recordFailedLogin(limitKey);
       await logActivity(
         user.id,
         "LOGIN_FAIL",
@@ -345,6 +395,7 @@ app.post("/api/login", async (req, res) => {
         req
       );
 
+      if (lockedFor > 0) return sendLoginLockout(res, lockedFor);
       return res.status(401).json({
         message: "Invalid username or password",
       });
@@ -379,6 +430,9 @@ app.post("/api/login", async (req, res) => {
       }
     }
 
+    // Reset only after successful password verification and account checks.
+    await clearFailedLogins(limitKey);
+
     await logActivity(
       user.id,
       "LOGIN_SUCCESS",
@@ -393,8 +447,9 @@ app.post("/api/login", async (req, res) => {
 
     res.json(userResponse);
   } catch (error) {
-    res.status(500).json({
-      error: error.message,
+    console.error("LOGIN ERROR:", error);
+    res.status(503).json({
+      message: "Login is temporarily unavailable. Please try again later.",
     });
   }
 });
