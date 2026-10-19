@@ -2354,6 +2354,7 @@ app.get(
                   "firstName",
                   "lastName",
                   "email",
+                  "username",
                 ],
               },
             ],
