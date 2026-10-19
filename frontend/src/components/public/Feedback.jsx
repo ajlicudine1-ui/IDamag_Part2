@@ -1,6 +1,6 @@
 import logo from "../../assets/DA-RFO1_LOGO.png";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowLeft,
@@ -311,16 +311,19 @@ const Feedback = () => {
 
   // Submit through the same-origin backend so the browser CSP does not
   // need to allow direct requests to Google Forms.
+  const submissionLock = useRef(false);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (!canSubmit) return;
+    if (!canSubmit || submitted || submissionLock.current) return;
+    submissionLock.current = true;
 
     setSubmitting(true);
 
     try {
-      const response = await api.post(
-        "/dashboard-feedback",
+      await api.post(
+        "/submit-dashboard-feedback",
         {
           fullName: name,
           email,
@@ -335,12 +338,9 @@ const Feedback = () => {
         { baseURL: `${window.location.origin}/api` }
       );
 
-      if (response.data?.googleFormsSubmitted === false) {
-        console.warn("Feedback was saved to the database but did not sync to Google Forms.");
-      }
-
       setSubmitted(true);
     } catch (err) {
+      submissionLock.current = false;
       console.error("Feedback submission failed:", err);
       alert(
         err.response?.data?.message ||

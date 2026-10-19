@@ -2371,6 +2371,103 @@ app.get("/api/dashboard-feedback", async (req, res) => {
 // POST /api/dashboard-feedback
 // ------------------------------------------------------------
 
+const GOOGLE_FEEDBACK_FORM_ACTION_URL =
+  "https://docs.google.com/forms/d/e/1FAIpQLSfWsUQEep8NK39vhUnIdxUT1MkGUI7NMi-17t2O96tEpcToIg/formResponse";
+
+const GOOGLE_FEEDBACK_ENTRY_IDS = {
+  name: "entry.911567496",
+  email: "entry.1974072567",
+  dashboardName: "entry.1547865169",
+  userInterface: "entry.2145959113",
+  userExperience: "entry.1243671929",
+  dataCompleteness: "entry.181596178",
+  dataAccuracy: "entry.1601095705",
+  accessibility: "entry.1847836371",
+  additionalComments: "entry.470097147",
+};
+
+app.post("/api/submit-dashboard-feedback", async (req, res) => {
+  try {
+    const {
+      fullName,
+      email,
+      dashboardName,
+      userInterface,
+      userExperience,
+      dataCompleteness,
+      dataAccuracy,
+      accessibility,
+      additionalComments,
+    } = req.body;
+
+    // Dashboard is required
+    if (!dashboardName || !String(dashboardName).trim()) {
+      return res.status(400).json({
+        message: "Dashboard name is required.",
+      });
+    }
+
+    // Convert ratings to numbers
+    const ratings = {
+      userInterface: Number(userInterface),
+      userExperience: Number(userExperience),
+      dataCompleteness: Number(dataCompleteness),
+      dataAccuracy: Number(dataAccuracy),
+      accessibility: Number(accessibility),
+    };
+
+    // Validate ratings
+    for (const [field, value] of Object.entries(ratings)) {
+      if (
+        !Number.isInteger(value) ||
+        value < 1 ||
+        value > 5
+      ) {
+        return res.status(400).json({
+          message: `${field} must be a rating from 1 to 5.`,
+        });
+      }
+    }
+
+      const googleFormBody = new URLSearchParams({
+        [GOOGLE_FEEDBACK_ENTRY_IDS.name]:
+          fullName && String(fullName).trim() ? String(fullName).trim() : "",
+        [GOOGLE_FEEDBACK_ENTRY_IDS.email]:
+          email && String(email).trim() ? String(email).trim() : "",
+        [GOOGLE_FEEDBACK_ENTRY_IDS.dashboardName]: String(dashboardName).trim(),
+        [GOOGLE_FEEDBACK_ENTRY_IDS.userInterface]: String(ratings.userInterface),
+        [GOOGLE_FEEDBACK_ENTRY_IDS.userExperience]: String(ratings.userExperience),
+        [GOOGLE_FEEDBACK_ENTRY_IDS.dataCompleteness]: String(ratings.dataCompleteness),
+        [GOOGLE_FEEDBACK_ENTRY_IDS.dataAccuracy]: String(ratings.dataAccuracy),
+        [GOOGLE_FEEDBACK_ENTRY_IDS.accessibility]: String(ratings.accessibility),
+        [GOOGLE_FEEDBACK_ENTRY_IDS.additionalComments]:
+          additionalComments && String(additionalComments).trim()
+            ? String(additionalComments).trim()
+            : "",
+      });
+
+      const googleResponse = await fetch(GOOGLE_FEEDBACK_FORM_ACTION_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+        },
+        body: googleFormBody,
+        redirect: "follow",
+        signal: AbortSignal.timeout(8000),
+      });
+
+      if (!googleResponse.ok) {
+        return res.status(502).json({ message: "Google Forms could not accept the feedback. Please try again later." });
+      }
+      // onFormSubmit saves the response through /api/dashboard-feedback.
+      // Do not insert here: doing so would create a second database record.
+      return res.status(200).json({ message: "Feedback sent to Google Forms.", googleFormsSubmitted: true });
+  } catch (error) {
+    console.error("SUBMIT FEEDBACK TO GOOGLE ERROR:", error);
+    return res.status(502).json({ message: "Could not confirm submission to Google Forms. Check whether your feedback arrived before submitting again." });
+  }
+});
+
 app.post("/api/dashboard-feedback", async (req, res) => {
   try {
     const {
