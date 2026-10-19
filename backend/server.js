@@ -1849,9 +1849,9 @@ app.post(
         }
       }
 
-      if (!username || username.length < 3 || username.length > 40 || !/^[a-z0-9._-]+$/.test(username)) {
+      if (!username || username.length < 3 || username.length > 40 || !/^[a-z0-9._@-]+$/.test(username)) {
         return res.status(400).json({
-          message: "Username must be 3 to 40 characters and use only letters, numbers, dots, underscores, or hyphens.",
+          message: "Username must be 3 to 40 characters and use only letters, numbers, dots, underscores, hyphens, or @.",
         });
       }
 

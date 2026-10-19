@@ -845,8 +845,8 @@ function Register() {
               required
               minLength={3}
               maxLength={40}
-              pattern="[A-Za-z0-9._-]+"
-              title="Use letters, numbers, dots, underscores, or hyphens."
+              pattern="[A-Za-z0-9._@-]+"
+              title="Use letters, numbers, dots, underscores, hyphens, or @."
               autoComplete="username"
               value={formData.username}
               onChange={handleInputChange('username')}
