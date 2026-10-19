@@ -287,49 +287,6 @@ const logActivity = async (
 };
 
 // ============================================================
-// FINDING IV: Persistent login lockout (Supabase PostgreSQL)
-// Run backend/sql/login_rate_limit.sql BEFORE deploying this file.
-// No in-memory counters: Vercel instances share the database state.
-// ============================================================
-const crypto = require("crypto");
-const { QueryTypes } = require("sequelize");
-
-function loginLimitKey(username) {
-  // Do not store usernames in the login-rate-limit table.
-  return crypto.createHash("sha256").update(username).digest("hex");
-}
-
-async function loginSecondsRemaining(key) {
-  const rows = await sequelize.query(
-    "SELECT public.idamag_login_check(:key) AS seconds_left",
-    { replacements: { key }, type: QueryTypes.SELECT }
-  );
-  return Number(rows[0]?.seconds_left || 0);
-}
-
-async function recordFailedLogin(key) {
-  const rows = await sequelize.query(
-    "SELECT public.idamag_login_fail(:key) AS seconds_left",
-    { replacements: { key }, type: QueryTypes.SELECT }
-  );
-  return Number(rows[0]?.seconds_left || 0);
-}
-
-async function clearFailedLogins(key) {
-  await sequelize.query("SELECT public.idamag_login_clear(:key)", {
-    replacements: { key }, type: QueryTypes.SELECT
-  });
-}
-
-function sendLoginLockout(res, seconds) {
-  const retryAfter = Math.max(1, Math.ceil(seconds));
-  res.set("Retry-After", String(retryAfter));
-  return res.status(429).json({
-    message: "Too many failed login attempts. Please try again in 15 minutes."
-  });
-}
-
-// ============================================================
 // AUTH
 // ============================================================
 
@@ -346,17 +303,12 @@ app.post("/api/login", async (req, res) => {
       });
     }
 
-    const limitKey = loginLimitKey(username);
-    const initialLock = await loginSecondsRemaining(limitKey);
-    if (initialLock > 0) return sendLoginLockout(res, initialLock);
-
     const user = await User.findOne({
       where: { username },
       include: ["office", "division"],
     });
 
     if (!user) {
-      const lockedFor = await recordFailedLogin(limitKey);
       await logActivity(
         null,
         "LOGIN_ATTEMPT",
@@ -365,7 +317,6 @@ app.post("/api/login", async (req, res) => {
         req
       );
 
-      if (lockedFor > 0) return sendLoginLockout(res, lockedFor);
       return res.status(401).json({
         message: "Invalid username or password",
       });
@@ -386,7 +337,6 @@ app.post("/api/login", async (req, res) => {
     }
 
     if (!isMatch) {
-      const lockedFor = await recordFailedLogin(limitKey);
       await logActivity(
         user.id,
         "LOGIN_FAIL",
@@ -395,7 +345,6 @@ app.post("/api/login", async (req, res) => {
         req
       );
 
-      if (lockedFor > 0) return sendLoginLockout(res, lockedFor);
       return res.status(401).json({
         message: "Invalid username or password",
       });
@@ -430,9 +379,6 @@ app.post("/api/login", async (req, res) => {
       }
     }
 
-    // Reset only after successful password verification and account checks.
-    await clearFailedLogins(limitKey);
-
     await logActivity(
       user.id,
       "LOGIN_SUCCESS",
@@ -447,9 +393,8 @@ app.post("/api/login", async (req, res) => {
 
     res.json(userResponse);
   } catch (error) {
-    console.error("LOGIN ERROR:", error);
-    res.status(503).json({
-      message: "Login is temporarily unavailable. Please try again later.",
+    res.status(500).json({
+      error: error.message,
     });
   }
 });
@@ -2354,7 +2299,6 @@ app.get(
                   "firstName",
                   "lastName",
                   "email",
-                  "username",
                 ],
               },
             ],
@@ -2427,6 +2371,21 @@ app.get("/api/dashboard-feedback", async (req, res) => {
 // POST /api/dashboard-feedback
 // ------------------------------------------------------------
 
+const GOOGLE_FEEDBACK_FORM_ACTION_URL =
+  "https://docs.google.com/forms/d/e/1FAIpQLSfWsUQEep8NK39vhUnIdxUT1MkGUI7NMi-17t2O96tEpcToIg/formResponse";
+
+const GOOGLE_FEEDBACK_ENTRY_IDS = {
+  name: "entry.911567496",
+  email: "entry.1974072567",
+  dashboardName: "entry.1547865169",
+  userInterface: "entry.2145959113",
+  userExperience: "entry.1243671929",
+  dataCompleteness: "entry.181596178",
+  dataAccuracy: "entry.1601095705",
+  accessibility: "entry.1847836371",
+  additionalComments: "entry.470097147",
+};
+
 app.post("/api/dashboard-feedback", async (req, res) => {
   try {
     const {
@@ -2495,9 +2454,55 @@ app.post("/api/dashboard-feedback", async (req, res) => {
           : null,
     });
 
+    // Mirror the saved feedback to Google Forms server-side. This avoids
+    // browser CSP blocking the request and keeps the database as the primary record.
+    let googleFormsSubmitted = false;
+
+    try {
+      const googleFormBody = new URLSearchParams({
+        [GOOGLE_FEEDBACK_ENTRY_IDS.name]:
+          fullName && String(fullName).trim() ? String(fullName).trim() : "",
+        [GOOGLE_FEEDBACK_ENTRY_IDS.email]:
+          email && String(email).trim() ? String(email).trim() : "",
+        [GOOGLE_FEEDBACK_ENTRY_IDS.dashboardName]: String(dashboardName).trim(),
+        [GOOGLE_FEEDBACK_ENTRY_IDS.userInterface]: String(ratings.userInterface),
+        [GOOGLE_FEEDBACK_ENTRY_IDS.userExperience]: String(ratings.userExperience),
+        [GOOGLE_FEEDBACK_ENTRY_IDS.dataCompleteness]: String(ratings.dataCompleteness),
+        [GOOGLE_FEEDBACK_ENTRY_IDS.dataAccuracy]: String(ratings.dataAccuracy),
+        [GOOGLE_FEEDBACK_ENTRY_IDS.accessibility]: String(ratings.accessibility),
+        [GOOGLE_FEEDBACK_ENTRY_IDS.additionalComments]:
+          additionalComments && String(additionalComments).trim()
+            ? String(additionalComments).trim()
+            : "",
+      });
+
+      const googleResponse = await fetch(GOOGLE_FEEDBACK_FORM_ACTION_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+        },
+        body: googleFormBody,
+        redirect: "follow",
+        signal: AbortSignal.timeout(8000),
+      });
+
+      googleFormsSubmitted = googleResponse.ok;
+
+      if (!googleFormsSubmitted) {
+        console.error(
+          "Google Forms returned a non-success status for dashboard feedback:",
+          googleResponse.status
+        );
+      }
+    } catch (googleError) {
+      // Keep the successfully saved database feedback even if Google's mirror is unavailable.
+      console.error("Google Forms feedback mirror failed:", googleError);
+    }
+
     res.status(201).json({
       message: "Dashboard feedback submitted successfully.",
       feedback,
+      googleFormsSubmitted,
     });
   } catch (error) {
     console.error("CREATE DASHBOARD FEEDBACK ERROR:", error);

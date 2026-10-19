@@ -10,24 +10,7 @@ import {
 } from "lucide-react";
 
 import Footer from "./Footer";
-import { getReports } from "../../services/api";
-
-
-const FORM_ACTION_URL =
-  "https://docs.google.com/forms/d/e/1FAIpQLSfWsUQEep8NK39vhUnIdxUT1MkGUI7NMi-17t2O96tEpcToIg/formResponse";
-
-
-const ENTRY_IDS = {
-  name: "entry.911567496",
-  email: "entry.1974072567",
-  dashboardName: "entry.1547865169",
-  ui: "entry.2145959113",
-  ux: "entry.1243671929",
-  completeness: "entry.181596178",
-  accuracy: "entry.1601095705",
-  accessibility: "entry.1847836371",
-  comments: "entry.470097147",
-};
+import api, { getReports } from "../../services/api";
 
 
 const CRITERIA = [
@@ -326,102 +309,47 @@ const Feedback = () => {
       0;
 
 
-  // ============================================================
-  // SUBMIT TO GOOGLE FORM
-  // ============================================================
+  // Submit through the same-origin backend so the browser CSP does not
+  // need to allow direct requests to Google Forms.
+  const handleSubmit = async (e) => {
+    e.preventDefault();
 
-  const handleSubmit =
-    async (e) => {
+    if (!canSubmit) return;
 
-      e.preventDefault();
+    setSubmitting(true);
 
-      if (!canSubmit) {
-        return;
+    try {
+      const response = await api.post(
+        "/dashboard-feedback",
+        {
+          fullName: name,
+          email,
+          dashboardName,
+          userInterface: ratings.ui,
+          userExperience: ratings.ux,
+          dataCompleteness: ratings.completeness,
+          dataAccuracy: ratings.accuracy,
+          accessibility: ratings.accessibility,
+          additionalComments: comments,
+        },
+        { baseURL: `${window.location.origin}/api` }
+      );
+
+      if (response.data?.googleFormsSubmitted === false) {
+        console.warn("Feedback was saved to the database but did not sync to Google Forms.");
       }
 
-      setSubmitting(true);
-
-
-      const formData =
-        new FormData();
-
-
-      formData.append(
-        ENTRY_IDS.name,
-        name
-      );
-
-
-      formData.append(
-        ENTRY_IDS.email,
-        email
-      );
-
-
-      /*
-       * This is the selected reports.title value.
-       */
-      formData.append(
-        ENTRY_IDS.dashboardName,
-        dashboardName
-      );
-
-
-      CRITERIA.forEach(
-        (c) => {
-
-          formData.append(
-            ENTRY_IDS[c.key],
-            String(
-              ratings[c.key]
-            )
-          );
-
-        }
-      );
-
-
-      formData.append(
-        ENTRY_IDS.comments,
-        comments
-      );
-
-
-      try {
-
-        await fetch(
-          FORM_ACTION_URL,
-          {
-            method: "POST",
-            mode: "no-cors",
-            body: formData,
-          }
-        );
-
-
-        setSubmitted(true);
-
-
-      } catch (err) {
-
-        console.error(
-          "Submission failed:",
-          err
-        );
-
-
-        alert(
+      setSubmitted(true);
+    } catch (err) {
+      console.error("Feedback submission failed:", err);
+      alert(
+        err.response?.data?.message ||
           "Something went wrong submitting your feedback. Please try again."
-        );
-
-
-      } finally {
-
-        setSubmitting(false);
-
-      }
-
-    };
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
 
   // ============================================================
