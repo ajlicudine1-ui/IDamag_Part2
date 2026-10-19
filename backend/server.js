@@ -2371,21 +2371,6 @@ app.get("/api/dashboard-feedback", async (req, res) => {
 // POST /api/dashboard-feedback
 // ------------------------------------------------------------
 
-const GOOGLE_FEEDBACK_FORM_ACTION_URL =
-  "https://docs.google.com/forms/d/e/1FAIpQLSfWsUQEep8NK39vhUnIdxUT1MkGUI7NMi-17t2O96tEpcToIg/formResponse";
-
-const GOOGLE_FEEDBACK_ENTRY_IDS = {
-  name: "entry.911567496",
-  email: "entry.1974072567",
-  dashboardName: "entry.1547865169",
-  userInterface: "entry.2145959113",
-  userExperience: "entry.1243671929",
-  dataCompleteness: "entry.181596178",
-  dataAccuracy: "entry.1601095705",
-  accessibility: "entry.1847836371",
-  additionalComments: "entry.470097147",
-};
-
 app.post("/api/dashboard-feedback", async (req, res) => {
   try {
     const {
@@ -2454,55 +2439,11 @@ app.post("/api/dashboard-feedback", async (req, res) => {
           : null,
     });
 
-    // Mirror the saved feedback to Google Forms server-side. This avoids
-    // browser CSP blocking the request and keeps the database as the primary record.
-    let googleFormsSubmitted = false;
-
-    try {
-      const googleFormBody = new URLSearchParams({
-        [GOOGLE_FEEDBACK_ENTRY_IDS.name]:
-          fullName && String(fullName).trim() ? String(fullName).trim() : "",
-        [GOOGLE_FEEDBACK_ENTRY_IDS.email]:
-          email && String(email).trim() ? String(email).trim() : "",
-        [GOOGLE_FEEDBACK_ENTRY_IDS.dashboardName]: String(dashboardName).trim(),
-        [GOOGLE_FEEDBACK_ENTRY_IDS.userInterface]: String(ratings.userInterface),
-        [GOOGLE_FEEDBACK_ENTRY_IDS.userExperience]: String(ratings.userExperience),
-        [GOOGLE_FEEDBACK_ENTRY_IDS.dataCompleteness]: String(ratings.dataCompleteness),
-        [GOOGLE_FEEDBACK_ENTRY_IDS.dataAccuracy]: String(ratings.dataAccuracy),
-        [GOOGLE_FEEDBACK_ENTRY_IDS.accessibility]: String(ratings.accessibility),
-        [GOOGLE_FEEDBACK_ENTRY_IDS.additionalComments]:
-          additionalComments && String(additionalComments).trim()
-            ? String(additionalComments).trim()
-            : "",
-      });
-
-      const googleResponse = await fetch(GOOGLE_FEEDBACK_FORM_ACTION_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-        },
-        body: googleFormBody,
-        redirect: "follow",
-        signal: AbortSignal.timeout(8000),
-      });
-
-      googleFormsSubmitted = googleResponse.ok;
-
-      if (!googleFormsSubmitted) {
-        console.error(
-          "Google Forms returned a non-success status for dashboard feedback:",
-          googleResponse.status
-        );
-      }
-    } catch (googleError) {
-      // Keep the successfully saved database feedback even if Google's mirror is unavailable.
-      console.error("Google Forms feedback mirror failed:", googleError);
-    }
-
+    // Save only: Google Forms already forwards here through onFormSubmit.
+    // Forwarding back to the form would trigger an endless submission loop.
     res.status(201).json({
       message: "Dashboard feedback submitted successfully.",
       feedback,
-      googleFormsSubmitted,
     });
   } catch (error) {
     console.error("CREATE DASHBOARD FEEDBACK ERROR:", error);
