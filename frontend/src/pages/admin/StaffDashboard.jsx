@@ -72,6 +72,35 @@ function StaffDashboard() {
   });
 
   const [formError, setFormError] = useState("");
+  const [reportOffice, setReportOffice] = useState("");
+  const [reportDivision, setReportDivision] = useState("");
+  const [reportDivisions, setReportDivisions] = useState([]);
+  const [locationLoading, setLocationLoading] = useState(false);
+
+  useEffect(() => {
+    if (!isModalOpen) return;
+    setFormError("");
+    setReportOffice(String(editingReport?.division?.officeId ||
+      editingReport?.division?.office?.id || selectedOffice || user?.officeId || ""));
+    setReportDivision(String(editingReport?.divisionId ||
+      editingReport?.division?.id || selectedDivision || user?.divisionId || ""));
+  }, [isModalOpen, editingReport]);
+
+  useEffect(() => {
+    let active = true;
+    setReportDivisions([]);
+    if (!isModalOpen || !reportOffice) return;
+    setLocationLoading(true);
+    getDivisions(reportOffice).then((res) => {
+      if (active) setReportDivisions(res.data);
+    }).catch(() => {
+      if (active) setFormError("Unable to load subcategories. Close the editor and try again.");
+    }).finally(() => {
+      if (active) setLocationLoading(false);
+    });
+    return () => { active = false; };
+  }, [isModalOpen, reportOffice]);
+
 
   // =========================================================
   // WORKSHEET MODAL
@@ -429,14 +458,16 @@ function StaffDashboard() {
         description:
           reportForm.description,
 
-        divisionId:
-          selectedDivision ||
-          user?.divisionId,
+        divisionId: user?.role === "Admin"
+          ? reportDivision
+          : (editingReport?.divisionId || selectedDivision || user?.divisionId),
       };
 
-      if (!reportData.divisionId) {
+      if (!reportData.divisionId || (user?.role === "Admin" &&
+          (locationLoading || !reportDivisions.some((item) =>
+            String(item.id) === String(reportData.divisionId))))) {
         setFormError(
-          "Please select a Category."
+          "Please select a Category and a valid Subcategory."
         );
 
         setShowConfirmModal(false);
@@ -469,8 +500,8 @@ function StaffDashboard() {
 
       const res =
         await getReports({
-          divisionId:
-            selectedDivision,
+          officeId: selectedOffice,
+          ...(selectedDivision ? { divisionId: selectedDivision } : {}),
         });
 
       setReports(res.data);
@@ -1510,7 +1541,7 @@ function StaffDashboard() {
               }
             />
 
-            <div className="relative w-full max-w-md rounded-[2.5rem] border border-white/20 bg-white p-10 shadow-2xl animate-in zoom-in-95 duration-200">
+            <div className="relative max-h-[90vh] overflow-y-auto w-full max-w-md rounded-[2.5rem] border border-white/20 bg-white p-10 shadow-2xl animate-in zoom-in-95 duration-200">
 
               <h3 className="mb-8 text-xl font-black tracking-tight text-slate-900">
 
@@ -1526,6 +1557,43 @@ function StaffDashboard() {
                 }
                 className="space-y-5"
               >
+
+                {user?.role === "Admin" && (
+                  <div className="grid gap-4">
+                    {editingReport && (
+                      <p className="text-xs text-slate-500">
+                        Current location: {editingReport.division?.office?.name || offices.find(o => String(o.id) === String(selectedOffice))?.name || "Unknown category"}
+                        {" / "}{editingReport.division?.name || divisions.find(d => String(d.id) === String(editingReport.divisionId))?.name || "Unknown subcategory"}
+                      </p>
+                    )}
+                    <div>
+                      <label htmlFor="report-category" className="mb-1.5 block text-xs font-bold text-slate-500">Category</label>
+                      <select id="report-category" required value={reportOffice}
+                        onChange={(e) => {
+                          setReportOffice(e.target.value);
+                          setReportDivision("");
+                          setReportDivisions([]);
+                        }}
+                        className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
+                        <option value="">Choose category</option>
+                        {offices.map(o => <option key={o.id} value={String(o.id)}>{o.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="report-subcategory" className="mb-1.5 block text-xs font-bold text-slate-500">Subcategory</label>
+                      <select id="report-subcategory" required value={reportDivision}
+                        disabled={!reportOffice || locationLoading}
+                        onChange={(e) => setReportDivision(e.target.value)}
+                        className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm disabled:opacity-50">
+                        <option value="">{locationLoading ? "Loading..." : "Choose subcategory"}</option>
+                        {reportDivisions.map(d => <option key={d.id} value={String(d.id)}>{d.name}</option>)}
+                      </select>
+                      {reportOffice && !locationLoading && reportDivisions.length === 0 && (
+                        <p className="mt-2 text-xs text-amber-700">No subcategories available in this category.</p>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {/* TITLE */}
 
